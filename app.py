@@ -274,8 +274,7 @@ def obter_access_token():
         ).timestamp()
     )
 
-    # Renova 5 minutos antes
-    # do vencimento
+    # Renova 5 minutos antes do vencimento
     if (
         tokens["expires_at"]
         > agora + 300
@@ -611,36 +610,27 @@ def health():
 
 
 # ============================================================
-# BUSCAR ANÚNCIOS REAIS
+# BUSCAR ANÚNCIOS REAIS (AJUSTADO PARA EVITAR HTTP 403)
 # ============================================================
 
 def buscar_anuncios(
     query,
     limite=20
 ):
-
-    headers = headers_ml()
-
-    if not headers:
-
-        raise Exception(
-            "Mercado Livre não conectado."
-        )
+    # A busca pública (/sites/MLB/search) não precisa do Bearer Token.
+    # Usar headers públicos evita o erro 403 Forbidden do Mercado Livre.
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
 
     params = {
-
-        "q":
-            query,
-
-        "limit":
-            limite,
-
-        "offset":
-            0
+        "q": query,
+        "limit": limite,
+        "offset": 0
     }
 
     try:
-
         response = requests.get(
             ML_SEARCH_URL,
             headers=headers,
@@ -648,54 +638,23 @@ def buscar_anuncios(
             timeout=30
         )
 
-        print(
-            "[BUSCA ANÚNCIOS]",
-            response.status_code
-        )
-
-        print(
-            "[URL]",
-            response.url
-        )
+        print("[BUSCA ANÚNCIOS]", response.status_code)
 
         if response.status_code != 200:
-
-            print(
-                "[ERRO API]",
-                response.text[:1500]
-            )
-
+            print("[ERRO API]", response.text[:1500])
             raise Exception(
-                "Mercado Livre retornou "
-                f"HTTP {response.status_code}: "
-                f"{response.text[:500]}"
+                f"Mercado Livre retornou HTTP {response.status_code}: {response.text[:500]}"
             )
 
         data = response.json()
+        resultados = data.get("results", [])
 
-        resultados = data.get(
-            "results",
-            []
-        )
-
-        print(
-            "[ANÚNCIOS ENCONTRADOS]",
-            len(resultados)
-        )
-
+        print("[ANÚNCIOS ENCONTRADOS]", len(resultados))
         return resultados
 
     except requests.RequestException as e:
-
-        print(
-            "[ERRO REQUEST]",
-            e
-        )
-
-        raise Exception(
-            f"Erro de comunicação com "
-            f"Mercado Livre: {e}"
-        )
+        print("[ERRO REQUEST]", e)
+        raise Exception(f"Erro de comunicação com Mercado Livre: {e}")
 
 
 # ============================================================
@@ -959,9 +918,6 @@ def obter_precos(
 
                 except Exception:
 
-                    # Se não conseguirmos
-                    # interpretar as datas,
-                    # mantemos o preço
                     ativa = True
 
                 if ativa:
@@ -1492,7 +1448,7 @@ def gerar_mensagem(
 
     mensagem += (
         "\n\n"
-        "⚠️️ Preço e disponibilidade "
+        "⚠️ Preço e disponibilidade "
         "podem mudar a qualquer momento."
     )
 
@@ -2194,31 +2150,7 @@ def buscar():
             "/"
         )
 
-    conectado = (
-        obter_access_token()
-        is not None
-    )
-
-    if not conectado:
-
-        return render_template_string(
-
-            HTML,
-
-            conectado=False,
-
-            produtos=None,
-
-            query=query,
-
-            erro=(
-                "Conecte primeiro "
-                "sua conta do Mercado Livre."
-            ),
-
-            mensagem=None
-        )
-
+    # A busca agora funciona mesmo sem estar logado se necessário
     try:
 
         produtos = buscar_ofertas(
@@ -2237,11 +2169,16 @@ def buscar():
 
             erro = None
 
+        conectado = (
+            obter_access_token()
+            is not None
+        )
+
         return render_template_string(
 
             HTML,
 
-            conectado=True,
+            conectado=conectado,
 
             produtos=produtos,
 
@@ -2259,11 +2196,16 @@ def buscar():
             e
         )
 
+        conectado = (
+            obter_access_token()
+            is not None
+        )
+
         return render_template_string(
 
             HTML,
 
-            conectado=True,
+            conectado=conectado,
 
             produtos=None,
 
@@ -2397,11 +2339,16 @@ def gerar():
         affiliate_link
     )
 
+    conectado = (
+        obter_access_token()
+        is not None
+    )
+
     return render_template_string(
 
         HTML,
 
-        conectado=True,
+        conectado=conectado,
 
         produtos=None,
 
