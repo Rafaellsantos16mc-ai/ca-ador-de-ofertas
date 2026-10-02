@@ -63,7 +63,6 @@ ML_API_URL = (
     "https://api.mercadolibre.com"
 )
 
-# Busca de anúncios REAIS
 ML_SEARCH_URL = (
     "https://api.mercadolibre.com/sites/MLB/search"
 )
@@ -274,7 +273,6 @@ def obter_access_token():
         ).timestamp()
     )
 
-    # Renova 5 minutos antes do vencimento
     if (
         tokens["expires_at"]
         > agora + 300
@@ -610,15 +608,14 @@ def health():
 
 
 # ============================================================
-# BUSCAR ANÚNCIOS REAIS (AJUSTADO PARA EVITAR HTTP 403)
+# BUSCAR ANÚNCIOS REAIS
 # ============================================================
 
 def buscar_anuncios(
     query,
     limite=20
 ):
-    # A busca pública (/sites/MLB/search) não precisa do Bearer Token.
-    # Usar headers públicos evita o erro 403 Forbidden do Mercado Livre.
+
     headers = {
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -631,6 +628,7 @@ def buscar_anuncios(
     }
 
     try:
+
         response = requests.get(
             ML_SEARCH_URL,
             headers=headers,
@@ -638,356 +636,46 @@ def buscar_anuncios(
             timeout=30
         )
 
-        print("[BUSCA ANÚNCIOS]", response.status_code)
+        print(
+            "[BUSCA ANÚNCIOS]",
+            response.status_code
+        )
 
         if response.status_code != 200:
-            print("[ERRO API]", response.text[:1500])
+
+            print(
+                "[ERRO API]",
+                response.text[:1500]
+            )
+
             raise Exception(
                 f"Mercado Livre retornou HTTP {response.status_code}: {response.text[:500]}"
             )
 
         data = response.json()
-        resultados = data.get("results", [])
 
-        print("[ANÚNCIOS ENCONTRADOS]", len(resultados))
-        return resultados
-
-    except requests.RequestException as e:
-        print("[ERRO REQUEST]", e)
-        raise Exception(f"Erro de comunicação com Mercado Livre: {e}")
-
-
-# ============================================================
-# OBTER ITEM REAL
-# ============================================================
-
-def obter_item(
-    item_id
-):
-
-    headers = headers_ml()
-
-    if not headers:
-        return None
-
-    url = (
-        f"{ML_API_URL}"
-        f"/items/{item_id}"
-    )
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=30
-        )
-
-        print(
-            "[ITEM]",
-            item_id,
-            response.status_code
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "[ITEM ERRO]",
-                response.text[:500]
-            )
-
-            return None
-
-        return response.json()
-
-    except Exception as e:
-
-        print(
-            "[ERRO ITEM]",
-            item_id,
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# PREÇO DE VENDA ATUAL
-# ============================================================
-
-def obter_sale_price(
-    item_id
-):
-
-    headers = headers_ml()
-
-    if not headers:
-        return None
-
-    url = (
-        f"{ML_API_URL}"
-        f"/items/{item_id}/sale_price"
-    )
-
-    params = {
-
-        "context":
-            "channel_marketplace"
-    }
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=30
-        )
-
-        print(
-            "[SALE PRICE]",
-            item_id,
-            response.status_code
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "[SALE PRICE ERRO]",
-                response.text[:500]
-            )
-
-            return None
-
-        data = response.json()
-
-        amount = data.get(
-            "amount"
-        )
-
-        regular_amount = data.get(
-            "regular_amount"
-        )
-
-        if amount is None:
-
-            return None
-
-        return {
-
-            "preco":
-                amount,
-
-            "preco_original":
-                regular_amount,
-
-            "moeda":
-                data.get(
-                    "currency_id",
-                    "BRL"
-                )
-        }
-
-    except Exception as e:
-
-        print(
-            "[ERRO SALE PRICE]",
-            item_id,
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# PREÇOS
-# ============================================================
-
-def obter_precos(
-    item_id
-):
-
-    headers = headers_ml()
-
-    if not headers:
-        return None
-
-    url = (
-        f"{ML_API_URL}"
-        f"/items/{item_id}/prices"
-    )
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=30
-        )
-
-        print(
-            "[PRICES]",
-            item_id,
-            response.status_code
-        )
-
-        if response.status_code != 200:
-
-            return None
-
-        data = response.json()
-
-        prices = data.get(
-            "prices",
+        resultados = data.get(
+            "results",
             []
         )
 
-        if not prices:
-
-            return None
-
-        preco_standard = None
-
-        promocao = None
-
-        agora = datetime.now(
-            timezone.utc
+        print(
+            "[ANÚNCIOS ENCONTRADOS]",
+            len(resultados)
         )
 
-        for price in prices:
+        return resultados
 
-            tipo = price.get(
-                "type"
-            )
-
-            amount = price.get(
-                "amount"
-            )
-
-            if amount is None:
-                continue
-
-            if tipo == "standard":
-
-                preco_standard = amount
-
-            elif tipo == "promotion":
-
-                conditions = (
-                    price.get(
-                        "conditions",
-                        {}
-                    )
-                )
-
-                inicio = (
-                    conditions.get(
-                        "start_time"
-                    )
-                )
-
-                fim = (
-                    conditions.get(
-                        "end_time"
-                    )
-                )
-
-                ativa = True
-
-                try:
-
-                    if inicio:
-
-                        inicio_dt = datetime.fromisoformat(
-                            inicio.replace("Z", "+00:00")
-                        )
-
-                        if agora < inicio_dt:
-
-                            ativa = False
-
-                    if fim:
-
-                        fim_dt = datetime.fromisoformat(
-                            fim.replace("Z", "+00:00")
-                        )
-
-                        if agora > fim_dt:
-
-                            ativa = False
-
-                except Exception:
-
-                    ativa = True
-
-                if ativa:
-
-                    if (
-                        promocao is None
-                        or amount < promocao.get("amount", 999999999)
-                    ):
-
-                        promocao = price
-
-        # ----------------------------------------------------
-        # PROMOÇÃO ATIVA
-        # ----------------------------------------------------
-
-        if promocao:
-
-            preco = promocao.get(
-                "amount"
-            )
-
-            original = (
-                promocao.get(
-                    "regular_amount"
-                )
-                or preco_standard
-            )
-
-            return {
-
-                "preco":
-                    preco,
-
-                "preco_original":
-                    original,
-
-                "moeda":
-                    promocao.get(
-                        "currency_id",
-                        "BRL"
-                    )
-            }
-
-        # ----------------------------------------------------
-        # PREÇO NORMAL
-        # ----------------------------------------------------
-
-        if preco_standard is not None:
-
-            return {
-
-                "preco":
-                    preco_standard,
-
-                "preco_original":
-                    None,
-
-                "moeda":
-                    "BRL"
-            }
-
-    except Exception as e:
+    except requests.RequestException as e:
 
         print(
-            "[ERRO PRICES]",
-            item_id,
+            "[ERRO REQUEST]",
             e
         )
 
-    return None
+        raise Exception(
+            f"Erro de comunicação com Mercado Livre: {e}"
+        )
 
 
 # ============================================================
@@ -1042,7 +730,7 @@ def calcular_desconto(
 
 
 # ============================================================
-# BUSCAR OFERTAS
+# BUSCAR OFERTAS (OTIMIZADO)
 # ============================================================
 
 def buscar_ofertas(
@@ -1074,10 +762,6 @@ def buscar_ofertas(
             "permalink"
         ) or ""
 
-        # ----------------------------------------------------
-        # PREÇO QUE VEIO NA BUSCA
-        # ----------------------------------------------------
-
         preco = anuncio.get(
             "price"
         )
@@ -1091,112 +775,22 @@ def buscar_ofertas(
             "BRL"
         )
 
-        # ----------------------------------------------------
-        # TENTA PREÇO ATUAL
-        # ----------------------------------------------------
-
-        preco_info = (
-            obter_sale_price(
-                item_id
-            )
+        desconto = calcular_desconto(
+            preco,
+            preco_original
         )
 
-        # ----------------------------------------------------
-        # FALLBACK PARA /prices
-        # ----------------------------------------------------
+        imagem = anuncio.get(
+            "thumbnail"
+        ) or ""
 
-        if not preco_info:
+        catalog_product_id = anuncio.get(
+            "catalog_product_id"
+        ) or ""
 
-            preco_info = (
-                obter_precos(
-                    item_id
-                )
-            )
-
-        # ----------------------------------------------------
-        # ATUALIZA PREÇO
-        # ----------------------------------------------------
-
-        if preco_info:
-
-            if (
-                preco_info.get(
-                    "preco"
-                ) is not None
-            ):
-
-                preco = (
-                    preco_info.get(
-                        "preco"
-                    )
-                )
-
-            if (
-                preco_info.get(
-                    "preco_original"
-                ) is not None
-            ):
-
-                preco_original = (
-                    preco_info.get(
-                        "preco_original"
-                    )
-                )
-
-            moeda = (
-                preco_info.get(
-                    "moeda",
-                    moeda
-                )
-            )
-
-        # ----------------------------------------------------
-        # CALCULA DESCONTO
-        # ----------------------------------------------------
-
-        desconto = (
-            calcular_desconto(
-                preco,
-                preco_original
-            )
-        )
-
-        # ----------------------------------------------------
-        # IMAGEM
-        # ----------------------------------------------------
-
-        imagem = (
-            anuncio.get(
-                "thumbnail"
-            )
-            or ""
-        )
-
-        # ----------------------------------------------------
-        # PRODUTO DE CATÁLOGO
-        # ----------------------------------------------------
-
-        catalog_product_id = (
-            anuncio.get(
-                "catalog_product_id"
-            )
-            or ""
-        )
-
-        # ----------------------------------------------------
-        # CATEGORIA
-        # ----------------------------------------------------
-
-        categoria = (
-            anuncio.get(
-                "category_id"
-            )
-            or ""
-        )
-
-        # ----------------------------------------------------
-        # VENDEDOR
-        # ----------------------------------------------------
+        categoria = anuncio.get(
+            "category_id"
+        ) or ""
 
         seller = anuncio.get(
             "seller",
@@ -1210,10 +804,6 @@ def buscar_ofertas(
         seller_nickname = seller.get(
             "nickname"
         )
-
-        # ----------------------------------------------------
-        # RESULTADO
-        # ----------------------------------------------------
 
         resultados.append({
 
@@ -1254,23 +844,33 @@ def buscar_ofertas(
                 seller_nickname
         })
 
-    # ========================================================
-    # PRIMEIRO OS QUE POSSUEM DESCONTO
-    # ========================================================
+    def parse_preco_safe(val):
+
+        try:
+
+            return (
+                float(val)
+                if val is not None
+                else 999999999.0
+            )
+
+        except (ValueError, TypeError):
+
+            return 999999999.0
 
     resultados.sort(
+
         key=lambda x: (
+
             x.get(
-                "desconto",
-                0
-            ),
-            -float(
-                x.get(
-                    "preco",
-                    999999999
-                ) or 999999999
+                "desconto"
+            ) or 0,
+
+            -parse_preco_safe(
+                x.get("preco")
             )
         ),
+
         reverse=True
     )
 
@@ -1346,6 +946,7 @@ def salvar_oferta(
     ))
 
     conn.commit()
+
     conn.close()
 
 
@@ -2150,7 +1751,6 @@ def buscar():
             "/"
         )
 
-    # A busca agora funciona mesmo sem estar logado se necessário
     try:
 
         produtos = buscar_ofertas(
