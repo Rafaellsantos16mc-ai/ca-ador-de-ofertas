@@ -149,7 +149,6 @@ def init_db():
     """)
 
     conn.commit()
-
     conn.close()
 
 
@@ -211,15 +210,12 @@ def salvar_tokens(data):
     """, (
 
         access_token,
-
         refresh_token,
-
         expires_at
 
     ))
 
     conn.commit()
-
     conn.close()
 
 
@@ -229,7 +225,6 @@ def obter_tokens():
 
     row = conn.execute("""
         SELECT
-
             access_token,
             refresh_token,
             expires_at
@@ -263,7 +258,6 @@ def renovar_access_token():
     tokens = obter_tokens()
 
     if not tokens:
-
         return None
 
     refresh_token = tokens.get(
@@ -271,7 +265,6 @@ def renovar_access_token():
     )
 
     if not refresh_token:
-
         return None
 
     payload = {
@@ -293,13 +286,9 @@ def renovar_access_token():
     try:
 
         response = requests.post(
-
             ML_TOKEN_URL,
-
             data=payload,
-
             timeout=30
-
         )
 
         print(
@@ -341,7 +330,6 @@ def obter_access_token():
     tokens = obter_tokens()
 
     if not tokens:
-
         return None
 
     agora = int(
@@ -350,11 +338,10 @@ def obter_access_token():
         ).timestamp()
     )
 
-    expires_at = int(
+    if (
         tokens["expires_at"]
-    )
-
-    if expires_at > agora + 300:
+        > agora + 300
+    ):
 
         return tokens[
             "access_token"
@@ -372,7 +359,6 @@ def headers_ml():
     token = obter_access_token()
 
     if not token:
-
         return None
 
     return {
@@ -552,13 +538,9 @@ def mercadolivre_callback():
     try:
 
         response = requests.post(
-
             ML_TOKEN_URL,
-
             data=payload,
-
             timeout=30
-
         )
 
         print(
@@ -629,6 +611,338 @@ def callback2():
 
     return redirect(
         "/mercadolivre/callback"
+    )
+
+
+# ============================================================
+# DIAGNÓSTICO
+# ============================================================
+
+def resposta_segura(response):
+
+    resultado = {
+
+        "status_code":
+            response.status_code,
+
+        "ok":
+            response.ok,
+
+        "url":
+            response.url
+
+    }
+
+    try:
+
+        data = response.json()
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            # Nunca mostrar tokens
+            data.pop(
+                "access_token",
+                None
+            )
+
+            data.pop(
+                "refresh_token",
+                None
+            )
+
+            data.pop(
+                "client_secret",
+                None
+            )
+
+        resultado["resposta"] = data
+
+    except Exception:
+
+        resultado["resposta"] = (
+            response.text[:1000]
+        )
+
+    return resultado
+
+
+def executar_teste(
+    nome,
+    url,
+    headers=None,
+    params=None
+):
+
+    resultado = {
+
+        "nome":
+            nome,
+
+        "url":
+            url,
+
+        "status":
+            "ERRO",
+
+        "http":
+            None,
+
+        "detalhes":
+            ""
+
+    }
+
+    try:
+
+        response = requests.get(
+
+            url,
+
+            headers=headers,
+
+            params=params,
+
+            timeout=30
+
+        )
+
+        resultado["http"] = (
+            response.status_code
+        )
+
+        resultado["detalhes"] = (
+            resposta_segura(
+                response
+            )
+        )
+
+        if response.ok:
+
+            resultado["status"] = (
+                "OK"
+            )
+
+        else:
+
+            resultado["status"] = (
+                "FALHOU"
+            )
+
+    except Exception as e:
+
+        resultado["detalhes"] = str(
+            e
+        )
+
+    return resultado
+
+
+@app.route(
+    "/mercadolivre/diagnostico"
+)
+def mercadolivre_diagnostico():
+
+    resultados = []
+
+    token = obter_access_token()
+
+    # ========================================================
+    # TESTE 1 - TOKEN
+    # ========================================================
+
+    if not token:
+
+        resultados.append({
+
+            "nome":
+                "Access Token",
+
+            "status":
+                "FALHOU",
+
+            "http":
+                None,
+
+            "detalhes":
+                "Nenhum Access Token válido foi encontrado."
+
+        })
+
+        return render_template_string(
+
+            DIAGNOSTICO_HTML,
+
+            resultados=resultados,
+
+            conectado=False,
+
+            client_id=ML_CLIENT_ID or "não configurado"
+
+        )
+
+    resultados.append({
+
+        "nome":
+            "Access Token",
+
+        "status":
+            "OK",
+
+        "http":
+            200,
+
+        "detalhes":
+            "Token encontrado e disponível."
+
+    })
+
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {token}",
+
+        "Accept":
+            "application/json",
+
+        "User-Agent":
+            "CacadorDeOfertas/1.0"
+
+    }
+
+
+    # ========================================================
+    # TESTE 2 - USERS/ME
+    # ========================================================
+
+    teste_usuario = executar_teste(
+
+        "Usuário /users/me",
+
+        f"{ML_API_URL}/users/me",
+
+        headers=headers
+
+    )
+
+    resultados.append(
+        teste_usuario
+    )
+
+
+    # ========================================================
+    # TESTE 3 - APLICAÇÃO
+    # ========================================================
+
+    if ML_CLIENT_ID:
+
+        teste_app = executar_teste(
+
+            "Aplicação /applications",
+
+            f"{ML_API_URL}/applications/{ML_CLIENT_ID}",
+
+            headers=headers
+
+        )
+
+        resultados.append(
+            teste_app
+        )
+
+    else:
+
+        resultados.append({
+
+            "nome":
+                "Aplicação /applications",
+
+            "status":
+                "FALHOU",
+
+            "http":
+                None,
+
+            "detalhes":
+                "ML_CLIENT_ID não configurado."
+
+        })
+
+
+    # ========================================================
+    # TESTE 4 - BUSCA MLB
+    # ========================================================
+
+    teste_busca = executar_teste(
+
+        "Busca /sites/MLB/search",
+
+        ML_SEARCH_URL,
+
+        headers=headers,
+
+        params={
+
+            "q":
+                "celular",
+
+            "limit":
+                1
+
+        }
+
+    )
+
+    resultados.append(
+        teste_busca
+    )
+
+
+    # ========================================================
+    # CONCLUSÃO
+    # ========================================================
+
+    falhas = [
+        r
+        for r in resultados
+        if r.get("status") == "FALHOU"
+    ]
+
+    if not falhas:
+
+        conclusao = (
+            "Tudo passou. "
+            "O token, a conta, a aplicação "
+            "e a busca MLB responderam corretamente."
+        )
+
+    else:
+
+        nomes = ", ".join(
+            r["nome"]
+            for r in falhas
+        )
+
+        conclusao = (
+            "Existe problema em: "
+            + nomes
+        )
+
+    return render_template_string(
+
+        DIAGNOSTICO_HTML,
+
+        resultados=resultados,
+
+        conectado=True,
+
+        client_id=ML_CLIENT_ID or "não configurado",
+
+        conclusao=conclusao
+
     )
 
 
@@ -847,7 +1161,7 @@ def calcular_desconto(
 
 
 # ============================================================
-# PRODUTO JÁ PUBLICADO?
+# VERIFICAR REPETIDO
 # ============================================================
 
 def oferta_ja_salva(
@@ -899,19 +1213,15 @@ def buscar_ofertas(
         )
 
         if not item_id:
-
             continue
 
-        # Evita duplicados na própria busca
         if item_id in vistos:
-
             continue
 
         vistos.add(
             item_id
         )
 
-        # Evita ofertas já geradas/publicadas
         if oferta_ja_salva(
             item_id
         ):
@@ -947,18 +1257,21 @@ def buscar_ofertas(
             "original_price"
         )
 
-        moeda = anuncio.get(
-            "currency_id"
-        ) or "BRL"
-
-        desconto = calcular_desconto(
-            preco,
-            preco_original
+        moeda = (
+            anuncio.get(
+                "currency_id"
+            )
+            or
+            "BRL"
         )
 
-        # ====================================================
-        # FILTRO DE DESCONTO
-        # ====================================================
+        desconto = calcular_desconto(
+
+            preco,
+
+            preco_original
+
+        )
 
         if desconto < desconto_minimo:
 
@@ -1046,10 +1359,6 @@ def buscar_ofertas(
                 seller_nickname
 
         })
-
-    # ========================================================
-    # MAIOR DESCONTO PRIMEIRO
-    # ========================================================
 
     resultados.sort(
 
@@ -1157,7 +1466,6 @@ def formatar_preco(
 ):
 
     if valor is None:
-
         return "Consultar"
 
     try:
@@ -1181,8 +1489,20 @@ def formatar_preco(
         )
 
 
+@app.template_filter(
+    "brl"
+)
+def brl_filter(
+    value
+):
+
+    return formatar_preco(
+        value
+    )
+
+
 # ============================================================
-# GERAR MENSAGEM
+# MENSAGEM
 # ============================================================
 
 def gerar_mensagem(
@@ -1255,23 +1575,312 @@ def gerar_mensagem(
 
 
 # ============================================================
-# FILTRO BRL
+# HTML DIAGNÓSTICO
 # ============================================================
 
-@app.template_filter(
-    "brl"
-)
-def brl_filter(
-    value
-):
+DIAGNOSTICO_HTML = """
 
-    return formatar_preco(
-        value
-    )
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width, initial-scale=1.0"
+>
+
+<title>
+Diagnóstico Mercado Livre
+</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+
+    margin: 0;
+
+    padding: 20px;
+
+    background: #f5f5f5;
+
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    color: #222;
+}
+
+.container {
+
+    max-width: 850px;
+
+    margin: auto;
+}
+
+.card {
+
+    background: white;
+
+    padding: 22px;
+
+    border-radius: 16px;
+
+    margin-bottom: 18px;
+
+    box-shadow:
+        0 3px 15px
+        rgba(0,0,0,.07);
+}
+
+h1 {
+
+    margin-top: 0;
+
+    font-size: 30px;
+}
+
+.sub {
+
+    color: #666;
+
+    margin-bottom: 25px;
+}
+
+.teste {
+
+    border: 1px solid #eee;
+
+    border-radius: 14px;
+
+    padding: 18px;
+
+    margin-top: 15px;
+}
+
+.ok {
+
+    border-left:
+        6px solid #2e7d32;
+
+    background:
+        #f1f8f2;
+}
+
+.falhou {
+
+    border-left:
+        6px solid #d32f2f;
+
+    background:
+        #fff5f5;
+}
+
+.status {
+
+    font-weight: bold;
+
+    font-size: 18px;
+
+    margin-bottom: 8px;
+}
+
+.ok .status {
+
+    color: #2e7d32;
+}
+
+.falhou .status {
+
+    color: #d32f2f;
+}
+
+.http {
+
+    font-size: 14px;
+
+    color: #666;
+
+    margin-bottom: 8px;
+}
+
+pre {
+
+    white-space: pre-wrap;
+
+    word-break: break-word;
+
+    background: #f7f7f7;
+
+    padding: 12px;
+
+    border-radius: 9px;
+
+    font-size: 12px;
+
+    overflow-x: auto;
+}
+
+button {
+
+    width: 100%;
+
+    padding: 15px;
+
+    border: none;
+
+    border-radius: 11px;
+
+    background: #3483fa;
+
+    color: white;
+
+    font-size: 17px;
+
+    font-weight: bold;
+}
+
+a {
+
+    text-decoration: none;
+}
+
+.info {
+
+    background: #eef3ff;
+
+    padding: 14px;
+
+    border-radius: 11px;
+
+    color: #334;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="card">
+
+<h1>
+🔎 Diagnóstico Mercado Livre
+</h1>
+
+<div class="sub">
+
+Vamos testar cada parte da conexão
+separadamente.
+
+</div>
+
+<div class="info">
+
+<strong>Client ID:</strong>
+{{ client_id }}
+
+<br><br>
+
+O diagnóstico nunca exibe
+Access Token ou Refresh Token.
+
+</div>
+
+</div>
+
+
+{% for r in resultados %}
+
+<div class="card teste
+{% if r.status == 'OK' %}
+ok
+{% else %}
+falhou
+{% endif %}
+">
+
+<div class="status">
+
+{% if r.status == "OK" %}
+
+🟢
+
+{% else %}
+
+🔴
+
+{% endif %}
+
+{{ r.nome }}
+
+</div>
+
+<div class="http">
+
+HTTP:
+{{ r.http or "—" }}
+
+</div>
+
+<pre>{{ r.detalhes }}</pre>
+
+</div>
+
+{% endfor %}
+
+
+{% if conclusao %}
+
+<div class="card">
+
+<h2>
+📋 Resultado
+</h2>
+
+<p>
+{{ conclusao }}
+</p>
+
+</div>
+
+{% endif %}
+
+
+<div class="card">
+
+<a href="/">
+
+<button>
+🏠 Voltar para o Caçador de Ofertas
+</button>
+
+</a>
+
+</div>
+
+
+</div>
+
+</body>
+
+</html>
+
+"""
 
 
 # ============================================================
-# HTML
+# HTML PRINCIPAL
 # ============================================================
 
 HTML = """
@@ -1289,7 +1898,9 @@ name="viewport"
 content="width=device-width, initial-scale=1.0"
 >
 
-<title>Caçador de Ofertas</title>
+<title>
+Caçador de Ofertas
+</title>
 
 <style>
 
@@ -1400,11 +2011,6 @@ button {
     font-weight: bold;
 
     cursor: pointer;
-}
-
-button:hover {
-
-    opacity: .92;
 }
 
 .produto {
@@ -1571,6 +2177,19 @@ hr {
     margin: 20px 0;
 }
 
+.diagnostico {
+
+    background: #fff8e1;
+
+    color: #6d4c00;
+
+    border-radius: 12px;
+
+    padding: 15px;
+
+    margin-top: 15px;
+}
+
 </style>
 
 </head>
@@ -1579,12 +2198,16 @@ hr {
 
 <div class="container">
 
+
 <h1>
 🛒 Caçador de Ofertas
 </h1>
 
 <div class="sub">
-Mercado Livre → ofertas reais → filtro de desconto → publicação
+
+Mercado Livre → ofertas reais →
+filtro de desconto → publicação
+
 </div>
 
 
@@ -1617,6 +2240,29 @@ Conecte sua conta do Mercado Livre para começar.
 </div>
 
 {% endif %}
+
+
+<div class="card">
+
+<h2>
+🧪 Diagnóstico
+</h2>
+
+<p>
+Se a busca apresentar HTTP 403,
+execute o diagnóstico antes de mexer
+nas configurações.
+</p>
+
+<a href="/mercadolivre/diagnostico">
+
+<button>
+🔎 Testar conexão do Mercado Livre
+</button>
+
+</a>
+
+</div>
 
 
 <div class="card">
@@ -1692,6 +2338,15 @@ placeholder="Desconto mínimo (%)"
 <p>
 {{ erro }}
 </p>
+
+<div class="diagnostico">
+
+Se apareceu HTTP 403,
+abra o diagnóstico acima
+para descobrir qual etapa
+está sendo bloqueada.
+
+</div>
 
 </div>
 
@@ -1887,7 +2542,9 @@ required
 </h2>
 
 <p class="small">
-Copie a mensagem e publique no seu canal do WhatsApp.
+
+Copie a mensagem e publique no seu canal.
+
 </p>
 
 <textarea
