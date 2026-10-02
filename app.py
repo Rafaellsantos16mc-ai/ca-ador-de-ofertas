@@ -939,13 +939,9 @@ def obter_precos(
 
                     if inicio:
 
-                        inicio_dt = (
-                            datetime.fromisoformat(
-                                inicio.replace(
-                                    "Z",
-                                    "+00:00"
-                                )
-                            )
+                        inicio_dt = datetime.fromisoformat(
+                            inicio.replace("Z", "+00:00")
+                        )
 
                         if agora < inicio_dt:
 
@@ -953,13 +949,8 @@ def obter_precos(
 
                     if fim:
 
-                        fim_dt = (
-                            datetime.fromisoformat(
-                                fim.replace(
-                                    "Z",
-                                    "+00:00"
-                                )
-                            )
+                        fim_dt = datetime.fromisoformat(
+                            fim.replace("Z", "+00:00")
                         )
 
                         if agora > fim_dt:
@@ -977,11 +968,7 @@ def obter_precos(
 
                     if (
                         promocao is None
-                        or amount <
-                        promocao.get(
-                            "amount",
-                            999999999
-                        )
+                        or amount < promocao.get("amount", 999999999)
                     ):
 
                         promocao = price
@@ -1505,7 +1492,7 @@ def gerar_mensagem(
 
     mensagem += (
         "\n\n"
-        "⚠️ Preço e disponibilidade "
+        "⚠️️ Preço e disponibilidade "
         "podem mudar a qualquer momento."
     )
 
@@ -2337,7 +2324,7 @@ def gerar():
             preco
         )
 
-    except:
+    except Exception:
 
         preco_float = 0
 
@@ -2354,7 +2341,7 @@ def gerar():
             else None
         )
 
-    except:
+    except Exception:
 
         original_float = None
 
@@ -2364,7 +2351,7 @@ def gerar():
             desconto
         )
 
-    except:
+    except Exception:
 
         desconto_float = 0
 
