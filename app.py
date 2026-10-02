@@ -35,6 +35,27 @@ DB_FILE = os.getenv(
 
 
 # ============================================================
+# CONFIGURAÇÕES
+# ============================================================
+
+SITE_ID = "MLB"
+
+DESCONTO_MINIMO_PADRAO = float(
+    os.getenv(
+        "DESCONTO_MINIMO",
+        "10"
+    )
+)
+
+LIMITE_BUSCA = int(
+    os.getenv(
+        "LIMITE_BUSCA",
+        "30"
+    )
+)
+
+
+# ============================================================
 # MERCADO LIVRE
 # ============================================================
 
@@ -64,45 +85,71 @@ ML_API_URL = (
 )
 
 ML_SEARCH_URL = (
-    "https://api.mercadolibre.com/sites/MLB/search"
+    f"{ML_API_URL}/sites/{SITE_ID}/search"
 )
 
 
 # ============================================================
-# BANCO DE DADOS
+# BANCO
 # ============================================================
 
-def init_db():
+def get_db():
 
     conn = sqlite3.connect(
         DB_FILE
     )
 
+    conn.row_factory = sqlite3.Row
+
+    return conn
+
+
+def init_db():
+
+    conn = get_db()
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tokens (
+
             id INTEGER PRIMARY KEY,
+
             access_token TEXT,
+
             refresh_token TEXT,
+
             expires_at INTEGER
+
         )
     """)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ofertas (
+
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             produto_id TEXT,
-            item_id TEXT,
+
+            item_id TEXT UNIQUE,
+
             titulo TEXT,
+
             preco REAL,
+
             preco_original REAL,
+
             desconto REAL,
+
             link TEXT,
+
             affiliate_link TEXT,
+
             criado_em TEXT
+
         )
     """)
 
     conn.commit()
+
     conn.close()
 
 
@@ -130,15 +177,16 @@ def salvar_tokens(data):
         )
     )
 
-    expires_at = int(
-        datetime.now(
-            timezone.utc
-        ).timestamp()
-    ) + expires_in
-
-    conn = sqlite3.connect(
-        DB_FILE
+    expires_at = (
+        int(
+            datetime.now(
+                timezone.utc
+            ).timestamp()
+        )
+        + expires_in
     )
+
+    conn = get_db()
 
     conn.execute(
         "DELETE FROM tokens"
@@ -146,34 +194,48 @@ def salvar_tokens(data):
 
     conn.execute("""
         INSERT INTO tokens (
+
             id,
             access_token,
             refresh_token,
             expires_at
+
         )
-        VALUES (1, ?, ?, ?)
+
+        VALUES (
+            1,
+            ?,
+            ?,
+            ?
+        )
     """, (
+
         access_token,
+
         refresh_token,
+
         expires_at
+
     ))
 
     conn.commit()
+
     conn.close()
 
 
 def obter_tokens():
 
-    conn = sqlite3.connect(
-        DB_FILE
-    )
+    conn = get_db()
 
     row = conn.execute("""
         SELECT
+
             access_token,
             refresh_token,
             expires_at
+
         FROM tokens
+
         WHERE id = 1
     """).fetchone()
 
@@ -183,9 +245,16 @@ def obter_tokens():
         return None
 
     return {
-        "access_token": row[0],
-        "refresh_token": row[1],
-        "expires_at": row[2]
+
+        "access_token":
+            row["access_token"],
+
+        "refresh_token":
+            row["refresh_token"],
+
+        "expires_at":
+            row["expires_at"]
+
     }
 
 
@@ -194,6 +263,7 @@ def renovar_access_token():
     tokens = obter_tokens()
 
     if not tokens:
+
         return None
 
     refresh_token = tokens.get(
@@ -201,6 +271,7 @@ def renovar_access_token():
     )
 
     if not refresh_token:
+
         return None
 
     payload = {
@@ -216,14 +287,19 @@ def renovar_access_token():
 
         "refresh_token":
             refresh_token
+
     }
 
     try:
 
         response = requests.post(
+
             ML_TOKEN_URL,
+
             data=payload,
+
             timeout=30
+
         )
 
         print(
@@ -265,6 +341,7 @@ def obter_access_token():
     tokens = obter_tokens()
 
     if not tokens:
+
         return None
 
     agora = int(
@@ -273,10 +350,11 @@ def obter_access_token():
         ).timestamp()
     )
 
-    if (
+    expires_at = int(
         tokens["expires_at"]
-        > agora + 300
-    ):
+    )
+
+    if expires_at > agora + 300:
 
         return tokens[
             "access_token"
@@ -294,6 +372,7 @@ def headers_ml():
     token = obter_access_token()
 
     if not token:
+
         return None
 
     return {
@@ -302,7 +381,14 @@ def headers_ml():
             f"Bearer {token}",
 
         "Accept":
-            "application/json"
+            "application/json",
+
+        "Content-Type":
+            "application/json",
+
+        "User-Agent":
+            "CacadorDeOfertas/1.0"
+
     }
 
 
@@ -326,10 +412,8 @@ def mercadolivre_login():
         32
     )
 
-    code_verifier = (
-        secrets.token_urlsafe(
-            64
-        )
+    code_verifier = secrets.token_urlsafe(
+        64
     )
 
     code_challenge = (
@@ -369,6 +453,7 @@ def mercadolivre_login():
 
         "code_challenge_method":
             "S256"
+
     }
 
     url = (
@@ -383,7 +468,7 @@ def mercadolivre_login():
 
 
 # ============================================================
-# CALLBACK OAUTH
+# CALLBACK
 # ============================================================
 
 @app.route(
@@ -461,14 +546,19 @@ def mercadolivre_callback():
 
         "code_verifier":
             code_verifier
+
     }
 
     try:
 
         response = requests.post(
+
             ML_TOKEN_URL,
+
             data=payload,
+
             timeout=30
+
         )
 
         print(
@@ -532,10 +622,6 @@ def mercadolivre_callback():
         )
 
 
-# ============================================================
-# CALLBACK 2
-# ============================================================
-
 @app.route(
     "/mercadolivre/callback2"
 )
@@ -561,8 +647,10 @@ def mercadolivre_status():
     )
 
     return {
+
         "conectado":
             conectado
+
     }
 
 
@@ -608,12 +696,12 @@ def health():
 
 
 # ============================================================
-# BUSCAR ANÚNCIOS REAIS (COM AUTENTICAÇÃO OAUTH)
+# BUSCAR ANÚNCIOS
 # ============================================================
 
 def buscar_anuncios(
     query,
-    limite=20
+    limite=30
 ):
 
     headers = headers_ml()
@@ -621,23 +709,43 @@ def buscar_anuncios(
     if not headers:
 
         headers = {
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+            "Accept":
+                "application/json",
+
+            "User-Agent":
+                "Mozilla/5.0"
+
         }
 
     params = {
-        "q": query,
-        "limit": limite,
-        "offset": 0
+
+        "q":
+            query,
+
+        "limit":
+            min(
+                limite,
+                50
+            ),
+
+        "offset":
+            0
+
     }
 
     try:
 
         response = requests.get(
+
             ML_SEARCH_URL,
+
             headers=headers,
+
             params=params,
+
             timeout=30
+
         )
 
         print(
@@ -653,7 +761,11 @@ def buscar_anuncios(
             )
 
             raise Exception(
-                f"Mercado Livre retornou HTTP {response.status_code}: {response.text[:500]}"
+
+                "Mercado Livre retornou "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+
             )
 
         data = response.json()
@@ -678,12 +790,13 @@ def buscar_anuncios(
         )
 
         raise Exception(
-            f"Erro de comunicação com Mercado Livre: {e}"
+            f"Erro de comunicação com "
+            f"Mercado Livre: {e}"
         )
 
 
 # ============================================================
-# CALCULAR DESCONTO
+# DESCONTO
 # ============================================================
 
 def calcular_desconto(
@@ -734,12 +847,40 @@ def calcular_desconto(
 
 
 # ============================================================
+# PRODUTO JÁ PUBLICADO?
+# ============================================================
+
+def oferta_ja_salva(
+    item_id
+):
+
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT id
+
+        FROM ofertas
+
+        WHERE item_id = ?
+
+        LIMIT 1
+    """, (
+        item_id,
+    )).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+# ============================================================
 # BUSCAR OFERTAS
 # ============================================================
 
 def buscar_ofertas(
     query,
-    limite=20
+    limite=30,
+    desconto_minimo=10
 ):
 
     anuncios = buscar_anuncios(
@@ -749,6 +890,8 @@ def buscar_ofertas(
 
     resultados = []
 
+    vistos = set()
+
     for anuncio in anuncios:
 
         item_id = anuncio.get(
@@ -756,15 +899,45 @@ def buscar_ofertas(
         )
 
         if not item_id:
+
             continue
 
-        titulo = anuncio.get(
-            "title"
-        ) or "Produto"
+        # Evita duplicados na própria busca
+        if item_id in vistos:
 
-        link = anuncio.get(
-            "permalink"
-        ) or ""
+            continue
+
+        vistos.add(
+            item_id
+        )
+
+        # Evita ofertas já geradas/publicadas
+        if oferta_ja_salva(
+            item_id
+        ):
+
+            print(
+                "[REPETIDO]",
+                item_id
+            )
+
+            continue
+
+        titulo = (
+            anuncio.get(
+                "title"
+            )
+            or
+            "Produto"
+        )
+
+        link = (
+            anuncio.get(
+                "permalink"
+            )
+            or
+            ""
+        )
 
         preco = anuncio.get(
             "price"
@@ -775,26 +948,51 @@ def buscar_ofertas(
         )
 
         moeda = anuncio.get(
-            "currency_id",
-            "BRL"
-        )
+            "currency_id"
+        ) or "BRL"
 
         desconto = calcular_desconto(
             preco,
             preco_original
         )
 
-        imagem = anuncio.get(
-            "thumbnail"
-        ) or ""
+        # ====================================================
+        # FILTRO DE DESCONTO
+        # ====================================================
 
-        catalog_product_id = anuncio.get(
-            "catalog_product_id"
-        ) or ""
+        if desconto < desconto_minimo:
 
-        categoria = anuncio.get(
-            "category_id"
-        ) or ""
+            print(
+                "[SEM DESCONTO MÍNIMO]",
+                item_id,
+                desconto
+            )
+
+            continue
+
+        imagem = (
+            anuncio.get(
+                "thumbnail"
+            )
+            or
+            ""
+        )
+
+        catalog_product_id = (
+            anuncio.get(
+                "catalog_product_id"
+            )
+            or
+            ""
+        )
+
+        categoria = (
+            anuncio.get(
+                "category_id"
+            )
+            or
+            ""
+        )
 
         seller = anuncio.get(
             "seller",
@@ -846,40 +1044,27 @@ def buscar_ofertas(
 
             "seller_nickname":
                 seller_nickname
+
         })
 
-    def parse_preco_safe(val):
-
-        try:
-
-            return (
-                float(val)
-                if val is not None
-                else 999999999.0
-            )
-
-        except (ValueError, TypeError):
-
-            return 999999999.0
+    # ========================================================
+    # MAIOR DESCONTO PRIMEIRO
+    # ========================================================
 
     resultados.sort(
 
-        key=lambda x: (
-
+        key=lambda x:
             x.get(
-                "desconto"
-            ) or 0,
-
-            -parse_preco_safe(
-                x.get("preco")
-            )
-        ),
+                "desconto",
+                0
+            ),
 
         reverse=True
+
     )
 
     print(
-        "[OFERTAS REAIS]",
+        "[OFERTAS VÁLIDAS]",
         len(resultados)
     )
 
@@ -895,63 +1080,72 @@ def salvar_oferta(
     affiliate_link
 ):
 
-    conn = sqlite3.connect(
-        DB_FILE
-    )
+    conn = get_db()
 
-    conn.execute("""
-        INSERT INTO ofertas (
-            produto_id,
-            item_id,
-            titulo,
-            preco,
-            preco_original,
-            desconto,
-            link,
+    try:
+
+        conn.execute("""
+            INSERT OR IGNORE INTO ofertas (
+
+                produto_id,
+                item_id,
+                titulo,
+                preco,
+                preco_original,
+                desconto,
+                link,
+                affiliate_link,
+                criado_em
+
+            )
+
+            VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?
+            )
+        """, (
+
+            produto.get(
+                "produto_id"
+            ),
+
+            produto.get(
+                "item_id"
+            ),
+
+            produto.get(
+                "titulo"
+            ),
+
+            produto.get(
+                "preco"
+            ),
+
+            produto.get(
+                "preco_original"
+            ),
+
+            produto.get(
+                "desconto"
+            ),
+
+            produto.get(
+                "link"
+            ),
+
             affiliate_link,
-            criado_em
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
 
-        produto.get(
-            "produto_id"
-        ),
+            datetime.now(
+                timezone.utc
+            ).isoformat()
 
-        produto.get(
-            "item_id"
-        ),
+        ))
 
-        produto.get(
-            "titulo"
-        ),
+        conn.commit()
 
-        produto.get(
-            "preco"
-        ),
+    finally:
 
-        produto.get(
-            "preco_original"
-        ),
-
-        produto.get(
-            "desconto"
-        ),
-
-        produto.get(
-            "link"
-        ),
-
-        affiliate_link,
-
-        datetime.now(
-            timezone.utc
-        ).isoformat()
-    ))
-
-    conn.commit()
-
-    conn.close()
+        conn.close()
 
 
 # ============================================================
@@ -1029,7 +1223,7 @@ def gerar_mensagem(
         )
 
         mensagem += (
-            f"💰 Desconto: "
+            "💰 Desconto: "
             f"{desconto:.0f}%\n\n"
         )
 
@@ -1095,9 +1289,7 @@ name="viewport"
 content="width=device-width, initial-scale=1.0"
 >
 
-<title>
-Caçador de Ofertas
-</title>
+<title>Caçador de Ofertas</title>
 
 <style>
 
@@ -1321,11 +1513,6 @@ button:hover {
     text-decoration: none;
 }
 
-.link:hover {
-
-    text-decoration: underline;
-}
-
 textarea {
 
     width: 100%;
@@ -1392,13 +1579,12 @@ hr {
 
 <div class="container">
 
-
 <h1>
 🛒 Caçador de Ofertas
 </h1>
 
 <div class="sub">
-Mercado Livre → anúncios reais → preços → descontos → publicação
+Mercado Livre → ofertas reais → filtro de desconto → publicação
 </div>
 
 
@@ -1441,9 +1627,23 @@ Conecte sua conta do Mercado Livre para começar.
 
 <div class="info">
 
-Agora a busca procura diretamente
-por <strong>anúncios reais</strong>
-do Mercado Livre.
+<strong>
+Filtro atual:
+</strong>
+
+desconto mínimo de
+<strong>
+{{ desconto_minimo }}%
+</strong>
+
+<br>
+
+<strong>
+Limite:
+</strong>
+
+{{ limite_busca }}
+anúncios por busca.
 
 </div>
 
@@ -1460,6 +1660,16 @@ name="q"
 placeholder="Ex: Air Fryer, celular, TV, tênis..."
 value="{{ query or '' }}"
 required
+>
+
+<input
+type="number"
+name="desconto"
+min="0"
+max="100"
+step="1"
+value="{{ desconto_minimo }}"
+placeholder="Desconto mínimo (%)"
 >
 
 <button type="submit">
@@ -1502,7 +1712,7 @@ Encontramos
 <strong>
 {{ produtos|length }}
 </strong>
-anúncio(s) real(is).
+oferta(s) válida(s).
 
 </p>
 
@@ -1511,25 +1721,17 @@ anúncio(s) real(is).
 
 <div class="produto">
 
-
 <span class="badge-oferta">
-🔥 ANÚNCIO REAL
+🔥 OFERTA
 </span>
-
 
 <span class="badge">
 ID: {{ p.item_id }}
 </span>
 
-
-{% if p.desconto > 0 %}
-
 <span class="badge-oferta">
 {{ "%.0f"|format(p.desconto) }}% OFF
 </span>
-
-{% endif %}
-
 
 <h3>
 {{ p.titulo }}
@@ -1667,7 +1869,6 @@ required
 
 </form>
 
-
 </div>
 
 {% endfor %}
@@ -1686,7 +1887,7 @@ required
 </h2>
 
 <p class="small">
-Sua mensagem está pronta para copiar.
+Copie a mensagem e publique no seu canal do WhatsApp.
 </p>
 
 <textarea
@@ -1731,7 +1932,14 @@ def home():
 
         erro=None,
 
-        mensagem=None
+        mensagem=None,
+
+        desconto_minimo=
+            DESCONTO_MINIMO_PADRAO,
+
+        limite_busca=
+            LIMITE_BUSCA
+
     )
 
 
@@ -1757,16 +1965,52 @@ def buscar():
 
     try:
 
+        desconto_param = request.args.get(
+            "desconto",
+            str(
+                DESCONTO_MINIMO_PADRAO
+            )
+        )
+
+        try:
+
+            desconto_minimo = float(
+                desconto_param
+            )
+
+        except Exception:
+
+            desconto_minimo = (
+                DESCONTO_MINIMO_PADRAO
+            )
+
+        desconto_minimo = max(
+            0,
+            min(
+                desconto_minimo,
+                100
+            )
+        )
+
         produtos = buscar_ofertas(
+
             query,
-            limite=20
+
+            limite=LIMITE_BUSCA,
+
+            desconto_minimo=
+                desconto_minimo
+
         )
 
         if not produtos:
 
             erro = (
-                "Nenhum anúncio foi "
-                "encontrado para essa busca."
+                "Nenhuma oferta válida "
+                "foi encontrada com o "
+                f"filtro de {desconto_minimo:.0f}% "
+                "ou todos os anúncios "
+                "já foram processados."
             )
 
         else:
@@ -1790,7 +2034,14 @@ def buscar():
 
             erro=erro,
 
-            mensagem=None
+            mensagem=None,
+
+            desconto_minimo=
+                desconto_minimo,
+
+            limite_busca=
+                LIMITE_BUSCA
+
         )
 
     except Exception as e:
@@ -1817,7 +2068,14 @@ def buscar():
 
             erro=str(e),
 
-            mensagem=None
+            mensagem=None,
+
+            desconto_minimo=
+                DESCONTO_MINIMO_PADRAO,
+
+            limite_busca=
+                LIMITE_BUSCA
+
         )
 
 
@@ -1861,8 +2119,16 @@ def gerar():
     )
 
     affiliate_link = request.form.get(
-        "affiliate_link"
-    )
+        "affiliate_link",
+        ""
+    ).strip()
+
+    if not affiliate_link:
+
+        return (
+            "Link de afiliado obrigatório.",
+            400
+        )
 
     try:
 
@@ -1885,6 +2151,7 @@ def gerar():
             if preco_original
 
             else None
+
         )
 
     except Exception:
@@ -1912,6 +2179,7 @@ def gerar():
         desconto_float,
 
         affiliate_link
+
     )
 
     salvar_oferta(
@@ -1938,9 +2206,11 @@ def gerar():
 
             "link":
                 link
+
         },
 
         affiliate_link
+
     )
 
     conectado = (
@@ -1960,7 +2230,14 @@ def gerar():
 
         erro=None,
 
-        mensagem=mensagem
+        mensagem=mensagem,
+
+        desconto_minimo=
+            DESCONTO_MINIMO_PADRAO,
+
+        limite_busca=
+            LIMITE_BUSCA
+
     )
 
 
@@ -1982,4 +2259,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
 
         port=port
+
     )
