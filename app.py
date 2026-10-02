@@ -4,7 +4,7 @@ import secrets
 import hashlib
 import base64
 from datetime import datetime, timezone
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode
 
 import requests
 
@@ -24,9 +24,11 @@ from flask import (
 
 app = Flask(__name__)
 
-app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+app.secret_key = os.getenv(
+    "SECRET_KEY",
+    secrets.token_hex(32)
+)
 
-# Permite usar HTTPS corretamente no Railway
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -38,24 +40,46 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 DB_FILE = os.getenv("DB_FILE", "ofertas.db")
 
-ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
-ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+ML_CLIENT_ID = os.getenv(
+    "ML_CLIENT_ID",
+    ""
+).strip()
+
+ML_CLIENT_SECRET = os.getenv(
+    "ML_CLIENT_SECRET",
+    ""
+).strip()
 
 ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
-    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback",
+    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
 
-ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization"
-ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 
-ML_SEARCH_URL = "https://api.mercadolibre.com/sites/MLB/search"
+# OAuth
+ML_AUTH_URL = (
+    "https://auth.mercadolivre.com.br/authorization"
+)
+
+ML_TOKEN_URL = (
+    "https://api.mercadolibre.com/oauth/token"
+)
+
+
+# NOVA BUSCA DE PRODUTOS
+ML_PRODUCTS_SEARCH_URL = (
+    "https://api.mercadolibre.com/products/search"
+)
+
+ML_PRODUCT_URL = (
+    "https://api.mercadolibre.com/products"
+)
 
 SITE_ID = "MLB"
 
 
 # ============================================================
-# BANCO DE DADOS
+# BANCO
 # ============================================================
 
 def get_db():
@@ -65,6 +89,7 @@ def get_db():
 
 
 def init_db():
+
     conn = get_db()
 
     conn.execute(
@@ -102,14 +127,18 @@ def init_db():
 
 
 # ============================================================
-# FUNÇÕES AUXILIARES
+# UTILITÁRIOS
 # ============================================================
 
 def agora_timestamp():
-    return int(datetime.now(timezone.utc).timestamp())
+
+    return int(
+        datetime.now(timezone.utc).timestamp()
+    )
 
 
 def moeda(valor):
+
     if valor is None:
         return "R$ 0,00"
 
@@ -119,34 +148,27 @@ def moeda(valor):
         valor = 0
 
     texto = f"{valor:,.2f}"
-    texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    texto = (
+        texto
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
 
     return f"R$ {texto}"
 
 
 def limpar_titulo(titulo):
+
     if not titulo:
         return ""
 
-    titulo = " ".join(str(titulo).split())
+    titulo = " ".join(
+        str(titulo).split()
+    )
 
-    return titulo[:150]
-
-
-def calcular_desconto(preco, preco_original):
-    try:
-        preco = float(preco or 0)
-        preco_original = float(preco_original or 0)
-
-        if preco_original <= 0 or preco >= preco_original:
-            return 0
-
-        desconto = ((preco_original - preco) / preco_original) * 100
-
-        return int(round(desconto))
-
-    except Exception:
-        return 0
+    return titulo[:180]
 
 
 # ============================================================
@@ -154,17 +176,11 @@ def calcular_desconto(preco, preco_original):
 # ============================================================
 
 def gerar_code_verifier():
-    """
-    Gera um code_verifier seguro para PKCE.
-    """
 
     return secrets.token_urlsafe(64)
 
 
 def gerar_code_challenge(code_verifier):
-    """
-    SHA256 + Base64 URL-safe sem "=".
-    """
 
     digest = hashlib.sha256(
         code_verifier.encode("utf-8")
@@ -184,11 +200,15 @@ def salvar_token(
     refresh_token,
     expires_in,
     user_id=None,
-    scope=None,
+    scope=None
 ):
+
     conn = get_db()
 
-    expires_at = agora_timestamp() + int(expires_in or 21600)
+    expires_at = (
+        agora_timestamp()
+        + int(expires_in or 21600)
+    )
 
     conn.execute(
         """
@@ -203,7 +223,9 @@ def salvar_token(
             atualizado_em
         )
         VALUES (1, ?, ?, ?, ?, ?, ?)
+
         ON CONFLICT(id) DO UPDATE SET
+
             access_token = excluded.access_token,
             refresh_token = excluded.refresh_token,
             expires_at = excluded.expires_at,
@@ -217,8 +239,10 @@ def salvar_token(
             expires_at,
             str(user_id) if user_id else None,
             scope,
-            datetime.now(timezone.utc).isoformat(),
-        ),
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+        )
     )
 
     conn.commit()
@@ -226,6 +250,7 @@ def salvar_token(
 
 
 def obter_token_db():
+
     conn = get_db()
 
     row = conn.execute(
@@ -245,6 +270,7 @@ def obter_token_db():
 
 
 def apagar_token():
+
     conn = get_db()
 
     conn.execute(
@@ -258,14 +284,17 @@ def apagar_token():
     conn.close()
 
 
-def renovar_access_token(refresh_token):
-    """
-    Usa o refresh token atual para obter
-    um novo access token e um NOVO refresh token.
-    """
+# ============================================================
+# REFRESH TOKEN
+# ============================================================
 
-    if not ML_CLIENT_ID or not ML_CLIENT_SECRET:
-        return False, "Credenciais do Mercado Livre não configuradas."
+def renovar_access_token(refresh_token):
+
+    if not ML_CLIENT_ID:
+        return False, "ML_CLIENT_ID não configurado."
+
+    if not ML_CLIENT_SECRET:
+        return False, "ML_CLIENT_SECRET não configurado."
 
     if not refresh_token:
         return False, "Refresh token não encontrado."
@@ -282,75 +311,111 @@ def renovar_access_token(refresh_token):
             },
             headers={
                 "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type":
+                    "application/x-www-form-urlencoded",
             },
             timeout=30,
         )
 
-        if resposta.status_code != 200:
+    except Exception as e:
 
-            try:
-                erro = resposta.json()
-            except Exception:
-                erro = resposta.text
+        return False, str(e)
 
-            return False, f"Erro ao renovar token: {erro}"
+    if resposta.status_code != 200:
 
-        dados = resposta.json()
+        try:
+            erro = resposta.json()
+        except Exception:
+            erro = resposta.text
 
-        novo_access_token = dados.get("access_token")
-        novo_refresh_token = dados.get("refresh_token")
-        expires_in = dados.get("expires_in", 21600)
-
-        if not novo_access_token or not novo_refresh_token:
-            return False, "Mercado Livre não retornou os novos tokens."
-
-        salvar_token(
-            access_token=novo_access_token,
-            refresh_token=novo_refresh_token,
-            expires_in=expires_in,
-            user_id=dados.get("user_id"),
-            scope=dados.get("scope"),
+        return False, (
+            f"HTTP {resposta.status_code}: {erro}"
         )
 
-        return True, novo_access_token
+    dados = resposta.json()
 
-    except Exception as e:
-        return False, f"Erro de conexão ao renovar token: {e}"
+    novo_access_token = dados.get(
+        "access_token"
+    )
+
+    novo_refresh_token = dados.get(
+        "refresh_token"
+    )
+
+    if not novo_access_token:
+        return False, (
+            "Mercado Livre não retornou "
+            "um novo access token."
+        )
+
+    if not novo_refresh_token:
+        return False, (
+            "Mercado Livre não retornou "
+            "um novo refresh token."
+        )
+
+    salvar_token(
+        access_token=novo_access_token,
+        refresh_token=novo_refresh_token,
+        expires_in=dados.get(
+            "expires_in",
+            21600
+        ),
+        user_id=dados.get("user_id"),
+        scope=dados.get("scope"),
+    )
+
+    return True, novo_access_token
 
 
 def obter_access_token():
-    """
-    Retorna um access token válido.
-
-    Se estiver próximo de expirar, renova automaticamente.
-    """
 
     token = obter_token_db()
 
     if not token:
         return None
 
-    access_token = token.get("access_token")
-    refresh_token = token.get("refresh_token")
-    expires_at = int(token.get("expires_at") or 0)
+    access_token = token.get(
+        "access_token"
+    )
+
+    refresh_token = token.get(
+        "refresh_token"
+    )
+
+    expires_at = int(
+        token.get("expires_at") or 0
+    )
 
     agora = agora_timestamp()
 
-    # Renova 2 minutos antes de expirar
-    if access_token and expires_at > agora + 120:
+    # Ainda válido
+    if (
+        access_token
+        and expires_at > agora + 120
+    ):
         return access_token
 
+    # Precisa renovar
     if not refresh_token:
+
         apagar_token()
+
         return None
 
-    sucesso, resultado = renovar_access_token(refresh_token)
+    sucesso, resultado = (
+        renovar_access_token(
+            refresh_token
+        )
+    )
 
     if sucesso:
         return resultado
 
-    print("[ERRO REFRESH]", resultado)
+    print(
+        "[ERRO REFRESH]",
+        resultado
+    )
 
     apagar_token()
 
@@ -358,161 +423,168 @@ def obter_access_token():
 
 
 # ============================================================
-# MERCADO LIVRE - OAUTH
+# OAUTH - LOGIN
 # ============================================================
 
 @app.route("/mercadolivre/login")
 def mercadolivre_login():
 
     if not ML_CLIENT_ID:
+
         return """
         <h2>ML_CLIENT_ID não configurado</h2>
-        <p>Adicione a variável no Railway.</p>
         """, 500
 
-    if not ML_REDIRECT_URI:
-        return """
-        <h2>ML_REDIRECT_URI não configurado</h2>
-        """, 500
-
-    # State para proteger o fluxo OAuth
     state = secrets.token_urlsafe(32)
 
-    # PKCE
-    code_verifier = gerar_code_verifier()
-    code_challenge = gerar_code_challenge(code_verifier)
+    code_verifier = (
+        gerar_code_verifier()
+    )
+
+    code_challenge = (
+        gerar_code_challenge(
+            code_verifier
+        )
+    )
 
     session["ml_oauth_state"] = state
-    session["ml_code_verifier"] = code_verifier
+
+    session["ml_code_verifier"] = (
+        code_verifier
+    )
 
     parametros = {
+
         "response_type": "code",
-        "client_id": ML_CLIENT_ID,
-        "redirect_uri": ML_REDIRECT_URI,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "scope": "offline_access read",
+
+        "client_id":
+            ML_CLIENT_ID,
+
+        "redirect_uri":
+            ML_REDIRECT_URI,
+
+        "state":
+            state,
+
+        "code_challenge":
+            code_challenge,
+
+        "code_challenge_method":
+            "S256",
     }
 
-    url = ML_AUTH_URL + "?" + urlencode(parametros)
+    url = (
+        ML_AUTH_URL
+        + "?"
+        + urlencode(parametros)
+    )
 
     return redirect(url)
 
 
+# ============================================================
+# OAUTH - CALLBACK
+# ============================================================
+
 @app.route("/mercadolivre/callback")
 def mercadolivre_callback():
 
-    # Verifica se o Mercado Livre retornou erro
-    erro = request.args.get("error")
+    erro = request.args.get(
+        "error"
+    )
 
     if erro:
 
         descricao = request.args.get(
             "error_description",
-            "Autorização recusada.",
+            "Autorização recusada."
         )
 
-        return render_template_string(
-            """
-            <!doctype html>
-            <html lang="pt-br">
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport"
-                      content="width=device-width, initial-scale=1">
-                <title>Erro Mercado Livre</title>
-                <style>
-                    body {
-                        font-family: Arial;
-                        padding: 30px;
-                        background: #f5f5f5;
-                    }
+        return f"""
+        <h2>Erro na autorização</h2>
 
-                    .box {
-                        max-width: 700px;
-                        margin: auto;
-                        background: white;
-                        padding: 25px;
-                        border-radius: 15px;
-                    }
+        <p>
+        <strong>{erro}</strong>
+        </p>
 
-                    a {
-                        display: inline-block;
-                        margin-top: 20px;
-                        background: #3483fa;
-                        color: white;
-                        padding: 12px 18px;
-                        border-radius: 8px;
-                        text-decoration: none;
-                    }
-                </style>
-            </head>
+        <p>
+        {descricao}
+        </p>
+        """, 400
 
-            <body>
-                <div class="box">
+    code = request.args.get(
+        "code"
+    )
 
-                    <h2>Autorização não concluída</h2>
+    state = request.args.get(
+        "state"
+    )
 
-                    <p><strong>Erro:</strong> {{ erro }}</p>
+    state_salvo = session.get(
+        "ml_oauth_state"
+    )
 
-                    <p>{{ descricao }}</p>
+    code_verifier = session.get(
+        "ml_code_verifier"
+    )
 
-                    <a href="/">
-                        Voltar
-                    </a>
-
-                </div>
-            </body>
-            </html>
-            """,
-            erro=erro,
-            descricao=descricao,
-        ), 400
-
-    code = request.args.get("code")
-    state = request.args.get("state")
-
-    state_salvo = session.get("ml_oauth_state")
-    code_verifier = session.get("ml_code_verifier")
-
-    # Validação do state
-    if not state or not state_salvo or state != state_salvo:
+    if (
+        not state
+        or not state_salvo
+        or state != state_salvo
+    ):
 
         return """
         <h2>Erro de segurança</h2>
-        <p>O state do OAuth não corresponde à solicitação iniciada.</p>
+
+        <p>
+        O state do OAuth não corresponde
+        à solicitação iniciada.
+        </p>
         """, 400
 
     if not code:
 
         return """
-        <h2>Código de autorização não recebido.</h2>
+        <h2>Código não recebido.</h2>
         """, 400
 
     if not code_verifier:
 
         return """
         <h2>Code verifier não encontrado.</h2>
-        <p>Inicie a conexão novamente.</p>
         """, 400
 
-    # Troca authorization code por tokens
     try:
 
         resposta = requests.post(
             ML_TOKEN_URL,
             data={
-                "grant_type": "authorization_code",
-                "client_id": ML_CLIENT_ID,
-                "client_secret": ML_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": ML_REDIRECT_URI,
-                "code_verifier": code_verifier,
+
+                "grant_type":
+                    "authorization_code",
+
+                "client_id":
+                    ML_CLIENT_ID,
+
+                "client_secret":
+                    ML_CLIENT_SECRET,
+
+                "code":
+                    code,
+
+                "redirect_uri":
+                    ML_REDIRECT_URI,
+
+                "code_verifier":
+                    code_verifier,
             },
             headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept":
+                    "application/json",
+
+                "Content-Type":
+                    "application/x-www-form-urlencoded",
             },
             timeout=30,
         )
@@ -531,105 +603,75 @@ def mercadolivre_callback():
         except Exception:
             erro_json = resposta.text
 
-        print("[ERRO OAUTH]", erro_json)
+        return f"""
+        <h2>Erro OAuth</h2>
 
-        return render_template_string(
-            """
-            <!doctype html>
-            <html lang="pt-br">
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport"
-                      content="width=device-width, initial-scale=1">
-
-                <title>Erro OAuth</title>
-
-                <style>
-                    body {
-                        font-family: Arial;
-                        background: #f5f5f5;
-                        padding: 30px;
-                    }
-
-                    .box {
-                        max-width: 750px;
-                        margin: auto;
-                        background: white;
-                        padding: 25px;
-                        border-radius: 15px;
-                    }
-
-                    pre {
-                        white-space: pre-wrap;
-                        word-break: break-word;
-                        background: #eee;
-                        padding: 15px;
-                        border-radius: 8px;
-                    }
-
-                    a {
-                        display: inline-block;
-                        margin-top: 20px;
-                        background: #3483fa;
-                        color: white;
-                        padding: 12px 18px;
-                        border-radius: 8px;
-                        text-decoration: none;
-                    }
-                </style>
-            </head>
-
-            <body>
-
-                <div class="box">
-
-                    <h2>❌ Erro ao conectar ao Mercado Livre</h2>
-
-                    <pre>{{ erro }}</pre>
-
-                    <a href="/">
-                        Voltar
-                    </a>
-
-                </div>
-
-            </body>
-            </html>
-            """,
-            erro=erro_json,
-        ), 400
+        <pre>
+        {erro_json}
+        </pre>
+        """, 400
 
     dados = resposta.json()
 
-    access_token = dados.get("access_token")
-    refresh_token = dados.get("refresh_token")
+    access_token = dados.get(
+        "access_token"
+    )
+
+    refresh_token = dados.get(
+        "refresh_token"
+    )
 
     if not access_token:
 
         return """
-        <h2>Mercado Livre não retornou o Access Token.</h2>
+        <h2>
+        Mercado Livre não retornou
+        o Access Token.
+        </h2>
         """, 500
 
     if not refresh_token:
 
         return """
-        <h2>Mercado Livre não retornou o Refresh Token.</h2>
-        <p>Verifique se o fluxo de Refresh Token está habilitado na aplicação.</p>
+        <h2>
+        Mercado Livre não retornou
+        o Refresh Token.
+        </h2>
+
+        <p>
+        Verifique o fluxo Refresh Token
+        na configuração da aplicação.
+        </p>
         """, 500
 
     salvar_token(
         access_token=access_token,
         refresh_token=refresh_token,
-        expires_in=dados.get("expires_in", 21600),
-        user_id=dados.get("user_id"),
-        scope=dados.get("scope"),
+        expires_in=dados.get(
+            "expires_in",
+            21600
+        ),
+        user_id=dados.get(
+            "user_id"
+        ),
+        scope=dados.get(
+            "scope"
+        ),
     )
 
-    # Limpa dados temporários do OAuth
-    session.pop("ml_oauth_state", None)
-    session.pop("ml_code_verifier", None)
+    session.pop(
+        "ml_oauth_state",
+        None
+    )
 
-    return redirect(url_for("index"))
+    session.pop(
+        "ml_code_verifier",
+        None
+    )
+
+    return redirect(
+        url_for("index")
+    )
 
 
 # ============================================================
@@ -637,44 +679,54 @@ def mercadolivre_callback():
 # ============================================================
 
 @app.route("/mercadolivre/callback2")
-def mercadolivre_callback2():
+def callback2():
 
-    """
-    Segunda URI cadastrada na aplicação.
-
-    Redireciona para o callback principal.
-    """
-
-    parametros = request.query_string.decode("utf-8")
+    parametros = (
+        request.query_string
+        .decode("utf-8")
+    )
 
     if parametros:
+
         return redirect(
-            url_for("mercadolivre_callback")
+            url_for(
+                "mercadolivre_callback"
+            )
             + "?"
             + parametros
         )
 
-    return redirect(url_for("mercadolivre_login"))
+    return redirect(
+        url_for(
+            "mercadolivre_login"
+        )
+    )
 
 
 # ============================================================
 # NOTIFICAÇÕES
 # ============================================================
 
-@app.route("/mercadolivre/notificacoes", methods=["GET", "POST"])
+@app.route(
+    "/mercadolivre/notificacoes",
+    methods=["GET", "POST"]
+)
 def mercadolivre_notificacoes():
 
-    print("========================================")
-    print("[MERCADO LIVRE] NOTIFICAÇÃO RECEBIDA")
-    print("Método:", request.method)
-    print("Dados:", request.get_json(silent=True))
-    print("========================================")
+    dados = request.get_json(
+        silent=True
+    )
+
+    print(
+        "[ML NOTIFICACAO]",
+        dados
+    )
 
     return "OK", 200
 
 
 # ============================================================
-# TESTAR CONEXÃO COM MERCADO LIVRE
+# STATUS
 # ============================================================
 
 @app.route("/mercadolivre/status")
@@ -684,82 +736,23 @@ def mercadolivre_status():
 
     if not token:
 
-        return render_template_string(
-            """
-            <!doctype html>
-            <html lang="pt-br">
+        return """
+        <h2>
+        🔴 Mercado Livre desconectado
+        </h2>
 
-            <head>
-                <meta charset="utf-8">
+        <a href="/mercadolivre/login">
+        Conectar Mercado Livre
+        </a>
+        """, 401
 
-                <meta name="viewport"
-                      content="width=device-width, initial-scale=1">
-
-                <title>Mercado Livre</title>
-
-                <style>
-
-                    body {
-                        font-family: Arial;
-                        background: #f5f5f5;
-                        padding: 25px;
-                    }
-
-                    .box {
-                        max-width: 650px;
-                        margin: auto;
-                        background: white;
-                        padding: 25px;
-                        border-radius: 15px;
-                    }
-
-                    a {
-                        display: inline-block;
-                        background: #3483fa;
-                        color: white;
-                        padding: 12px 18px;
-                        border-radius: 8px;
-                        text-decoration: none;
-                        margin-top: 15px;
-                    }
-
-                </style>
-            </head>
-
-            <body>
-
-                <div class="box">
-
-                    <h2>🔴 Mercado Livre desconectado</h2>
-
-                    <p>
-                        O aplicativo ainda não possui um Access Token válido.
-                    </p>
-
-                    <a href="/mercadolivre/login">
-                        Conectar Mercado Livre
-                    </a>
-
-                    <br>
-
-                    <a href="/">
-                        Voltar
-                    </a>
-
-                </div>
-
-            </body>
-            </html>
-            """
-        )
-
-    # Testa o token
     try:
 
         resposta = requests.get(
             "https://api.mercadolibre.com/users/me",
             headers={
-                "Authorization": f"Bearer {token}"
+                "Authorization":
+                    f"Bearer {token}"
             },
             timeout=30,
         )
@@ -767,138 +760,109 @@ def mercadolivre_status():
     except Exception as e:
 
         return f"""
-        <h2>Erro de conexão</h2>
+        <h2>Erro</h2>
         <p>{e}</p>
         """, 500
 
     if resposta.status_code != 200:
 
-        return render_template_string(
-            """
-            <h2>❌ Token não funcionou</h2>
+        return f"""
+        <h2>
+        ❌ Token recusado
+        </h2>
 
-            <pre>{{ erro }}</pre>
+        <pre>
+        {resposta.text}
+        </pre>
 
-            <a href="/mercadolivre/login">
-                Conectar novamente
-            </a>
-            """,
-            erro=resposta.text,
-        ), 400
+        <a href="/mercadolivre/login">
+        Conectar novamente
+        </a>
+        """, resposta.status_code
 
     dados = resposta.json()
 
     return render_template_string(
         """
-        <!doctype html>
-        <html lang="pt-br">
+        <h2>
+        🟢 Mercado Livre conectado
+        </h2>
 
-        <head>
-            <meta charset="utf-8">
+        <p>
+        <strong>ID:</strong>
+        {{ dados.get("id") }}
+        </p>
 
-            <meta name="viewport"
-                  content="width=device-width, initial-scale=1">
+        <p>
+        <strong>Nickname:</strong>
+        {{ dados.get("nickname") }}
+        </p>
 
-            <title>Status Mercado Livre</title>
-
-            <style>
-
-                body {
-                    font-family: Arial;
-                    background: #f5f5f5;
-                    padding: 25px;
-                }
-
-                .box {
-                    max-width: 650px;
-                    margin: auto;
-                    background: white;
-                    padding: 25px;
-                    border-radius: 15px;
-                }
-
-                .ok {
-                    color: #16883d;
-                    font-weight: bold;
-                    font-size: 20px;
-                }
-
-                a {
-                    display: inline-block;
-                    background: #3483fa;
-                    color: white;
-                    padding: 12px 18px;
-                    border-radius: 8px;
-                    text-decoration: none;
-                    margin-top: 15px;
-                }
-
-            </style>
-        </head>
-
-        <body>
-
-            <div class="box">
-
-                <div class="ok">
-                    🟢 Mercado Livre conectado
-                </div>
-
-                <hr>
-
-                <p>
-                    <strong>ID do usuário:</strong>
-                    {{ dados.get("id") }}
-                </p>
-
-                <p>
-                    <strong>Nickname:</strong>
-                    {{ dados.get("nickname") }}
-                </p>
-
-                <a href="/">
-                    Voltar para ofertas
-                </a>
-
-            </div>
-
-        </body>
-        </html>
+        <a href="/">
+        Voltar
+        </a>
         """,
-        dados=dados,
+        dados=dados
     )
 
 
 # ============================================================
-# BUSCAR PRODUTOS
+# BUSCA DE PRODUTOS - NOVA API
 # ============================================================
 
-def buscar_produtos(query, limit=30):
+def buscar_produtos(
+    query,
+    limit=20
+):
 
-    access_token = obter_access_token()
+    access_token = (
+        obter_access_token()
+    )
 
     if not access_token:
 
         return {
-            "erro": "O Mercado Livre ainda não está conectado.",
-            "produtos": [],
+            "erro":
+                "Mercado Livre não conectado.",
+
+            "produtos": []
         }
 
+    parametros = {
+
+        "status":
+            "active",
+
+        "site_id":
+            SITE_ID,
+
+        "q":
+            query,
+
+        "limit":
+            limit,
+
+        "offset":
+            0,
+    }
+
     headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
-        "User-Agent": "CacadorDeOfertas/1.0",
+
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "Accept":
+            "application/json",
+
+        "User-Agent":
+            "CacadorDeOfertas/1.0",
     }
 
     try:
 
         resposta = requests.get(
-            ML_SEARCH_URL,
-            params={
-                "q": query,
-                "limit": limit,
-                "offset": 0,
-            },
+            ML_PRODUCTS_SEARCH_URL,
+            params=parametros,
             headers=headers,
             timeout=30,
         )
@@ -906,8 +870,10 @@ def buscar_produtos(query, limit=30):
     except Exception as e:
 
         return {
-            "erro": f"Erro de conexão: {e}",
-            "produtos": [],
+            "erro":
+                f"Erro de conexão: {e}",
+
+            "produtos": []
         }
 
     if resposta.status_code == 401:
@@ -915,19 +881,32 @@ def buscar_produtos(query, limit=30):
         apagar_token()
 
         return {
-            "erro": "O token do Mercado Livre expirou. Conecte novamente.",
-            "produtos": [],
+            "erro":
+                "Token expirado ou inválido. "
+                "Conecte o Mercado Livre novamente.",
+
+            "produtos": []
         }
 
     if resposta.status_code == 403:
 
+        try:
+            erro = resposta.json()
+        except Exception:
+            erro = resposta.text
+
+        print(
+            "[ML 403]",
+            erro
+        )
+
         return {
-            "erro": (
-                "Mercado Livre recusou a consulta (403). "
-                "Verifique a autorização da aplicação, permissões "
-                "e se a conta autorizada é a principal."
-            ),
-            "produtos": [],
+            "erro":
+                "Mercado Livre recusou a busca (403). "
+                "Detalhes: "
+                + str(erro),
+
+            "produtos": []
         }
 
     if resposta.status_code != 200:
@@ -938,56 +917,103 @@ def buscar_produtos(query, limit=30):
             erro = resposta.text
 
         return {
-            "erro": f"Erro Mercado Livre ({resposta.status_code}): {erro}",
-            "produtos": [],
+            "erro":
+                f"Mercado Livre retornou "
+                f"{resposta.status_code}: "
+                f"{erro}",
+
+            "produtos": []
         }
 
     try:
+
         dados = resposta.json()
+
     except Exception:
 
         return {
-            "erro": "Resposta inválida do Mercado Livre.",
-            "produtos": [],
+            "erro":
+                "Resposta inválida da API.",
+
+            "produtos": []
         }
 
     produtos = []
 
-    for item in dados.get("results", []):
+    for item in dados.get(
+        "results",
+        []
+    ):
 
-        preco = item.get("price")
-        preco_original = (
-            item.get("original_price")
-            or item.get("price")
+        produto_id = item.get(
+            "id"
         )
 
-        desconto = calcular_desconto(
-            preco,
-            preco_original,
+        nome = item.get(
+            "name"
         )
 
-        produtos.append(
-            {
-                "id": item.get("id"),
-                "titulo": limpar_titulo(
-                    item.get("title", "")
+        if not nome:
+            nome = item.get(
+                "title",
+                ""
+            )
+
+        nome = limpar_titulo(
+            nome
+        )
+
+        produto_url = (
+            f"https://www.mercadolivre.com.br/"
+            f"produto/{produto_id}"
+        )
+
+        produtos.append({
+
+            "id":
+                produto_id,
+
+            "titulo":
+                nome,
+
+            "preco":
+                None,
+
+            "preco_original":
+                None,
+
+            "desconto":
+                0,
+
+            "link":
+                produto_url,
+
+            "imagem":
+                None,
+
+            "domain_id":
+                item.get(
+                    "domain_id"
                 ),
-                "preco": preco,
-                "preco_original": preco_original,
-                "desconto": desconto,
-                "link": item.get("permalink"),
-                "imagem": item.get("thumbnail"),
-            }
-        )
+
+            "status":
+                item.get(
+                    "status"
+                ),
+        })
 
     return {
-        "erro": None,
-        "produtos": produtos,
+
+        "erro":
+            None,
+
+        "produtos":
+            produtos
     }
 
 
 # ============================================================
-# SALVAR OFERTA
+# SALVAR
 # ============================================================
 
 def salvar_oferta(produto):
@@ -1017,8 +1043,10 @@ def salvar_oferta(produto):
             produto.get("desconto"),
             produto.get("link"),
             produto.get("imagem"),
-            datetime.now(timezone.utc).isoformat(),
-        ),
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+        )
     )
 
     conn.commit()
@@ -1026,48 +1054,44 @@ def salvar_oferta(produto):
 
 
 # ============================================================
-# GERAR MENSAGEM
+# MENSAGEM
 # ============================================================
 
-def gerar_mensagem(produto, link_afiliado=""):
+def gerar_mensagem(
+    produto,
+    link_afiliado=""
+):
 
-    titulo = produto.get("titulo", "")
-    preco = produto.get("preco")
-    preco_original = produto.get("preco_original")
-    desconto = produto.get("desconto", 0)
+    titulo = produto.get(
+        "titulo",
+        ""
+    )
 
-    link = link_afiliado.strip()
+    link = (
+        link_afiliado.strip()
+        or produto.get(
+            "link",
+            ""
+        )
+    )
 
-    if not link:
-        link = produto.get("link", "")
-
-    texto = f"""🔥 OFERTA ENCONTRADA!
+    texto = f"""
+🔥 PRODUTO ENCONTRADO!
 
 🛒 {titulo}
 
-💰 Agora: {moeda(preco)}
-"""
-
-    if desconto > 0:
-
-        texto += f"""
-🏷️ Antes: {moeda(preco_original)}
-📉 Desconto: {desconto}% OFF
-"""
-
-    texto += f"""
-🚚 Confira preço e disponibilidade:
+🔎 Confira no Mercado Livre:
 
 👉 {link}
 
-⚡ Pode mudar a qualquer momento!
+⚡ Consulte preço e disponibilidade.
 """
 
-    return texto
+    return texto.strip()
 
 
 # ============================================================
-# PÁGINA PRINCIPAL
+# HTML
 # ============================================================
 
 HTML = """
@@ -1077,169 +1101,232 @@ HTML = """
 
 <head>
 
-    <meta charset="utf-8">
+<meta charset="utf-8">
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1"
-    >
+<meta
+name="viewport"
+content="width=device-width, initial-scale=1"
+>
 
-    <title>Caçador de Ofertas</title>
+<title>
+Caçador de Ofertas
+</title>
 
-    <style>
+<style>
 
-        * {
-            box-sizing: border-box;
-        }
+* {
+    box-sizing: border-box;
+}
 
-        body {
-            margin: 0;
-            padding: 20px;
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            color: #222;
-        }
+body {
 
-        .container {
-            max-width: 950px;
-            margin: auto;
-        }
+    margin: 0;
 
-        .header {
-            background: #ffe600;
-            padding: 22px;
-            border-radius: 16px;
-            margin-bottom: 20px;
-        }
+    padding: 15px;
 
-        .header h1 {
-            margin: 0 0 6px 0;
-        }
+    font-family:
+        Arial,
+        sans-serif;
 
-        .header p {
-            margin: 0;
-        }
+    background:
+        #f5f5f5;
 
-        .card {
-            background: white;
-            border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 3px 12px rgba(0,0,0,0.06);
-        }
+    color:
+        #222;
+}
 
-        input {
-            width: 100%;
-            padding: 14px;
-            border: 1px solid #ccc;
-            border-radius: 10px;
-            font-size: 16px;
-            margin-bottom: 12px;
-        }
+.container {
 
-        button,
-        .button {
-            display: inline-block;
-            border: none;
-            background: #3483fa;
-            color: white;
-            padding: 13px 18px;
-            border-radius: 10px;
-            font-size: 16px;
-            text-decoration: none;
-            cursor: pointer;
-        }
+    max-width:
+        900px;
 
-        .button-green {
-            background: #16883d;
-        }
+    margin:
+        auto;
+}
 
-        .button-yellow {
-            background: #ffe600;
-            color: #222;
-        }
+.header {
 
-        .produto {
-            border: 1px solid #ddd;
-            border-radius: 14px;
-            padding: 15px;
-            margin-top: 15px;
-        }
+    background:
+        #ffe600;
 
-        .produto img {
-            width: 120px;
-            height: 120px;
-            object-fit: contain;
-            display: block;
-            margin-bottom: 10px;
-        }
+    padding:
+        25px;
 
-        .titulo {
-            font-size: 18px;
-            font-weight: bold;
-        }
+    border-radius:
+        18px;
 
-        .preco {
-            font-size: 22px;
-            font-weight: bold;
-            margin-top: 8px;
-        }
+    margin-bottom:
+        20px;
+}
 
-        .antigo {
-            text-decoration: line-through;
-            color: #777;
-        }
+.header h1 {
 
-        .desconto {
-            color: #16883d;
-            font-weight: bold;
-        }
+    margin:
+        0 0 10px;
 
-        textarea {
-            width: 100%;
-            min-height: 220px;
-            padding: 15px;
-            border-radius: 10px;
-            border: 1px solid #ccc;
-            font-size: 15px;
-        }
+    font-size:
+        34px;
+}
 
-        .erro {
-            background: #ffe1e1;
-            color: #a40000;
-            padding: 14px;
-            border-radius: 10px;
-            margin-top: 15px;
-        }
+.card {
 
-        .sucesso {
-            background: #e1f7e8;
-            color: #12652d;
-            padding: 14px;
-            border-radius: 10px;
-            margin-top: 15px;
-        }
+    background:
+        white;
 
-        .top-buttons {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 15px;
-        }
+    padding:
+        20px;
 
-        @media (max-width: 600px) {
+    border-radius:
+        18px;
 
-            body {
-                padding: 12px;
-            }
+    margin-bottom:
+        20px;
 
-            .card {
-                padding: 15px;
-            }
+    box-shadow:
+        0 3px 15px
+        rgba(0,0,0,.06);
+}
 
-        }
+input {
 
-    </style>
+    width:
+        100%;
+
+    padding:
+        15px;
+
+    border:
+        1px solid #ccc;
+
+    border-radius:
+        10px;
+
+    font-size:
+        17px;
+
+    margin-bottom:
+        12px;
+}
+
+button,
+.button {
+
+    display:
+        inline-block;
+
+    background:
+        #3483fa;
+
+    color:
+        white;
+
+    border:
+        none;
+
+    padding:
+        13px 18px;
+
+    border-radius:
+        10px;
+
+    text-decoration:
+        none;
+
+    font-size:
+        16px;
+
+    cursor:
+        pointer;
+}
+
+.green {
+
+    background:
+        #16883d;
+}
+
+.product {
+
+    border:
+        1px solid #ddd;
+
+    padding:
+        16px;
+
+    border-radius:
+        14px;
+
+    margin-top:
+        15px;
+}
+
+.product h3 {
+
+    margin-top:
+        0;
+}
+
+.badge {
+
+    display:
+        inline-block;
+
+    background:
+        #e8f7ed;
+
+    color:
+        #16883d;
+
+    padding:
+        6px 9px;
+
+    border-radius:
+        8px;
+
+    margin:
+        5px 0;
+}
+
+.error {
+
+    background:
+        #ffe1e1;
+
+    color:
+        #9b1717;
+
+    padding:
+        15px;
+
+    border-radius:
+        10px;
+
+    white-space:
+        pre-wrap;
+}
+
+textarea {
+
+    width:
+        100%;
+
+    min-height:
+        200px;
+
+    padding:
+        15px;
+
+    border-radius:
+        10px;
+
+    border:
+        1px solid #ccc;
+
+    font-size:
+        15px;
+}
+
+</style>
 
 </head>
 
@@ -1247,255 +1334,201 @@ HTML = """
 
 <div class="container">
 
-    <div class="header">
+<div class="header">
 
-        <h1>🛒 Caçador de Ofertas</h1>
+<h1>
+🛒 Caçador de Ofertas
+</h1>
 
-        <p>
-            Busque produtos do Mercado Livre e prepare
-            publicações para seu canal.
-        </p>
+<p>
+Busca de produtos do Mercado Livre.
+</p>
 
-        <div class="top-buttons">
+{% if conectado %}
 
-            {% if conectado %}
+<a
+class="button green"
+href="/mercadolivre/status"
+>
+🟢 Mercado Livre conectado
+</a>
 
-                <a
-                    class="button button-green"
-                    href="/mercadolivre/status"
-                >
-                    🟢 Mercado Livre conectado
-                </a>
+{% else %}
 
-            {% else %}
+<a
+class="button"
+href="/mercadolivre/login"
+>
+🔐 Conectar Mercado Livre
+</a>
 
-                <a
-                    class="button"
-                    href="/mercadolivre/login"
-                >
-                    🔐 Conectar Mercado Livre
-                </a>
+{% endif %}
 
-            {% endif %}
+</div>
 
-        </div>
 
-    </div>
+<div class="card">
 
+<h2>
+🔎 Buscar produto
+</h2>
 
-    {% if mensagem %}
+<form
+action="/buscar"
+method="get"
+>
 
-        <div class="card">
+<input
+type="text"
+name="q"
+value="{{ query }}"
+placeholder="Ex.: air fryer, celular Samsung, TV 50"
+required
+>
 
-            <div class="sucesso">
-                {{ mensagem }}
-            </div>
+<button
+type="submit"
+>
+Buscar
+</button>
 
-        </div>
+</form>
 
-    {% endif %}
+</div>
 
 
-    <div class="card">
+{% if erro %}
 
-        <h2>🔎 Buscar produtos</h2>
+<div class="card">
 
-        <form action="/buscar" method="get">
+<div class="error">
+{{ erro }}
+</div>
 
-            <input
-                type="text"
-                name="q"
-                placeholder="Ex.: air fryer, celular, TV 50..."
-                value="{{ query }}"
-                required
-            >
+</div>
 
-            <button type="submit">
-                Buscar ofertas
-            </button>
+{% endif %}
 
-        </form>
 
-    </div>
+{% if produtos %}
 
+<div class="card">
 
-    {% if erro %}
+<h2>
+🛍️ Produtos encontrados
+</h2>
 
-        <div class="card">
+<p>
+Encontramos {{ produtos|length }}
+produto(s).
+</p>
 
-            <div class="erro">
-                {{ erro }}
-            </div>
+{% for produto in produtos %}
 
-            {% if "conect" in erro.lower() or "token" in erro.lower() %}
+<div class="product">
 
-                <a
-                    class="button"
-                    href="/mercadolivre/login"
-                    style="margin-top: 15px;"
-                >
-                    Conectar Mercado Livre
-                </a>
+<h3>
+{{ produto.titulo }}
+</h3>
 
-            {% endif %}
+<div class="badge">
+Produto de catálogo
+</div>
 
-        </div>
+<p>
+<strong>ID:</strong>
+{{ produto.id }}
+</p>
 
-    {% endif %}
+{% if produto.domain_id %}
 
+<p>
+<strong>Categoria:</strong>
+{{ produto.domain_id }}
+</p>
 
-    {% if produtos %}
+{% endif %}
 
-        <div class="card">
+<a
+class="button"
+href="{{ produto.link }}"
+target="_blank"
+>
+Ver no Mercado Livre
+</a>
 
-            <h2>
-                🏷️ Produtos encontrados
-            </h2>
 
-            {% for produto in produtos %}
+<form
+action="/gerar"
+method="post"
+style="margin-top:15px;"
+>
 
-                <div class="produto">
+<input
+type="hidden"
+name="produto_id"
+value="{{ produto.id }}"
+>
 
-                    {% if produto.imagem %}
+<input
+type="hidden"
+name="titulo"
+value="{{ produto.titulo }}"
+>
 
-                        <img
-                            src="{{ produto.imagem }}"
-                            alt="Produto"
-                        >
-
-                    {% endif %}
-
-                    <div class="titulo">
-                        {{ produto.titulo }}
-                    </div>
+<input
+type="hidden"
+name="link"
+value="{{ produto.link }}"
+>
 
-                    <div class="preco">
-                        {{ moeda(produto.preco) }}
-                    </div>
+<input
+type="text"
+name="link_afiliado"
+placeholder="Cole aqui o link de afiliado"
+>
 
-                    {% if produto.preco_original and produto.preco_original > produto.preco %}
+<button
+class="green"
+type="submit"
+>
+Gerar publicação
+</button>
 
-                        <div class="antigo">
-                            Antes:
-                            {{ moeda(produto.preco_original) }}
-                        </div>
+</form>
 
-                    {% endif %}
+</div>
 
-                    {% if produto.desconto > 0 %}
+{% endfor %}
 
-                        <div class="desconto">
-                            {{ produto.desconto }}% OFF
-                        </div>
+</div>
 
-                    {% endif %}
+{% endif %}
 
-                    <div style="margin-top: 12px;">
 
-                        <a
-                            class="button"
-                            href="{{ produto.link }}"
-                            target="_blank"
-                        >
-                            Ver produto
-                        </a>
+{% if publicacao %}
 
-                    </div>
+<div class="card">
 
+<h2>
+📱 Publicação pronta
+</h2>
 
-                    <form
-                        action="/gerar"
-                        method="post"
-                        style="margin-top: 15px;"
-                    >
+<textarea
+id="texto"
+>{{ publicacao }}</textarea>
 
-                        <input
-                            type="hidden"
-                            name="produto_id"
-                            value="{{ produto.id }}"
-                        >
+<br><br>
 
-                        <input
-                            type="hidden"
-                            name="titulo"
-                            value="{{ produto.titulo }}"
-                        >
+<button
+onclick="copiarTexto()"
+>
+📋 Copiar publicação
+</button>
 
-                        <input
-                            type="hidden"
-                            name="preco"
-                            value="{{ produto.preco }}"
-                        >
+</div>
 
-                        <input
-                            type="hidden"
-                            name="preco_original"
-                            value="{{ produto.preco_original }}"
-                        >
-
-                        <input
-                            type="hidden"
-                            name="desconto"
-                            value="{{ produto.desconto }}"
-                        >
-
-                        <input
-                            type="hidden"
-                            name="link"
-                            value="{{ produto.link }}"
-                        >
-
-                        <input
-                            type="hidden"
-                            name="imagem"
-                            value="{{ produto.imagem }}"
-                        >
-
-                        <input
-                            type="text"
-                            name="link_afiliado"
-                            placeholder="Cole aqui seu link de afiliado"
-                        >
-
-                        <button
-                            type="submit"
-                            class="button button-green"
-                        >
-                            Gerar publicação
-                        </button>
-
-                    </form>
-
-                </div>
-
-            {% endfor %}
-
-        </div>
-
-    {% endif %}
-
-
-    {% if publicacao %}
-
-        <div class="card">
-
-            <h2>
-                📱 Publicação pronta
-            </h2>
-
-            <textarea id="texto">{{ publicacao }}</textarea>
-
-            <button
-                class="button"
-                style="margin-top: 12px;"
-                onclick="copiarTexto()"
-            >
-                📋 Copiar publicação
-            </button>
-
-        </div>
-
-    {% endif %}
+{% endif %}
 
 
 </div>
@@ -1505,19 +1538,28 @@ HTML = """
 
 function copiarTexto() {
 
-    const texto = document.getElementById("texto");
+    const texto =
+        document.getElementById(
+            "texto"
+        );
 
     texto.select();
-    texto.setSelectionRange(0, 99999);
 
-    navigator.clipboard.writeText(texto.value);
+    texto.setSelectionRange(
+        0,
+        99999
+    );
 
-    alert("Publicação copiada!");
+    navigator.clipboard.writeText(
+        texto.value
+    );
 
+    alert(
+        "Publicação copiada!"
+    );
 }
 
 </script>
-
 
 </body>
 
@@ -1532,26 +1574,30 @@ function copiarTexto() {
 @app.route("/")
 def index():
 
-    token = obter_token_db()
-
-    conectado = False
-
-    if token:
-
-        access_token = obter_access_token()
-
-        if access_token:
-            conectado = True
+    conectado = bool(
+        obter_access_token()
+    )
 
     return render_template_string(
         HTML,
-        conectado=conectado,
-        produtos=[],
-        erro=None,
-        query="",
-        publicacao=None,
-        mensagem=None,
-        moeda=moeda,
+
+        conectado=
+            conectado,
+
+        produtos=
+            [],
+
+        erro=
+            None,
+
+        query=
+            "",
+
+        publicacao=
+            None,
+
+        moeda=
+            moeda,
     )
 
 
@@ -1562,26 +1608,52 @@ def index():
 @app.route("/buscar")
 def buscar():
 
-    query = request.args.get("q", "").strip()
+    query = request.args.get(
+        "q",
+        ""
+    ).strip()
 
     if not query:
 
-        return redirect(url_for("index"))
+        return redirect(
+            url_for("index")
+        )
 
-    resultado = buscar_produtos(
-        query=query,
-        limit=30,
+    resultado = (
+        buscar_produtos(
+            query=query,
+            limit=20
+        )
     )
 
     return render_template_string(
+
         HTML,
-        conectado=bool(obter_access_token()),
-        produtos=resultado.get("produtos", []),
-        erro=resultado.get("erro"),
-        query=query,
-        publicacao=None,
-        mensagem=None,
-        moeda=moeda,
+
+        conectado=
+            bool(
+                obter_access_token()
+            ),
+
+        produtos=
+            resultado.get(
+                "produtos",
+                []
+            ),
+
+        erro=
+            resultado.get(
+                "erro"
+            ),
+
+        query=
+            query,
+
+        publicacao=
+            None,
+
+        moeda=
+            moeda,
     )
 
 
@@ -1589,63 +1661,108 @@ def buscar():
 # GERAR PUBLICAÇÃO
 # ============================================================
 
-@app.route("/gerar", methods=["POST"])
+@app.route(
+    "/gerar",
+    methods=["POST"]
+)
 def gerar():
 
     produto = {
-        "id": request.form.get("produto_id"),
-        "titulo": request.form.get("titulo"),
-        "preco": request.form.get("preco"),
-        "preco_original": request.form.get("preco_original"),
-        "desconto": int(
-            request.form.get("desconto") or 0
-        ),
-        "link": request.form.get("link"),
-        "imagem": request.form.get("imagem"),
+
+        "id":
+            request.form.get(
+                "produto_id"
+            ),
+
+        "titulo":
+            request.form.get(
+                "titulo"
+            ),
+
+        "link":
+            request.form.get(
+                "link"
+            ),
     }
 
-    link_afiliado = request.form.get(
-        "link_afiliado",
-        "",
-    ).strip()
+    link_afiliado = (
+        request.form.get(
+            "link_afiliado",
+            ""
+        ).strip()
+    )
 
-    salvar_oferta(produto)
+    salvar_oferta(
+        produto
+    )
 
-    publicacao = gerar_mensagem(
-        produto,
-        link_afiliado,
+    publicacao = (
+        gerar_mensagem(
+            produto,
+            link_afiliado
+        )
     )
 
     return render_template_string(
+
         HTML,
-        conectado=bool(obter_access_token()),
-        produtos=[],
-        erro=None,
-        query="",
-        publicacao=publicacao,
-        mensagem="Oferta preparada com sucesso!",
-        moeda=moeda,
+
+        conectado=
+            bool(
+                obter_access_token()
+            ),
+
+        produtos=
+            [],
+
+        erro=
+            None,
+
+        query=
+            "",
+
+        publicacao=
+            publicacao,
+
+        moeda=
+            moeda,
     )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
 
     return {
-        "status": "ok",
-        "app": "Cacador de Ofertas",
-        "mercadolivre_configurado": bool(
-            ML_CLIENT_ID and ML_CLIENT_SECRET
-        ),
+
+        "status":
+            "ok",
+
+        "app":
+            "Cacador de Ofertas",
+
+        "mercadolivre_configurado":
+            bool(
+                ML_CLIENT_ID
+                and
+                ML_CLIENT_SECRET
+            ),
+
+        "oauth":
+            bool(
+                obter_token_db()
+            ),
+
+        "search_endpoint":
+            "products/search",
     }
 
 
 # ============================================================
-# INICIALIZAÇÃO
+# START
 # ============================================================
 
 init_db()
@@ -1654,11 +1771,14 @@ init_db()
 if __name__ == "__main__":
 
     port = int(
-        os.getenv("PORT", "8080")
+        os.getenv(
+            "PORT",
+            "8080"
+        )
     )
 
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=False,
+        debug=False
     )
