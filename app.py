@@ -608,7 +608,7 @@ def health():
 
 
 # ============================================================
-# BUSCAR ANÚNCIOS REAIS
+# BUSCAR ANÚNCIOS REAIS (COM AUTENTICAÇÃO OAUTH)
 # ============================================================
 
 def buscar_anuncios(
@@ -616,10 +616,14 @@ def buscar_anuncios(
     limite=20
 ):
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = headers_ml()
+
+    if not headers:
+
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
 
     params = {
         "q": query,
@@ -730,7 +734,7 @@ def calcular_desconto(
 
 
 # ============================================================
-# BUSCAR OFERTAS (OTIMIZADO)
+# BUSCAR OFERTAS
 # ============================================================
 
 def buscar_ofertas(
