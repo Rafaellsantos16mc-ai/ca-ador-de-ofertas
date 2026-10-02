@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 app.secret_key = os.getenv(
     "SECRET_KEY",
-    "troque-esta-chave"
+    "troque-esta-chave-no-railway"
 )
 
 DB_FILE = os.getenv(
@@ -38,8 +38,13 @@ DB_FILE = os.getenv(
 # MERCADO LIVRE
 # ============================================================
 
-ML_CLIENT_ID = os.getenv("ML_CLIENT_ID")
-ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET")
+ML_CLIENT_ID = os.getenv(
+    "ML_CLIENT_ID"
+)
+
+ML_CLIENT_SECRET = os.getenv(
+    "ML_CLIENT_SECRET"
+)
 
 ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
@@ -58,18 +63,21 @@ ML_API_URL = (
     "https://api.mercadolibre.com"
 )
 
-ML_PRODUCTS_SEARCH_URL = (
-    "https://api.mercadolibre.com/products/search"
+# Busca de anúncios REAIS
+ML_SEARCH_URL = (
+    "https://api.mercadolibre.com/sites/MLB/search"
 )
 
 
 # ============================================================
-# BANCO
+# BANCO DE DADOS
 # ============================================================
 
 def init_db():
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(
+        DB_FILE
+    )
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tokens (
@@ -129,7 +137,9 @@ def salvar_tokens(data):
         ).timestamp()
     ) + expires_in
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(
+        DB_FILE
+    )
 
     conn.execute(
         "DELETE FROM tokens"
@@ -155,7 +165,9 @@ def salvar_tokens(data):
 
 def obter_tokens():
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(
+        DB_FILE
+    )
 
     row = conn.execute("""
         SELECT
@@ -193,10 +205,18 @@ def renovar_access_token():
         return None
 
     payload = {
-        "grant_type": "refresh_token",
-        "client_id": ML_CLIENT_ID,
-        "client_secret": ML_CLIENT_SECRET,
-        "refresh_token": refresh_token
+
+        "grant_type":
+            "refresh_token",
+
+        "client_id":
+            ML_CLIENT_ID,
+
+        "client_secret":
+            ML_CLIENT_SECRET,
+
+        "refresh_token":
+            refresh_token
     }
 
     try:
@@ -208,15 +228,24 @@ def renovar_access_token():
         )
 
         print(
-            "[REFRESH]",
+            "[REFRESH TOKEN]",
             response.status_code
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+
+            print(
+                "[REFRESH ERRO]",
+                response.text[:1000]
+            )
+
+            return None
 
         data = response.json()
 
-        salvar_tokens(data)
+        salvar_tokens(
+            data
+        )
 
         return data.get(
             "access_token"
@@ -245,14 +274,19 @@ def obter_access_token():
         ).timestamp()
     )
 
-    if tokens["expires_at"] > agora + 300:
+    # Renova 5 minutos antes
+    # do vencimento
+    if (
+        tokens["expires_at"]
+        > agora + 300
+    ):
 
         return tokens[
             "access_token"
         ]
 
     print(
-        "[TOKEN] Renovando..."
+        "[TOKEN] Renovando token..."
     )
 
     return renovar_access_token()
@@ -266,10 +300,12 @@ def headers_ml():
         return None
 
     return {
-        "Authorization": (
-            f"Bearer {token}"
-        ),
-        "Accept": "application/json"
+
+        "Authorization":
+            f"Bearer {token}",
+
+        "Accept":
+            "application/json"
     }
 
 
@@ -277,15 +313,26 @@ def headers_ml():
 # OAUTH
 # ============================================================
 
-@app.route("/mercadolivre/login")
+@app.route(
+    "/mercadolivre/login"
+)
 def mercadolivre_login():
+
+    if not ML_CLIENT_ID:
+
+        return (
+            "ML_CLIENT_ID não configurado.",
+            500
+        )
 
     state = secrets.token_urlsafe(
         32
     )
 
-    code_verifier = secrets.token_urlsafe(
-        64
+    code_verifier = (
+        secrets.token_urlsafe(
+            64
+        )
     )
 
     code_challenge = (
@@ -308,14 +355,17 @@ def mercadolivre_login():
 
     params = {
 
-        "response_type": "code",
+        "response_type":
+            "code",
 
-        "client_id": ML_CLIENT_ID,
+        "client_id":
+            ML_CLIENT_ID,
 
         "redirect_uri":
             ML_REDIRECT_URI,
 
-        "state": state,
+        "state":
+            state,
 
         "code_challenge":
             code_challenge,
@@ -330,14 +380,18 @@ def mercadolivre_login():
         + urlencode(params)
     )
 
-    return redirect(url)
+    return redirect(
+        url
+    )
 
 
 # ============================================================
-# CALLBACK
+# CALLBACK OAUTH
 # ============================================================
 
-@app.route("/mercadolivre/callback")
+@app.route(
+    "/mercadolivre/callback"
+)
 def mercadolivre_callback():
 
     error = request.args.get(
@@ -370,14 +424,24 @@ def mercadolivre_callback():
     if not code:
 
         return (
-            "Código não recebido.",
+            "Código de autorização não recebido.",
             400
         )
 
-    if state != saved_state:
+    if (
+        not state
+        or state != saved_state
+    ):
 
         return (
             "Estado OAuth inválido.",
+            400
+        )
+
+    if not code_verifier:
+
+        return (
+            "Code verifier não encontrado.",
             400
         )
 
@@ -411,11 +475,22 @@ def mercadolivre_callback():
         )
 
         print(
-            "[OAUTH]",
+            "[OAUTH TOKEN]",
             response.status_code
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+
+            print(
+                "[OAUTH ERRO]",
+                response.text[:1000]
+            )
+
+            return (
+                "Erro ao obter token: "
+                + response.text[:1000],
+                400
+            )
 
         data = response.json()
 
@@ -424,12 +499,14 @@ def mercadolivre_callback():
         ):
 
             return (
-                "Mercado Livre não "
-                "retornou Refresh Token.",
+                "Mercado Livre não retornou "
+                "Refresh Token.",
                 400
             )
 
-        salvar_tokens(data)
+        salvar_tokens(
+            data
+        )
 
         session.pop(
             "oauth_state",
@@ -441,7 +518,9 @@ def mercadolivre_callback():
             None
         )
 
-        return redirect("/")
+        return redirect(
+            "/"
+        )
 
     except Exception as e:
 
@@ -456,7 +535,13 @@ def mercadolivre_callback():
         )
 
 
-@app.route("/mercadolivre/callback2")
+# ============================================================
+# CALLBACK 2
+# ============================================================
+
+@app.route(
+    "/mercadolivre/callback2"
+)
 def callback2():
 
     return redirect(
@@ -468,7 +553,9 @@ def callback2():
 # STATUS
 # ============================================================
 
-@app.route("/mercadolivre/status")
+@app.route(
+    "/mercadolivre/status"
+)
 def mercadolivre_status():
 
     conectado = (
@@ -477,7 +564,8 @@ def mercadolivre_status():
     )
 
     return {
-        "conectado": conectado
+        "conectado":
+            conectado
     }
 
 
@@ -487,12 +575,15 @@ def mercadolivre_status():
 
 @app.route(
     "/mercadolivre/notificacoes",
-    methods=["GET", "POST"]
+    methods=[
+        "GET",
+        "POST"
+    ]
 )
 def notificacoes():
 
     print(
-        "[NOTIFICACAO]",
+        "[NOTIFICACAO ML]",
         request.method,
         request.get_json(
             silent=True
@@ -508,19 +599,22 @@ def notificacoes():
 # HEALTH
 # ============================================================
 
-@app.route("/health")
+@app.route(
+    "/health"
+)
 def health():
 
     return {
-        "status": "ok"
+        "status":
+            "ok"
     }
 
 
 # ============================================================
-# BUSCA CATÁLOGO
+# BUSCAR ANÚNCIOS REAIS
 # ============================================================
 
-def buscar_catalogo(
+def buscar_anuncios(
     query,
     limite=20
 ):
@@ -535,194 +629,77 @@ def buscar_catalogo(
 
     params = {
 
-        "status": "active",
+        "q":
+            query,
 
-        "site_id": "MLB",
+        "limit":
+            limite,
 
-        "q": query,
-
-        "limit": limite,
-
-        "offset": 0
+        "offset":
+            0
     }
-
-    response = requests.get(
-        ML_PRODUCTS_SEARCH_URL,
-        headers=headers,
-        params=params,
-        timeout=30
-    )
-
-    print(
-        "[CATALOGO]",
-        response.status_code,
-        response.url
-    )
-
-    response.raise_for_status()
-
-    return response.json()
-
-
-# ============================================================
-# DETALHES DO PRODUTO
-# ============================================================
-
-def obter_produto(
-    product_id
-):
-
-    headers = headers_ml()
-
-    if not headers:
-        return None
-
-    url = (
-        f"{ML_API_URL}"
-        f"/products/{product_id}"
-    )
 
     try:
 
         response = requests.get(
-            url,
+            ML_SEARCH_URL,
             headers=headers,
+            params=params,
             timeout=30
         )
 
         print(
-            "[PRODUTO]",
-            product_id,
+            "[BUSCA ANÚNCIOS]",
             response.status_code
+        )
+
+        print(
+            "[URL]",
+            response.url
         )
 
         if response.status_code != 200:
 
-            return None
+            print(
+                "[ERRO API]",
+                response.text[:1500]
+            )
 
-        return response.json()
+            raise Exception(
+                "Mercado Livre retornou "
+                f"HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+            )
 
-    except Exception as e:
+        data = response.json()
+
+        resultados = data.get(
+            "results",
+            []
+        )
 
         print(
-            "[ERRO PRODUTO]",
-            product_id,
+            "[ANÚNCIOS ENCONTRADOS]",
+            len(resultados)
+        )
+
+        return resultados
+
+    except requests.RequestException as e:
+
+        print(
+            "[ERRO REQUEST]",
             e
         )
 
-        return None
+        raise Exception(
+            f"Erro de comunicação com "
+            f"Mercado Livre: {e}"
+        )
 
 
 # ============================================================
-# NOVO:
-# ENCONTRAR BUY BOX DENTRO DOS FILHOS
-# ============================================================
-
-def encontrar_buy_box(
-    product_id,
-    max_filhos=8
-):
-
-    produto = obter_produto(
-        product_id
-    )
-
-    if not produto:
-
-        return None, None
-
-    # --------------------------------------------------------
-    # PRIMEIRO:
-    # produto já possui buy_box_winner
-    # --------------------------------------------------------
-
-    winner = produto.get(
-        "buy_box_winner"
-    )
-
-    if winner:
-
-        return produto, winner
-
-    # --------------------------------------------------------
-    # SEGUNDO:
-    # produto é pai e possui children_ids
-    # --------------------------------------------------------
-
-    children_ids = produto.get(
-        "children_ids",
-        []
-    )
-
-    if not children_ids:
-
-        print(
-            "[SEM BUY BOX]",
-            product_id
-        )
-
-        return produto, None
-
-    print(
-        "[PRODUTO PAI]",
-        product_id,
-        "filhos:",
-        len(children_ids)
-    )
-
-    # Limita quantidade para
-    # evitar muitas chamadas à API
-    children_ids = children_ids[
-        :max_filhos
-    ]
-
-    for child_id in children_ids:
-
-        print(
-            "[TESTANDO FILHO]",
-            child_id
-        )
-
-        child = obter_produto(
-            child_id
-        )
-
-        if not child:
-            continue
-
-        # Só queremos produto ativo
-        if child.get(
-            "status"
-        ) != "active":
-
-            continue
-
-        child_winner = child.get(
-            "buy_box_winner"
-        )
-
-        if child_winner:
-
-            print(
-                "[BUY BOX ENCONTRADO]",
-                child_id
-            )
-
-            return (
-                child,
-                child_winner
-            )
-
-    print(
-        "[NENHUM BUY BOX]",
-        product_id
-    )
-
-    return produto, None
-
-
-# ============================================================
-# ITEM REAL
+# OBTER ITEM REAL
 # ============================================================
 
 def obter_item(
@@ -757,7 +734,7 @@ def obter_item(
 
             print(
                 "[ITEM ERRO]",
-                response.text[:300]
+                response.text[:500]
             )
 
             return None
@@ -768,6 +745,7 @@ def obter_item(
 
         print(
             "[ERRO ITEM]",
+            item_id,
             e
         )
 
@@ -775,7 +753,7 @@ def obter_item(
 
 
 # ============================================================
-# SALE PRICE
+# PREÇO DE VENDA ATUAL
 # ============================================================
 
 def obter_sale_price(
@@ -793,6 +771,7 @@ def obter_sale_price(
     )
 
     params = {
+
         "context":
             "channel_marketplace"
     }
@@ -814,6 +793,11 @@ def obter_sale_price(
 
         if response.status_code != 200:
 
+            print(
+                "[SALE PRICE ERRO]",
+                response.text[:500]
+            )
+
             return None
 
         data = response.json()
@@ -822,7 +806,7 @@ def obter_sale_price(
             "amount"
         )
 
-        regular = data.get(
+        regular_amount = data.get(
             "regular_amount"
         )
 
@@ -832,10 +816,11 @@ def obter_sale_price(
 
         return {
 
-            "preco": amount,
+            "preco":
+                amount,
 
             "preco_original":
-                regular,
+                regular_amount,
 
             "moeda":
                 data.get(
@@ -848,6 +833,7 @@ def obter_sale_price(
 
         print(
             "[ERRO SALE PRICE]",
+            item_id,
             e
         )
 
@@ -855,7 +841,7 @@ def obter_sale_price(
 
 
 # ============================================================
-# PRICES
+# PREÇOS
 # ============================================================
 
 def obter_precos(
@@ -905,6 +891,10 @@ def obter_precos(
 
         promocao = None
 
+        agora = datetime.now(
+            timezone.utc
+        )
+
         for price in prices:
 
             tipo = price.get(
@@ -916,7 +906,6 @@ def obter_precos(
             )
 
             if amount is None:
-
                 continue
 
             if tipo == "standard":
@@ -925,18 +914,80 @@ def obter_precos(
 
             elif tipo == "promotion":
 
-                if (
-                    promocao is None
-                    or amount < promocao.get(
-                        "amount",
-                        999999999
+                conditions = (
+                    price.get(
+                        "conditions",
+                        {}
                     )
-                ):
+                )
 
-                    promocao = price
+                inicio = (
+                    conditions.get(
+                        "start_time"
+                    )
+                )
+
+                fim = (
+                    conditions.get(
+                        "end_time"
+                    )
+                )
+
+                ativa = True
+
+                try:
+
+                    if inicio:
+
+                        inicio_dt = (
+                            datetime.fromisoformat(
+                                inicio.replace(
+                                    "Z",
+                                    "+00:00"
+                                )
+                            )
+
+                        if agora < inicio_dt:
+
+                            ativa = False
+
+                    if fim:
+
+                        fim_dt = (
+                            datetime.fromisoformat(
+                                fim.replace(
+                                    "Z",
+                                    "+00:00"
+                                )
+                            )
+                        )
+
+                        if agora > fim_dt:
+
+                            ativa = False
+
+                except Exception:
+
+                    # Se não conseguirmos
+                    # interpretar as datas,
+                    # mantemos o preço
+                    ativa = True
+
+                if ativa:
+
+                    if (
+                        promocao is None
+                        or amount <
+                        promocao.get(
+                            "amount",
+                            999999999
+                        )
+                    ):
+
+                        promocao = price
 
         # ----------------------------------------------------
-        # PROMOÇÃO
+        # PROMOÇÃO ATIVA
         # ----------------------------------------------------
 
         if promocao:
@@ -954,7 +1005,8 @@ def obter_precos(
 
             return {
 
-                "preco": preco,
+                "preco":
+                    preco,
 
                 "preco_original":
                     original,
@@ -988,6 +1040,7 @@ def obter_precos(
 
         print(
             "[ERRO PRICES]",
+            item_id,
             e
         )
 
@@ -995,7 +1048,7 @@ def obter_precos(
 
 
 # ============================================================
-# DESCONTO
+# CALCULAR DESCONTO
 # ============================================================
 
 def calcular_desconto(
@@ -1012,13 +1065,20 @@ def calcular_desconto(
 
             return 0
 
-        preco = float(preco)
-        original = float(original)
+        preco = float(
+            preco
+        )
+
+        original = float(
+            original
+        )
 
         if original <= 0:
+
             return 0
 
         if preco >= original:
+
             return 0
 
         desconto = (
@@ -1047,84 +1107,49 @@ def buscar_ofertas(
     limite=20
 ):
 
-    catalogo = buscar_catalogo(
+    anuncios = buscar_anuncios(
         query,
         limite
     )
 
-    produtos = catalogo.get(
-        "results",
-        []
-    )
-
     resultados = []
 
-    print(
-        "[RESULTADOS CATALOGO]",
-        len(produtos)
-    )
+    for anuncio in anuncios:
 
-    for produto in produtos:
-
-        product_id = produto.get(
+        item_id = anuncio.get(
             "id"
         )
 
-        if not product_id:
-            continue
-
-        # ----------------------------------------------------
-        # AQUI ESTÁ A PRINCIPAL CORREÇÃO
-        # ----------------------------------------------------
-
-        detalhes, winner = (
-            encontrar_buy_box(
-                product_id
-            )
-        )
-
-        if not detalhes:
-            continue
-
-        if not winner:
-
-            continue
-
-        item_id = winner.get(
-            "item_id"
-        )
-
         if not item_id:
-
             continue
 
-        # ----------------------------------------------------
-        # ITEM REAL
-        # ----------------------------------------------------
+        titulo = anuncio.get(
+            "title"
+        ) or "Produto"
 
-        item = obter_item(
-            item_id
-        )
-
-        if not item:
-
-            continue
-
-        titulo = (
-            item.get("title")
-            or detalhes.get("name")
-            or produto.get("name")
-            or "Produto"
-        )
-
-        link = (
-            item.get("permalink")
-            or detalhes.get("permalink")
-            or ""
-        )
+        link = anuncio.get(
+            "permalink"
+        ) or ""
 
         # ----------------------------------------------------
-        # PREÇO
+        # PREÇO QUE VEIO NA BUSCA
+        # ----------------------------------------------------
+
+        preco = anuncio.get(
+            "price"
+        )
+
+        preco_original = anuncio.get(
+            "original_price"
+        )
+
+        moeda = anuncio.get(
+            "currency_id",
+            "BRL"
+        )
+
+        # ----------------------------------------------------
+        # TENTA PREÇO ATUAL
         # ----------------------------------------------------
 
         preco_info = (
@@ -1132,6 +1157,10 @@ def buscar_ofertas(
                 item_id
             )
         )
+
+        # ----------------------------------------------------
+        # FALLBACK PARA /prices
+        # ----------------------------------------------------
 
         if not preco_info:
 
@@ -1142,47 +1171,45 @@ def buscar_ofertas(
             )
 
         # ----------------------------------------------------
-        # FALLBACK BUY BOX
+        # ATUALIZA PREÇO
         # ----------------------------------------------------
 
-        if not preco_info:
+        if preco_info:
 
-            preco = winner.get(
-                "price"
+            if (
+                preco_info.get(
+                    "preco"
+                ) is not None
+            ):
+
+                preco = (
+                    preco_info.get(
+                        "preco"
+                    )
+                )
+
+            if (
+                preco_info.get(
+                    "preco_original"
+                ) is not None
+            ):
+
+                preco_original = (
+                    preco_info.get(
+                        "preco_original"
+                    )
+                )
+
+            moeda = (
+                preco_info.get(
+                    "moeda",
+                    moeda
+                )
             )
 
-            if preco is not None:
-
-                preco_info = {
-
-                    "preco":
-                        preco,
-
-                    "preco_original":
-                        winner.get(
-                            "original_price"
-                        ),
-
-                    "moeda":
-                        winner.get(
-                            "currency_id",
-                            "BRL"
-                        )
-                }
-
-        if not preco_info:
-
-            continue
-
-        preco = preco_info.get(
-            "preco"
-        )
-
-        preco_original = (
-            preco_info.get(
-                "preco_original"
-            )
-        )
+        # ----------------------------------------------------
+        # CALCULA DESCONTO
+        # ----------------------------------------------------
 
         desconto = (
             calcular_desconto(
@@ -1196,10 +1223,49 @@ def buscar_ofertas(
         # ----------------------------------------------------
 
         imagem = (
-            item.get(
+            anuncio.get(
                 "thumbnail"
             )
             or ""
+        )
+
+        # ----------------------------------------------------
+        # PRODUTO DE CATÁLOGO
+        # ----------------------------------------------------
+
+        catalog_product_id = (
+            anuncio.get(
+                "catalog_product_id"
+            )
+            or ""
+        )
+
+        # ----------------------------------------------------
+        # CATEGORIA
+        # ----------------------------------------------------
+
+        categoria = (
+            anuncio.get(
+                "category_id"
+            )
+            or ""
+        )
+
+        # ----------------------------------------------------
+        # VENDEDOR
+        # ----------------------------------------------------
+
+        seller = anuncio.get(
+            "seller",
+            {}
+        )
+
+        seller_id = seller.get(
+            "id"
+        )
+
+        seller_nickname = seller.get(
+            "nickname"
         )
 
         # ----------------------------------------------------
@@ -1209,10 +1275,7 @@ def buscar_ofertas(
         resultados.append({
 
             "produto_id":
-                detalhes.get(
-                    "id",
-                    product_id
-                ),
+                catalog_product_id,
 
             "item_id":
                 item_id,
@@ -1221,13 +1284,7 @@ def buscar_ofertas(
                 titulo,
 
             "categoria":
-                item.get(
-                    "category_id"
-                )
-                or detalhes.get(
-                    "domain_id",
-                    ""
-                ),
+                categoria,
 
             "preco":
                 preco,
@@ -1239,28 +1296,38 @@ def buscar_ofertas(
                 desconto,
 
             "moeda":
-                preco_info.get(
-                    "moeda",
-                    "BRL"
-                ),
+                moeda,
 
             "link":
                 link,
 
             "imagem":
-                imagem
+                imagem,
+
+            "seller_id":
+                seller_id,
+
+            "seller_nickname":
+                seller_nickname
         })
 
-    # --------------------------------------------------------
-    # MAIOR DESCONTO PRIMEIRO
-    # --------------------------------------------------------
+    # ========================================================
+    # PRIMEIRO OS QUE POSSUEM DESCONTO
+    # ========================================================
 
     resultados.sort(
-        key=lambda x:
+        key=lambda x: (
             x.get(
                 "desconto",
                 0
             ),
+            -float(
+                x.get(
+                    "preco",
+                    999999999
+                ) or 999999999
+            )
+        ),
         reverse=True
     )
 
@@ -1273,7 +1340,7 @@ def buscar_ofertas(
 
 
 # ============================================================
-# SALVAR
+# SALVAR OFERTA
 # ============================================================
 
 def salvar_oferta(
@@ -1340,7 +1407,7 @@ def salvar_oferta(
 
 
 # ============================================================
-# FORMATAÇÃO
+# FORMATAR PREÇO
 # ============================================================
 
 def formatar_preco(
@@ -1353,21 +1420,27 @@ def formatar_preco(
 
     try:
 
+        numero = float(
+            valor
+        )
+
         return (
             "R$ "
-            + f"{float(valor):,.2f}"
+            + f"{numero:,.2f}"
             .replace(",", "X")
             .replace(".", ",")
             .replace("X", ".")
         )
 
-    except:
+    except Exception:
 
-        return str(valor)
+        return str(
+            valor
+        )
 
 
 # ============================================================
-# MENSAGEM
+# GERAR MENSAGEM
 # ============================================================
 
 def gerar_mensagem(
@@ -1392,13 +1465,19 @@ def gerar_mensagem(
     ):
 
         mensagem += (
-            f"❌ De: "
-            f"{formatar_preco(preco_original)}\n"
+            "❌ De: "
+            + formatar_preco(
+                preco_original
+            )
+            + "\n"
         )
 
         mensagem += (
-            f"🔥 Por: "
-            f"{formatar_preco(preco)}\n"
+            "🔥 Por: "
+            + formatar_preco(
+                preco
+            )
+            + "\n"
         )
 
         mensagem += (
@@ -1409,15 +1488,20 @@ def gerar_mensagem(
     else:
 
         mensagem += (
-            f"💰 Preço: "
-            f"{formatar_preco(preco)}\n\n"
+            "💰 Preço: "
+            + formatar_preco(
+                preco
+            )
+            + "\n\n"
         )
 
     mensagem += (
         "👉 COMPRAR AQUI:\n"
     )
 
-    mensagem += affiliate_link
+    mensagem += (
+        affiliate_link
+    )
 
     mensagem += (
         "\n\n"
@@ -1426,6 +1510,22 @@ def gerar_mensagem(
     )
 
     return mensagem
+
+
+# ============================================================
+# FILTRO BRL
+# ============================================================
+
+@app.template_filter(
+    "brl"
+)
+def brl_filter(
+    value
+):
+
+    return formatar_preco(
+        value
+    )
 
 
 # ============================================================
@@ -1447,7 +1547,9 @@ name="viewport"
 content="width=device-width, initial-scale=1.0"
 >
 
-<title>Caçador de Ofertas</title>
+<title>
+Caçador de Ofertas
+</title>
 
 <style>
 
@@ -1463,7 +1565,10 @@ body {
 
     background: #f5f5f5;
 
-    font-family: Arial, sans-serif;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 
     color: #222;
 }
@@ -1478,11 +1583,15 @@ body {
 h1 {
 
     margin-bottom: 5px;
+
+    font-size: 34px;
 }
 
 .sub {
 
     color: #666;
+
+    font-size: 18px;
 
     margin-bottom: 25px;
 }
@@ -1493,26 +1602,41 @@ h1 {
 
     padding: 20px;
 
-    border-radius: 14px;
+    border-radius: 16px;
 
     margin-bottom: 20px;
 
     box-shadow:
-        0 2px 10px
+        0 3px 15px
         rgba(0,0,0,.06);
+}
+
+.status {
+
+    padding: 15px;
+
+    border-radius: 12px;
+
+    background: #e8f5e9;
+
+    color: #237a36;
+
+    font-size: 18px;
+
+    margin-bottom: 20px;
 }
 
 input {
 
     width: 100%;
 
-    padding: 14px;
+    padding: 15px;
 
     border: 1px solid #ddd;
 
-    border-radius: 10px;
+    border-radius: 11px;
 
-    font-size: 16px;
+    font-size: 17px;
 
     margin-bottom: 12px;
 }
@@ -1521,61 +1645,55 @@ button {
 
     width: 100%;
 
-    padding: 14px;
+    padding: 15px;
 
     border: none;
 
-    border-radius: 10px;
+    border-radius: 11px;
 
     background: #3483fa;
 
     color: white;
 
-    font-size: 16px;
+    font-size: 17px;
 
     font-weight: bold;
 
     cursor: pointer;
 }
 
-.status {
+button:hover {
 
-    padding: 14px;
-
-    border-radius: 10px;
-
-    background: #e8f5e9;
-
-    color: #137333;
-
-    margin-bottom: 20px;
+    opacity: .92;
 }
 
 .produto {
 
     border: 1px solid #e5e5e5;
 
-    border-radius: 14px;
+    border-radius: 15px;
 
     padding: 18px;
 
-    margin-top: 15px;
+    margin-top: 16px;
 
     background: white;
 }
 
 .produto h3 {
 
-    margin-top: 0;
+    margin-top: 12px;
 
     line-height: 1.4;
+
+    font-size: 19px;
 }
 
 .badge {
 
     display: inline-block;
 
-    padding: 5px 8px;
+    padding: 6px 9px;
 
     background: #e8f0fe;
 
@@ -1588,7 +1706,7 @@ button {
     margin: 2px;
 }
 
-.desconto {
+.badge-oferta {
 
     display: inline-block;
 
@@ -1602,7 +1720,7 @@ button {
 
     font-weight: bold;
 
-    margin: 8px 0;
+    font-size: 13px;
 }
 
 .preco-antigo {
@@ -1611,44 +1729,70 @@ button {
 
     text-decoration: line-through;
 
-    font-size: 14px;
+    font-size: 15px;
+
+    margin-top: 8px;
 }
 
 .preco {
 
-    font-size: 26px;
+    font-size: 28px;
 
     font-weight: bold;
 
-    margin-top: 4px;
+    margin-top: 3px;
+}
+
+.desconto {
+
+    display: inline-block;
+
+    padding: 8px 11px;
+
+    background: #e6f4ea;
+
+    color: #137333;
+
+    border-radius: 9px;
+
+    font-weight: bold;
+
+    margin-top: 9px;
 }
 
 .link {
 
     display: block;
 
-    margin-top: 10px;
+    margin-top: 12px;
 
     color: #3483fa;
 
     word-break: break-all;
+
+    text-decoration: none;
+}
+
+.link:hover {
+
+    text-decoration: underline;
 }
 
 textarea {
 
     width: 100%;
 
-    min-height: 180px;
+    min-height: 190px;
 
     margin-top: 12px;
 
-    padding: 12px;
+    padding: 14px;
 
-    border-radius: 10px;
+    border-radius: 11px;
 
     border: 1px solid #ddd;
 
-    font-size: 14px;
+    font-size: 15px;
 }
 
 .small {
@@ -1656,6 +1800,31 @@ textarea {
     font-size: 13px;
 
     color: #777;
+}
+
+.erro {
+
+    background: white;
+
+    padding: 20px;
+
+    border-radius: 15px;
+
+    border-left:
+        6px solid #e53935;
+
+    margin-bottom: 20px;
+}
+
+.info {
+
+    background: #f1f5ff;
+
+    border-radius: 11px;
+
+    padding: 13px;
+
+    color: #345;
 }
 
 hr {
@@ -1667,19 +1836,6 @@ hr {
     margin: 20px 0;
 }
 
-.erro {
-
-    background: #fff;
-
-    padding: 20px;
-
-    border-radius: 14px;
-
-    border-left: 5px solid #e53935;
-
-    margin-bottom: 20px;
-}
-
 </style>
 
 </head>
@@ -1688,11 +1844,15 @@ hr {
 
 <div class="container">
 
-<h1>🛒 Caçador de Ofertas</h1>
+
+<h1>
+🛒 Caçador de Ofertas
+</h1>
 
 <div class="sub">
-Mercado Livre → produtos → preços → descontos → publicação
+Mercado Livre → anúncios reais → preços → descontos → publicação
 </div>
+
 
 {% if conectado %}
 
@@ -1704,16 +1864,18 @@ Mercado Livre → produtos → preços → descontos → publicação
 
 <div class="card">
 
-<h3>🔐 Mercado Livre</h3>
+<h3>
+🔐 Mercado Livre
+</h3>
 
 <p>
-Conecte sua conta do Mercado Livre.
+Conecte sua conta do Mercado Livre para começar.
 </p>
 
 <a href="/mercadolivre/login">
 
 <button>
-Conectar Mercado Livre
+🔐 Conectar Mercado Livre
 </button>
 
 </a>
@@ -1729,6 +1891,16 @@ Conectar Mercado Livre
 🔎 Procurar ofertas
 </h2>
 
+<div class="info">
+
+Agora a busca procura diretamente
+por <strong>anúncios reais</strong>
+do Mercado Livre.
+
+</div>
+
+<br>
+
 <form
 method="GET"
 action="/buscar"
@@ -1737,7 +1909,7 @@ action="/buscar"
 <input
 type="text"
 name="q"
-placeholder="Ex: celular, air fryer, televisão..."
+placeholder="Ex: Air Fryer, celular, TV, tênis..."
 value="{{ query or '' }}"
 required
 >
@@ -1778,8 +1950,11 @@ required
 
 <p class="small">
 
+Encontramos
+<strong>
 {{ produtos|length }}
-oferta(s) encontrada(s).
+</strong>
+anúncio(s) real(is).
 
 </p>
 
@@ -1788,13 +1963,25 @@ oferta(s) encontrada(s).
 
 <div class="produto">
 
-<span class="badge">
-Produto: {{ p.produto_id }}
+
+<span class="badge-oferta">
+🔥 ANÚNCIO REAL
 </span>
 
+
 <span class="badge">
-Anúncio: {{ p.item_id }}
+ID: {{ p.item_id }}
 </span>
+
+
+{% if p.desconto > 0 %}
+
+<span class="badge-oferta">
+{{ "%.0f"|format(p.desconto) }}% OFF
+</span>
+
+{% endif %}
+
 
 <h3>
 {{ p.titulo }}
@@ -1804,21 +1991,33 @@ Anúncio: {{ p.item_id }}
 {% if p.preco_original and p.desconto > 0 %}
 
 <div class="preco-antigo">
-De: {{ p.preco_original|brl }}
+
+De:
+{{ p.preco_original|brl }}
+
 </div>
 
 <div class="preco">
-Por: {{ p.preco|brl }}
+
+Por:
+{{ p.preco|brl }}
+
 </div>
 
 <div class="desconto">
-🔥 {{ "%.0f"|format(p.desconto) }}% OFF
+
+🔥
+{{ "%.0f"|format(p.desconto) }}%
+OFF
+
 </div>
 
 {% else %}
 
 <div class="preco">
+
 {{ p.preco|brl }}
+
 </div>
 
 {% endif %}
@@ -1826,9 +2025,25 @@ Por: {{ p.preco|brl }}
 
 <hr>
 
+
 <div class="small">
-Categoria: {{ p.categoria }}
+
+Categoria:
+{{ p.categoria }}
+
 </div>
+
+
+{% if p.seller_nickname %}
+
+<div class="small">
+
+Vendedor:
+{{ p.seller_nickname }}
+
+</div>
+
+{% endif %}
 
 
 <a
@@ -1836,7 +2051,9 @@ class="link"
 href="{{ p.link }}"
 target="_blank"
 >
+
 🔗 Ver anúncio no Mercado Livre
+
 </a>
 
 
@@ -1895,10 +2112,13 @@ required
 >
 
 <button type="submit">
+
 📢 Gerar publicação
+
 </button>
 
 </form>
+
 
 </div>
 
@@ -1918,10 +2138,12 @@ required
 </h2>
 
 <p class="small">
-Mensagem pronta para copiar para o WhatsApp.
+Sua mensagem está pronta para copiar.
 </p>
 
-<textarea readonly>{{ mensagem }}</textarea>
+<textarea
+readonly
+>{{ mensagem }}</textarea>
 
 </div>
 
@@ -1938,20 +2160,6 @@ Mensagem pronta para copiar para o WhatsApp.
 
 
 # ============================================================
-# FILTRO BRL
-# ============================================================
-
-@app.template_filter("brl")
-def brl_filter(
-    value
-):
-
-    return formatar_preco(
-        value
-    )
-
-
-# ============================================================
 # HOME
 # ============================================================
 
@@ -1964,11 +2172,17 @@ def home():
     )
 
     return render_template_string(
+
         HTML,
+
         conectado=conectado,
+
         produtos=None,
+
         query=None,
+
         erro=None,
+
         mensagem=None
     )
 
@@ -1977,7 +2191,9 @@ def home():
 # BUSCAR
 # ============================================================
 
-@app.route("/buscar")
+@app.route(
+    "/buscar"
+)
 def buscar():
 
     query = request.args.get(
@@ -1987,7 +2203,9 @@ def buscar():
 
     if not query:
 
-        return redirect("/")
+        return redirect(
+            "/"
+        )
 
     conectado = (
         obter_access_token()
@@ -1997,14 +2215,20 @@ def buscar():
     if not conectado:
 
         return render_template_string(
+
             HTML,
+
             conectado=False,
+
             produtos=None,
+
             query=query,
+
             erro=(
                 "Conecte primeiro "
                 "sua conta do Mercado Livre."
             ),
+
             mensagem=None
         )
 
@@ -2018,10 +2242,8 @@ def buscar():
         if not produtos:
 
             erro = (
-                "O Mercado Livre encontrou "
-                "produtos de catálogo, mas não "
-                "encontramos anúncios reais "
-                "com preço para esses produtos."
+                "Nenhum anúncio foi "
+                "encontrado para essa busca."
             )
 
         else:
@@ -2029,11 +2251,17 @@ def buscar():
             erro = None
 
         return render_template_string(
+
             HTML,
+
             conectado=True,
+
             produtos=produtos,
+
             query=query,
+
             erro=erro,
+
             mensagem=None
         )
 
@@ -2045,11 +2273,17 @@ def buscar():
         )
 
         return render_template_string(
+
             HTML,
+
             conectado=True,
+
             produtos=None,
+
             query=query,
+
             erro=str(e),
+
             mensagem=None
         )
 
@@ -2110,8 +2344,13 @@ def gerar():
     try:
 
         original_float = (
-            float(preco_original)
+
+            float(
+                preco_original
+            )
+
             if preco_original
+
             else None
         )
 
@@ -2130,15 +2369,22 @@ def gerar():
         desconto_float = 0
 
     mensagem = gerar_mensagem(
+
         titulo,
+
         preco_float,
+
         original_float,
+
         desconto_float,
+
         affiliate_link
     )
 
     salvar_oferta(
+
         {
+
             "produto_id":
                 produto_id,
 
@@ -2160,15 +2406,22 @@ def gerar():
             "link":
                 link
         },
+
         affiliate_link
     )
 
     return render_template_string(
+
         HTML,
+
         conectado=True,
+
         produtos=None,
+
         query=None,
+
         erro=None,
+
         mensagem=mensagem
     )
 
@@ -2187,6 +2440,8 @@ if __name__ == "__main__":
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port
     )
