@@ -433,6 +433,65 @@ def product(pid):
     data, status, _ = ml_get(f"/products/{pid}")
     return data if status == 200 and isinstance(data, dict) else None
 
+def _build_item_from_buy_box(bb):
+    """Normaliza o buy_box_winner retornado pelo catálogo em formato de item."""
+    if not isinstance(bb, dict):
+        return None
+
+    item_id = (
+        bb.get("item_id")
+        or bb.get("id")
+        or (bb.get("item") or {}).get("item_id") if isinstance(bb.get("item"), dict) else None
+    )
+    if not item_id:
+        # Alguns retornos podem trazer o item dentro de winner
+        winner = bb.get("winner")
+        if isinstance(winner, dict):
+            item_id = winner.get("item_id") or winner.get("id")
+
+    if not item_id:
+        return None
+
+    shipping = bb.get("shipping") or {}
+    if not isinstance(shipping, dict):
+        shipping = {}
+
+    free = bool(
+        shipping.get("free_shipping")
+        or bb.get("free_shipping") is True
+        or bb.get("shipping_free") is True
+    )
+
+    cost = 0 if free else (
+        shipping.get("cost")
+        if shipping.get("cost") is not None
+        else bb.get("shipping_cost")
+    )
+
+    price = bb.get("price")
+    if price is None:
+        price = bb.get("sale_price")
+    if price is None:
+        price = bb.get("regular_price")
+
+    original = bb.get("original_price")
+    if original is None:
+        original = bb.get("regular_price")
+
+    return {
+        "item_id": item_id,
+        "seller_id": bb.get("seller_id") or bb.get("seller", {}).get("id") if isinstance(bb.get("seller"), dict) else bb.get("seller_id"),
+        "price": price,
+        "original_price": original,
+        "condition": bb.get("condition"),
+        "listing_type_id": bb.get("listing_type_id"),
+        "free_shipping": free,
+        "shipping_cost": cost,
+        "permalink": bb.get("permalink"),
+        "user_product_id": bb.get("user_product_id"),
+        "sold_quantity": bb.get("sold_quantity") or bb.get("sales") or 0,
+    }
+
 def product_items(pid):
     data, status, _ = ml_get(f"/products/{pid}/items")
     if status != 200:
@@ -1229,27 +1288,46 @@ def _candidate_fallback(pid, raw, query):
 
 
 def _fetch_product_fast(pid, raw=None, base=None):
+    base = base or {"category_id": None, "category_name": None, "query": ""}
+
+    # 1) Primeiro tenta aproveitar o próprio /products/search.
+    # Isso evita uma chamada extra quando o resultado já trouxe buy_box_winner.
+    if isinstance(raw, dict):
+        bb = raw.get("buy_box_winner") or raw.get("buy_box")
+        item = _build_item_from_buy_box(bb)
+        if item is not None:
+            p = dict(raw)
+            p.setdefault("name", raw.get("title") or pid)
+            return pid, p, item, base
+
+    # 2) Se a busca não trouxe o vencedor, tenta o detalhe do produto.
     p = product(pid)
     if p:
-        bb = p.get("buy_box_winner")
+        bb = p.get("buy_box_winner") or p.get("buy_box")
         item = _build_item_from_buy_box(bb)
-        if item is None:
-            items = product_items(pid)
-            # Escolhe o primeiro item válido; não falha o produto por um seller
-            # específico sem acesso.
-            for candidate in items:
-                item = normalize_item(candidate)
-                if item:
-                    item["sold_quantity"] = candidate.get("sold_quantity") or 0
-                    break
         if item is not None:
-            return pid, p, item, (base or {"category_id": None, "category_name": None, "query": ""})
+            return pid, p, item, base
 
-    # Fallback: aproveita o próprio resultado da busca.
-    if raw is not None:
-        return _candidate_fallback(pid, raw, (base or {}).get("query", ""))
+    # 3) Último fallback: /products/{id}/items.
+    # Esse endpoint foi o que funcionou para o catálogo em nossos testes.
+    items = product_items(pid)
+    best = None
+    for candidate in items:
+        item = normalize_item(candidate)
+        if not item:
+            continue
+        item["sold_quantity"] = candidate.get("sold_quantity") or 0
+        # Mantém o primeiro item válido, mas prefere frete grátis.
+        if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
+            best = item
+    if best is not None:
+        if p is None:
+            p = dict(raw or {})
+        p.setdefault("name", (raw or {}).get("title") or pid)
+        return pid, p, best, base
+
+    # 4) Se não houver item de venda, não inventa preço.
     return None
-
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Caça rápida e tolerante a falhas de catálogo.
