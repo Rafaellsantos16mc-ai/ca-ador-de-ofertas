@@ -966,19 +966,21 @@ def search_products_direct(q, limit=20):
 
 
 def scan_queries(queries, min_discount=0):
-    # Primeiro busca os cards públicos que realmente exibem produto + cupom.
-    public_cards = public_coupon_product_cards()
+    # Nesta etapa o foco é SOMENTE descobrir produtos.
+    # O cruzamento de cupons ficará para a próxima etapa, depois que
+    # tivermos uma lista estável de produtos. Isso evita travar a busca.
+    public_cards = []
 
     products = {}
     for q in queries:
         # Busca direta: não depende de aparecer nos highlights.
-        for item in search_products_direct(q, 20):
+        for item in search_products_direct(q, 10):
             pid = item.get("id") or item.get("product_id")
             if pid:
                 products.setdefault(pid, {"category_id":None, "category_name":None, "query":q})
 
         # Complementa com categorias/destaques.
-        for cat in discover_categories(q)[:4]:
+        for cat in discover_categories(q)[:2]:
             for h in highlights(cat["category_id"]):
                 pid = h.get("id") or h.get("product_id")
                 if pid:
@@ -1029,10 +1031,12 @@ def scan_queries(queries, min_discount=0):
             shipping = item.get("shipping_cost")
             total_price = total(price, shipping) if shipping is not None else price
 
-            # CUPOM ESPECÍFICO: só aplica se o produto foi encontrado no card público.
-            cup = match_public_coupon(title, price, public_cards)
-            cup_disc = calculate_public_coupon(cup, price) if cup else 0
-            coupon_final = round(max(0, total_price - cup_disc), 2) if cup else None
+            # CUPONS NÃO SÃO CONSULTADOS NESTA ETAPA.
+            # Primeiro entregamos os melhores produtos; depois cruzamos
+            # cada produto com o cupom realmente aplicável.
+            cup = None
+            cup_disc = 0
+            coupon_final = None
 
             cash_disc, cash_label = detect_cash_discount(raw, price)
             cash_final = round(max(0, total_price - cash_disc), 2) if cash_disc > 0 else None
@@ -1184,36 +1188,27 @@ def get_job(job_id):
 
 def run_caca_job(job_id, category=None):
     try:
-        update_job(job_id, status="running", progress=5, message="🛒 Procurando produtos...")
-        coupon_sync = None
-        update_job(job_id, progress=15, message="🔎 Analisando os melhores produtos...")
+        update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro...")
 
         if category:
-            queries = CATALOG.get(category, [])
+            queries = CATALOG.get(category, [])[:5]
         else:
-            queries = [q for qs in CATALOG.values() for q in qs]
+            # Um ciclo inicial enxuto. Novos ciclos podem atualizar novamente.
+            queries = [q for qs in CATALOG.values() for q in qs][:18]
 
-        # Não trava o servidor com dezenas de consultas de uma vez.
-        # O processamento continua em segundo plano.
+        update_job(job_id, progress=15, message="🛒 Consultando Mercado Livre...")
         result = scan_queries(queries)
-        result["coupon_sync"] = coupon_sync
 
         update_job(
             job_id,
             status="done",
             progress=100,
-            message=f"✅ Caça finalizada: {result.get("stats", {}).get("ofertas", 0)} produtos únicos.",
+            message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} encontrados.",
             result=json_safe(result),
         )
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
-        update_job(
-            job_id,
-            status="error",
-            progress=100,
-            message="❌ Erro durante a caça.",
-            error=str(e),
-        )
+        update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
 
 # ============================================================
 # API
@@ -1418,7 +1413,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
-<div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou atualize todas.</p></div>
+<div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">Prioridade: maior desconto real do cupom → maior economia percentual → menor preço final. Valores com cupom são estimativas e precisam ser confirmados no checkout.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
