@@ -1029,7 +1029,13 @@ def scan_queries(queries, min_discount=0):
                 continue
 
             shipping = item.get("shipping_cost")
-            total_price = total(price, shipping) if shipping is not None else price
+            shipping_known = shipping is not None
+            total_price = total(price, shipping) if shipping_known else price
+
+            # O ranking usa o custo total quando o frete foi informado.
+            # Se o Mercado Livre não informar o frete, o produto fica marcado
+            # como "frete não informado" e não pode ser tratado como uma oferta
+            # de menor custo real sem essa confirmação.
 
             # CUPONS NÃO SÃO CONSULTADOS NESTA ETAPA.
             # Primeiro entregamos os melhores produtos; depois cruzamos
@@ -1058,7 +1064,7 @@ def scan_queries(queries, min_discount=0):
                 "price":price,"original_price":original,"discount":seller_disc,
                 "seller_id":item.get("seller_id"),"condition":item.get("condition"),
                 "free_shipping":item.get("free_shipping"),"shipping_cost":shipping,
-                "shipping_known":shipping is not None,"total_price":total_price,
+                "shipping_known":shipping_known,"total_price":total_price,
                 "relevance_score":score,"cupom":cup,
                 "desconto_cupom":cup_disc,
                 "percentual_cupom_efetivo":round((cup_disc/price)*100,2) if cup_disc else 0,
@@ -1068,14 +1074,22 @@ def scan_queries(queries, min_discount=0):
                 "affiliate_link":"","extra_earnings":0
             })
 
-    # Produtos com cupom confirmado vêm primeiro; depois produtos sem cupom.
-    offers.sort(key=lambda o:(
-        0 if o.get("cupom") else 1,
-        -(o.get("maior_desconto") or 0),
-        -(o.get("percentual_cupom_efetivo") or 0),
-        o.get("preco_final_melhor") if o.get("preco_final_melhor") is not None else o.get("price",999999),
-        0 if o.get("free_shipping") else 1,
-    ))
+    # Ranking desta etapa: custo TOTAL real quando o frete foi informado.
+    # Depois prioriza frete grátis, desconto do vendedor, relevância e preço.
+    # Produtos sem frete informado ficam depois dos que têm custo total conhecido.
+    def ranking_oferta(o):
+        total_real = o.get("total_price")
+        total_real = float(total_real) if total_real is not None else float(o.get("price") or 999999)
+        return (
+            0 if o.get("shipping_known") else 1,
+            total_real,
+            0 if o.get("free_shipping") else 1,
+            -(o.get("discount") or 0),
+            -(o.get("relevance_score") or 0),
+            o.get("price") or 999999,
+        )
+
+    offers.sort(key=ranking_oferta)
 
     groups = {}
     for o in offers:
@@ -1087,27 +1101,18 @@ def scan_queries(queries, min_discount=0):
 
     models = []
     for g in groups.values():
-        g["ofertas"].sort(key=lambda x:(
-            0 if x.get("cupom") else 1,
-            -(x.get("maior_desconto") or 0),
-            -(x.get("percentual_cupom_efetivo") or 0),
-            x.get("preco_final_melhor") if x.get("preco_final_melhor") is not None else x.get("price",999999),
-            0 if x.get("free_shipping") else 1
-        ))
+        g["ofertas"].sort(key=ranking_oferta)
         if g["ofertas"]:
             g["ofertas"] = g["ofertas"][:1]
             g["ofertas"][0]["menor_preco_modelo"] = True
             models.append(g)
 
-    models = sorted(models, key=lambda g:(
-        0 if g["ofertas"][0].get("cupom") else 1,
-        -(g["ofertas"][0].get("maior_desconto") or 0),
-        g["ofertas"][0].get("preco_final_melhor") if g["ofertas"][0].get("preco_final_melhor") is not None else g["ofertas"][0].get("price",999999)
-    ))[:30]
+    models = sorted(models, key=lambda g: ranking_oferta(g["ofertas"][0]))[:30]
 
     flat = [o for g in models for o in g["ofertas"]]
     with_coupon = [o for o in flat if o.get("cupom")]
     valores = [o.get("price") for o in flat if o.get("price") is not None]
+    totais_conhecidos = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     finais = [o.get("preco_final_melhor") for o in with_coupon if o.get("preco_final_melhor") is not None]
 
     stats = {
@@ -1116,7 +1121,8 @@ def scan_queries(queries, min_discount=0):
         "produtos sem cupom": len(flat) - len(with_coupon),
         "maior desconto": brl(max([o.get("desconto_cupom",0) for o in with_coupon] or [0])),
         "menor preço final": brl(min(finais or [0])),
-        "menor preço": brl(min(valores or [0])),
+        "menor preço do produto": brl(min(valores or [0])),
+        "menor total com frete": brl(min(totais_conhecidos or [0])),
     }
     return {"stats":stats,"modelos":models,"ofertas":flat}
 
@@ -1386,7 +1392,7 @@ function render(data){
  document.getElementById('results').innerHTML=(data.modelos||[]).map((m,mi)=>`
  <div class="modelo">
   <div class="mh">${m.image?`<img src="${m.image}">`:''}<div>
-   <span class="tag">🔥 MODELO ${mi+1}</span><div class="title">${esc(m.modelo_nome)}</div>
+   <span class="tag">🔥 OPORTUNIDADE ${mi+1}</span><div class="title">${esc(m.modelo_nome)}</div>
    ${(m.especificacoes||[]).map(s=>`<span class="tag">${esc(s)}</span>`).join('')}
    <div class="small">${m.ofertas.length} vendedor(es)</div>
   </div></div>
@@ -1397,12 +1403,12 @@ function seller(o,mi,oi){
  const id='a'+mi+'_'+oi;
  const cup=o.cupom;
  return `<div class="seller">
- ${o.menor_preco_modelo?'<span class="tag" style="background:#00a650;color:white">🏆 MENOR PREÇO</span>':''}
+ ${o.menor_preco_modelo?'<span class="tag" style="background:#00a650;color:white">🏆 MELHOR CUSTO TOTAL</span>':''}
  <div class="price">${brl(o.price)}</div>
  ${o.original_price?`<div class="old">De: ${brl(o.original_price)}</div>`:''}
  ${o.discount>0?`<div class="green">🔥 ${o.discount}% OFF</div>`:''}
  ${o.free_shipping?'<div class="green">🚚 Frete grátis</div>':''}
- ${o.shipping_known?`<div class="green">💰 Total: ${brl(o.total_price)}</div>`:''}
+ ${o.shipping_known ? (Number(o.shipping_cost||0)>0 ? `<div>🚚 Frete: ${brl(o.shipping_cost)}</div><div class="green"><b>💰 Total pago estimado: ${brl(o.total_price)}</b></div>` : `<div class="green"><b>💰 Total pago: ${brl(o.total_price)}</b></div>`) : '<div class="small">🚚 Frete não informado pelo Mercado Livre</div>'}
  ${cup?`<div class="coupon"><b>🎟️ CUPOM: ${esc(cup.code)}</b>
  ${cup.discount_percent?`<div>🔥 Até ${cup.discount_percent}% OFF</div>`:''}
  ${cup.fixed_discount?`<div>💰 ${brl(cup.fixed_discount)} OFF</div>`:''}
@@ -1457,7 +1463,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">Prioridade: maior desconto real do cupom → maior economia percentual → menor preço final. Valores com cupom são estimativas e precisam ser confirmados no checkout.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">Nesta etapa o ranking considera primeiro o <b>custo total</b> (produto + frete) quando o frete foi informado pelo Mercado Livre. Depois prioriza frete grátis, desconto e relevância. Cupons entram na próxima etapa.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
