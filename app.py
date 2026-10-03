@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import sqlite3
 import secrets
@@ -8,17 +7,11 @@ import hashlib
 import base64
 import html
 import unicodedata
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, unquote
 
 import requests
-from flask import (
-    Flask,
-    request,
-    redirect,
-    render_template_string,
-    send_file,
-    jsonify,
-)
+from flask import Flask, request, redirect, render_template_string, jsonify
+
 
 # ============================================================
 # APP
@@ -35,29 +28,46 @@ SITE_ID = "MLB"
 
 CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+
 REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
     "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
 
-# Quantidade de anúncios que tentaremos descobrir na página pública.
-MAX_DISCOVERED_IDS = 80
-
-# Quantos anúncios reais vamos consultar na API.
-MAX_ITEMS_TO_CHECK = 50
-
-# Timeout das requisições.
 HTTP_TIMEOUT = 20
 
-# User-Agent para a página pública do Mercado Livre.
+MAX_IDS = 80
+MAX_ITEMS = 50
+
+
+# ============================================================
+# HEADERS
+# ============================================================
+
 PUBLIC_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/140.0 Safari/537.36"
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     ),
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,image/webp,"
+        "image/apng,*/*;q=0.8"
+    ),
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+BING_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/140.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9",
 }
 
 
@@ -74,30 +84,25 @@ def get_db():
 def init_db():
     conn = get_db()
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS config (
             chave TEXT PRIMARY KEY,
             valor TEXT
         )
-        """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS oauth (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            id INTEGER PRIMARY KEY CHECK(id = 1),
             access_token TEXT,
             refresh_token TEXT,
             expires_at INTEGER,
             user_id TEXT,
             nickname TEXT
         )
-        """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS ofertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_id TEXT UNIQUE,
@@ -109,8 +114,7 @@ def init_db():
             imagem TEXT,
             criado_em INTEGER
         )
-        """
-    )
+    """)
 
     conn.commit()
     conn.close()
@@ -120,7 +124,7 @@ init_db()
 
 
 # ============================================================
-# HELPERS
+# CONFIG
 # ============================================================
 
 def salvar_config(chave, valor):
@@ -156,6 +160,10 @@ def ler_config(chave, default=None):
     return default
 
 
+# ============================================================
+# OAUTH
+# ============================================================
+
 def salvar_oauth(data):
     conn = get_db()
 
@@ -169,7 +177,8 @@ def salvar_oauth(data):
             user_id,
             nickname
         )
-        VALUES (1, ?, ?, ?, ?, ?)
+        VALUES(1, ?, ?, ?, ?, ?)
+
         ON CONFLICT(id)
         DO UPDATE SET
             access_token = excluded.access_token,
@@ -203,22 +212,6 @@ def carregar_oauth():
     return row
 
 
-def token_valido():
-    row = carregar_oauth()
-
-    if not row:
-        return False
-
-    access_token = row["access_token"]
-    expires_at = row["expires_at"] or 0
-
-    if not access_token:
-        return False
-
-    # Renova 2 minutos antes de expirar.
-    return int(time.time()) < (expires_at - 120)
-
-
 def gerar_code_verifier():
     return secrets.token_urlsafe(64)[:128]
 
@@ -233,93 +226,19 @@ def gerar_code_challenge(verifier):
     ).decode("utf-8").rstrip("=")
 
 
-def normalizar_numero(valor):
-    if valor is None:
-        return None
+def token_valido():
+    row = carregar_oauth()
 
-    try:
-        return float(valor)
-    except Exception:
-        return None
+    if not row:
+        return False
 
+    if not row["access_token"]:
+        return False
 
-def calcular_desconto(original, atual):
-    original = normalizar_numero(original)
-    atual = normalizar_numero(atual)
+    expires_at = row["expires_at"] or 0
 
-    if not original or not atual:
-        return 0
+    return int(time.time()) < expires_at - 120
 
-    if original <= atual:
-        return 0
-
-    return round(
-        ((original - atual) / original) * 100,
-        2,
-    )
-
-
-def moeda(valor):
-    valor = normalizar_numero(valor)
-
-    if valor is None:
-        return "-"
-
-    return (
-        "R$ "
-        + f"{valor:,.2f}"
-        .replace(",", "X")
-        .replace(".", ",")
-        .replace("X", ".")
-    )
-
-
-def limpar_html(texto):
-    if not texto:
-        return ""
-
-    texto = re.sub(r"<[^>]+>", " ", texto)
-    texto = html.unescape(texto)
-    texto = re.sub(r"\s+", " ", texto)
-
-    return texto.strip()
-
-
-def slugify(texto):
-    texto = unicodedata.normalize(
-        "NFKD",
-        texto,
-    ).encode(
-        "ascii",
-        "ignore",
-    ).decode("ascii")
-
-    texto = texto.lower()
-
-    texto = re.sub(
-        r"[^a-z0-9\s-]",
-        "",
-        texto,
-    )
-
-    texto = re.sub(
-        r"\s+",
-        "-",
-        texto,
-    )
-
-    texto = re.sub(
-        r"-+",
-        "-",
-        texto,
-    )
-
-    return texto.strip("-")
-
-
-# ============================================================
-# OAUTH MERCADO LIVRE
-# ============================================================
 
 def refresh_access_token():
     row = carregar_oauth()
@@ -348,7 +267,7 @@ def refresh_access_token():
 
         if response.status_code != 200:
             print(
-                "[REFRESH TOKEN]",
+                "[REFRESH ERRO]",
                 response.status_code,
                 response.text[:1000],
             )
@@ -356,58 +275,70 @@ def refresh_access_token():
 
         data = response.json()
 
-        access_token = data.get("access_token")
+        access_token = data.get(
+            "access_token"
+        )
+
         novo_refresh = data.get(
             "refresh_token",
             refresh_token,
         )
 
         expires_in = int(
-            data.get("expires_in", 21600)
+            data.get(
+                "expires_in",
+                21600,
+            )
         )
 
-        # Descobre user novamente.
         user_id = row["user_id"]
         nickname = row["nickname"]
 
-        if access_token:
-            try:
-                me = requests.get(
-                    f"{ML_API}/users/me",
-                    headers={
-                        "Authorization": f"Bearer {access_token}"
-                    },
-                    timeout=HTTP_TIMEOUT,
+        try:
+            me = requests.get(
+                f"{ML_API}/users/me",
+                headers={
+                    "Authorization":
+                        f"Bearer {access_token}"
+                },
+                timeout=HTTP_TIMEOUT,
+            )
+
+            if me.status_code == 200:
+                user = me.json()
+
+                user_id = str(
+                    user.get(
+                        "id",
+                        user_id,
+                    )
                 )
 
-                if me.status_code == 200:
-                    user = me.json()
-                    user_id = str(
-                        user.get("id", user_id)
-                    )
-                    nickname = user.get(
-                        "nickname",
-                        nickname,
-                    )
-            except Exception:
-                pass
+                nickname = user.get(
+                    "nickname",
+                    nickname,
+                )
 
-        salvar_oauth(
-            {
-                "access_token": access_token,
-                "refresh_token": novo_refresh,
-                "expires_at": int(time.time()) + expires_in,
-                "user_id": user_id,
-                "nickname": nickname,
-            }
-        )
+        except Exception:
+            pass
 
-        print("[REFRESH TOKEN] OK")
+        salvar_oauth({
+            "access_token": access_token,
+            "refresh_token": novo_refresh,
+            "expires_at":
+                int(time.time()) + expires_in,
+            "user_id": user_id,
+            "nickname": nickname,
+        })
 
         return True
 
     except Exception as e:
-        print("[REFRESH TOKEN ERRO]", e)
+        print(
+            "[REFRESH EXCEPTION]",
+            e,
+        )
+
         return False
 
 
@@ -421,6 +352,7 @@ def obter_access_token():
         return row["access_token"]
 
     if refresh_access_token():
+
         row = carregar_oauth()
 
         if row:
@@ -429,6 +361,10 @@ def obter_access_token():
     return None
 
 
+# ============================================================
+# API MERCADO LIVRE
+# ============================================================
+
 def ml_get(path, params=None):
     token = obter_access_token()
 
@@ -436,11 +372,14 @@ def ml_get(path, params=None):
         return None, 401
 
     headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
+        "Authorization":
+            f"Bearer {token}",
+        "Accept":
+            "application/json",
     }
 
     try:
+
         response = requests.get(
             f"{ML_API}{path}",
             headers=headers,
@@ -448,12 +387,14 @@ def ml_get(path, params=None):
             timeout=HTTP_TIMEOUT,
         )
 
-        # Token expirado.
         if response.status_code == 401:
+
             if refresh_access_token():
+
                 token = obter_access_token()
 
                 if token:
+
                     headers["Authorization"] = (
                         f"Bearer {token}"
                     )
@@ -467,162 +408,481 @@ def ml_get(path, params=None):
 
         try:
             data = response.json()
+
         except Exception:
+
             data = {
-                "raw": response.text
+                "raw":
+                    response.text
             }
 
         return data, response.status_code
 
     except Exception as e:
-        print("[ML GET ERRO]", path, e)
 
         return {
-            "error": str(e)
+            "error":
+                str(e)
         }, 500
 
 
 # ============================================================
-# DESCOBERTA DE ANÚNCIOS REAIS
+# HELPERS
 # ============================================================
 
-def extrair_item_ids_html(conteudo):
-    """
-    Procura IDs MLB reais dentro do HTML da busca pública.
+def slugify(texto):
 
-    Não dependemos de uma única classe CSS.
-    O Mercado Livre pode mudar o HTML, então usamos
-    várias formas de encontrar MLB + números.
-    """
+    texto = unicodedata.normalize(
+        "NFKD",
+        texto,
+    )
+
+    texto = texto.encode(
+        "ascii",
+        "ignore",
+    ).decode(
+        "ascii"
+    )
+
+    texto = texto.lower()
+
+    texto = re.sub(
+        r"[^a-z0-9\s-]",
+        "",
+        texto,
+    )
+
+    texto = re.sub(
+        r"\s+",
+        "-",
+        texto,
+    )
+
+    texto = re.sub(
+        r"-+",
+        "-",
+        texto,
+    )
+
+    return texto.strip("-")
+
+
+def numero(valor):
+
+    if valor is None:
+        return None
+
+    try:
+        return float(valor)
+
+    except Exception:
+        return None
+
+
+def calcular_desconto(original, atual):
+
+    original = numero(original)
+    atual = numero(atual)
+
+    if not original or not atual:
+        return 0
+
+    if original <= atual:
+        return 0
+
+    return round(
+        (
+            (original - atual)
+            / original
+        ) * 100,
+        2,
+    )
+
+
+def moeda(valor):
+
+    valor = numero(valor)
+
+    if valor is None:
+        return "-"
+
+    return (
+        "R$ "
+        + f"{valor:,.2f}"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
+
+
+# ============================================================
+# EXTRATOR DE MLB
+# ============================================================
+
+def normalizar_mlb(valor):
+
+    if not valor:
+        return None
+
+    valor = unquote(
+        str(valor)
+    )
+
+    valor = html.unescape(
+        valor
+    )
+
+    valor = valor.upper()
+
+    valor = valor.replace(
+        "MLB-",
+        "MLB",
+    )
+
+    valor = valor.replace(
+        "MLB_",
+        "MLB",
+    )
+
+    match = re.search(
+        r"MLB\d{6,12}",
+        valor,
+    )
+
+    if match:
+        return match.group(0)
+
+    return None
+
+
+def extrair_ids_mlb(texto):
 
     ids = []
 
+    if not texto:
+        return ids
+
+    texto = html.unescape(
+        texto
+    )
+
+    # --------------------------------------------------------
+    # Todos os formatos conhecidos.
+    # --------------------------------------------------------
+
     padroes = [
-        r'"item_id"\s*:\s*"?(MLB\d+)',
-        r'"id"\s*:\s*"(MLB\d+)"',
-        r'"itemId"\s*:\s*"(MLB\d+)"',
-        r'"item_id"\s*:\s*"(MLB\d+)"',
-        r'data-id=["\'](MLB\d+)',
-        r'/MLB-(\d+)',
-        r'/MLB(\d+)',
-        r'(MLB\d{6,12})',
+
+        r"MLB-\d{6,12}",
+
+        r"MLB\d{6,12}",
+
+        r"item[_-]?id.{0,100}?MLB[-_]?\d{6,12}",
+
+        r"itemId.{0,100}?MLB[-_]?\d{6,12}",
+
+        r"listing[_-]?item.{0,100}?MLB[-_]?\d{6,12}",
+
+        r"/MLB[-_]?\d{6,12}",
+
     ]
 
     for padrao in padroes:
+
         encontrados = re.findall(
             padrao,
-            conteudo,
+            texto,
             flags=re.IGNORECASE,
         )
 
-        for item in encontrados:
-            if not item:
+        for encontrado in encontrados:
+
+            item_id = normalizar_mlb(
+                encontrado
+            )
+
+            if not item_id:
                 continue
 
-            item = str(item).upper()
-
-            if item.startswith("MLB-"):
-                item = item.replace(
-                    "MLB-",
-                    "MLB",
+            if item_id not in ids:
+                ids.append(
+                    item_id
                 )
-
-            if item.isdigit():
-                item = "MLB" + item
-
-            if re.fullmatch(
-                r"MLB\d{6,12}",
-                item,
-            ):
-                if item not in ids:
-                    ids.append(item)
 
     return ids
 
 
-def buscar_ids_publicos(consulta, pagina=1):
-    """
-    Busca no site público do Mercado Livre.
+# ============================================================
+# BUSCA PÚBLICA - MERCADO LIVRE
+# ============================================================
 
-    Exemplo:
-    celular
-    celular barato
-    air fryer
-    fone bluetooth
-    """
+def buscar_ml_publico(consulta):
 
-    consulta = consulta.strip()
-
-    if not consulta:
-        return [], {
-            "erro": "Consulta vazia."
-        }
-
-    slug = slugify(consulta)
-
-    if not slug:
-        return [], {
-            "erro": "Não foi possível montar a busca."
-        }
-
-    # Paginação do site.
-    offset = max(0, pagina - 1) * 48
-
-    url = (
-        f"https://lista.mercadolivre.com.br/"
-        f"{quote(slug)}"
+    slug = slugify(
+        consulta
     )
 
-    if offset:
-        url += f"_Desde_{offset + 1}"
+    resultados = []
 
-    print("[BUSCA PÚBLICA]", url)
+    fontes = []
+
+    urls = [
+
+        (
+            "lista_normal",
+            f"https://lista.mercadolivre.com.br/{quote(slug)}"
+        ),
+
+        (
+            "lista_afiliados",
+            (
+                "https://lista.mercadolivre.com.br/"
+                f"{quote(slug)}"
+                "_Container_affiliates-mlb-ganhos-extras"
+            )
+        ),
+
+        (
+            "site_normal",
+            f"https://www.mercadolivre.com.br/{quote(slug)}"
+        ),
+    ]
+
+    for nome, url in urls:
+
+        try:
+
+            print(
+                "[PUBLICO]",
+                nome,
+                url,
+            )
+
+            response = requests.get(
+                url,
+                headers=PUBLIC_HEADERS,
+                timeout=HTTP_TIMEOUT,
+                allow_redirects=True,
+            )
+
+            tamanho = len(
+                response.text
+            )
+
+            ids = extrair_ids_mlb(
+                response.text
+            )
+
+            fontes.append({
+                "fonte":
+                    nome,
+                "url":
+                    response.url,
+                "status":
+                    response.status_code,
+                "bytes":
+                    tamanho,
+                "ids":
+                    len(ids),
+            })
+
+            print(
+                "[PUBLICO RESULTADO]",
+                nome,
+                response.status_code,
+                tamanho,
+                len(ids),
+            )
+
+            for item_id in ids:
+
+                if item_id not in resultados:
+
+                    resultados.append(
+                        item_id
+                    )
+
+            if len(resultados) >= MAX_IDS:
+                break
+
+        except Exception as e:
+
+            fontes.append({
+                "fonte":
+                    nome,
+                "erro":
+                    str(e),
+            })
+
+    return resultados[:MAX_IDS], fontes
+
+
+# ============================================================
+# FALLBACK - BING
+# ============================================================
+
+def buscar_bing(consulta):
+
+    resultados = []
+
+    q = (
+        f"site:mercadolivre.com.br "
+        f'"{consulta}" '
+        f'"MLB-"'
+    )
+
+    url = (
+        "https://www.bing.com/search?"
+        + urlencode({
+            "q": q,
+            "count": 50,
+            "setlang": "pt-BR",
+        })
+    )
+
+    print(
+        "[BING]",
+        url,
+    )
 
     try:
+
         response = requests.get(
             url,
-            headers=PUBLIC_HEADERS,
+            headers=BING_HEADERS,
             timeout=HTTP_TIMEOUT,
-            allow_redirects=True,
         )
 
-        print(
-            "[BUSCA PÚBLICA STATUS]",
-            response.status_code,
-            len(response.text),
+        texto = response.text
+
+        ids = extrair_ids_mlb(
+            texto
         )
 
-        if response.status_code != 200:
-            return [], {
-                "erro": (
-                    f"Mercado Livre retornou "
-                    f"HTTP {response.status_code}"
-                ),
-                "status": response.status_code,
-                "url": response.url,
-            }
+        for item_id in ids:
 
-        ids = extrair_item_ids_html(
-            response.text
+            if item_id not in resultados:
+                resultados.append(
+                    item_id
+                )
+
+        # ----------------------------------------------------
+        # Também procura URLs codificadas.
+        # ----------------------------------------------------
+
+        decoded = unquote(
+            texto
         )
 
-        return ids[:MAX_DISCOVERED_IDS], {
-            "status": response.status_code,
-            "url": response.url,
-            "ids_encontrados": len(ids),
+        ids2 = extrair_ids_mlb(
+            decoded
+        )
+
+        for item_id in ids2:
+
+            if item_id not in resultados:
+                resultados.append(
+                    item_id
+                )
+
+        info = {
+            "status":
+                response.status_code,
+            "bytes":
+                len(texto),
+            "ids":
+                len(resultados),
+            "url":
+                response.url,
         }
 
+        return (
+            resultados[:MAX_IDS],
+            info,
+        )
+
     except Exception as e:
+
         return [], {
-            "erro": str(e)
+            "erro":
+                str(e)
         }
 
 
 # ============================================================
-# DADOS DO ANÚNCIO
+# DESCOBERTA PRINCIPAL
+# ============================================================
+
+def descobrir_anuncios(consulta):
+
+    ids = []
+
+    diagnostico = {
+        "consulta":
+            consulta,
+        "fontes_publicas":
+            [],
+        "bing":
+            None,
+        "ids_finais":
+            0,
+    }
+
+    # --------------------------------------------------------
+    # 1. Mercado Livre
+    # --------------------------------------------------------
+
+    ids_ml, fontes = buscar_ml_publico(
+        consulta
+    )
+
+    diagnostico[
+        "fontes_publicas"
+    ] = fontes
+
+    for item_id in ids_ml:
+
+        if item_id not in ids:
+            ids.append(
+                item_id
+            )
+
+    # --------------------------------------------------------
+    # 2. Bing se necessário
+    # --------------------------------------------------------
+
+    if len(ids) < 5:
+
+        ids_bing, info_bing = buscar_bing(
+            consulta
+        )
+
+        diagnostico[
+            "bing"
+        ] = info_bing
+
+        for item_id in ids_bing:
+
+            if item_id not in ids:
+                ids.append(
+                    item_id
+                )
+
+    diagnostico[
+        "ids_finais"
+    ] = len(ids)
+
+    return (
+        ids[:MAX_IDS],
+        diagnostico,
+    )
+
+
+# ============================================================
+# ITEM
 # ============================================================
 
 def obter_item(item_id):
+
     data, status = ml_get(
         f"/items/{item_id}"
     )
@@ -630,48 +890,65 @@ def obter_item(item_id):
     if status != 200:
         return None, status, data
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None, status, data
 
     if not data.get("id"):
         return None, status, data
 
-    return data, status, None
+    return (
+        data,
+        status,
+        None,
+    )
 
 
-def obter_preco_venda(item_id):
+# ============================================================
+# PREÇO
+# ============================================================
+
+def obter_sale_price(item_id):
+
     data, status = ml_get(
         f"/items/{item_id}/sale_price",
         params={
-            "context": "channel_marketplace"
+            "context":
+                "channel_marketplace"
         },
     )
 
     if status != 200:
         return None
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    amount = normalizar_numero(
+    amount = numero(
         data.get("amount")
     )
 
-    regular_amount = normalizar_numero(
+    regular = numero(
         data.get("regular_amount")
     )
 
-    if amount is None:
-        return None
-
     return {
-        "amount": amount,
-        "regular_amount": regular_amount,
-        "raw": data,
+        "amount":
+            amount,
+        "regular_amount":
+            regular,
+        "raw":
+            data,
     }
 
 
-def obter_precos(item_id):
+def obter_prices(item_id):
+
     data, status = ml_get(
         f"/items/{item_id}/prices"
     )
@@ -679,147 +956,176 @@ def obter_precos(item_id):
     if status != 200:
         return []
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return []
 
-    prices = data.get("prices")
+    prices = data.get(
+        "prices"
+    )
 
-    if not isinstance(prices, list):
+    if not isinstance(
+        prices,
+        list,
+    ):
         return []
 
     return prices
 
 
-def descobrir_preco_e_desconto(item):
-    item_id = item.get("id")
+def obter_precos_com_desconto(item):
+
+    item_id = item.get(
+        "id"
+    )
 
     if not item_id:
         return None
 
-    atual = None
-    original = None
-
-    # --------------------------------------------------------
-    # 1. Campo atual do item
-    # --------------------------------------------------------
-
-    atual = normalizar_numero(
+    atual = numero(
         item.get("price")
     )
 
-    original = normalizar_numero(
+    original = numero(
         item.get("original_price")
     )
 
     # --------------------------------------------------------
-    # 2. Endpoint sale_price
+    # SALE PRICE
     # --------------------------------------------------------
 
-    sale = obter_preco_venda(
+    sale = obter_sale_price(
         item_id
     )
 
     if sale:
-        if sale.get("amount") is not None:
-            atual = sale["amount"]
 
-        if sale.get("regular_amount") is not None:
-            original = sale["regular_amount"]
+        if sale.get(
+            "amount"
+        ) is not None:
+
+            atual = sale[
+                "amount"
+            ]
+
+        if sale.get(
+            "regular_amount"
+        ) is not None:
+
+            original = sale[
+                "regular_amount"
+            ]
 
     # --------------------------------------------------------
-    # 3. Endpoint prices
+    # PRICES
     # --------------------------------------------------------
 
-    prices = obter_precos(
+    prices = obter_prices(
         item_id
     )
 
-    if prices:
+    promocoes = []
 
-        # Procuramos uma promoção ativa.
-        promocoes = []
+    standards = []
 
-        for p in prices:
-            if not isinstance(p, dict):
-                continue
+    for preco in prices:
 
-            amount = normalizar_numero(
-                p.get("amount")
+        if not isinstance(
+            preco,
+            dict,
+        ):
+            continue
+
+        tipo = str(
+            preco.get(
+                "type",
+                "",
             )
+        ).lower()
 
-            regular = normalizar_numero(
-                p.get("regular_amount")
+        amount = numero(
+            preco.get(
+                "amount"
             )
+        )
 
-            tipo = str(
-                p.get("type", "")
-            ).lower()
-
-            if amount is None:
-                continue
-
-            if tipo == "promotion":
-                promocoes.append(
-                    {
-                        "amount": amount,
-                        "regular_amount": regular,
-                    }
-                )
-
-        if promocoes:
-
-            # Menor preço promocional.
-            promocoes.sort(
-                key=lambda x: x["amount"]
+        regular = numero(
+            preco.get(
+                "regular_amount"
             )
+        )
 
-            promo = promocoes[0]
+        if amount is None:
+            continue
 
-            atual = promo["amount"]
+        if tipo == "promotion":
 
-            if promo.get("regular_amount"):
-                original = promo[
-                    "regular_amount"
-                ]
+            promocoes.append({
+                "amount":
+                    amount,
+                "regular_amount":
+                    regular,
+            })
 
-        # Se ainda não existe original,
-        # tentamos encontrar um standard.
-        if original is None:
+        if tipo == "standard":
 
-            standards = []
-
-            for p in prices:
-                if not isinstance(p, dict):
-                    continue
-
-                tipo = str(
-                    p.get("type", "")
-                ).lower()
-
-                amount = normalizar_numero(
-                    p.get("amount")
-                )
-
-                if (
-                    tipo == "standard"
-                    and amount is not None
-                ):
-                    standards.append(amount)
-
-            if standards:
-                standard = max(
-                    standards
-                )
-
-                if atual is not None:
-                    if standard > atual:
-                        original = standard
+            standards.append(
+                amount
+            )
 
     # --------------------------------------------------------
-    # 4. Calcula desconto
+    # Promoção
+    # --------------------------------------------------------
+
+    if promocoes:
+
+        promocoes.sort(
+            key=lambda x:
+                x["amount"]
+        )
+
+        promo = promocoes[0]
+
+        atual = promo[
+            "amount"
+        ]
+
+        if promo.get(
+            "regular_amount"
+        ):
+
+            original = promo[
+                "regular_amount"
+            ]
+
+    # --------------------------------------------------------
+    # Standard
+    # --------------------------------------------------------
+
+    if (
+        original is None
+        and standards
+        and atual is not None
+    ):
+
+        maior_standard = max(
+            standards
+        )
+
+        if maior_standard > atual:
+
+            original = (
+                maior_standard
+            )
+
+    # --------------------------------------------------------
+    # Resultado
     # --------------------------------------------------------
 
     if atual is None:
+
         return None
 
     desconto = calcular_desconto(
@@ -828,18 +1134,25 @@ def descobrir_preco_e_desconto(item):
     )
 
     return {
-        "atual": atual,
-        "original": original,
-        "desconto": desconto,
-        "precos": prices,
+        "atual":
+            atual,
+        "original":
+            original,
+        "desconto":
+            desconto,
+        "prices":
+            prices,
+        "sale_price":
+            sale,
     }
 
 
 # ============================================================
-# SALVAR OFERTAS
+# SALVAR OFERTA
 # ============================================================
 
 def salvar_oferta(oferta):
+
     conn = get_db()
 
     conn.execute(
@@ -855,15 +1168,29 @@ def salvar_oferta(oferta):
             criado_em
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+
         ON CONFLICT(item_id)
         DO UPDATE SET
-            titulo = excluded.titulo,
-            preco_atual = excluded.preco_atual,
-            preco_original = excluded.preco_original,
-            desconto = excluded.desconto,
-            permalink = excluded.permalink,
-            imagem = excluded.imagem,
-            criado_em = excluded.criado_em
+            titulo =
+                excluded.titulo,
+
+            preco_atual =
+                excluded.preco_atual,
+
+            preco_original =
+                excluded.preco_original,
+
+            desconto =
+                excluded.desconto,
+
+            permalink =
+                excluded.permalink,
+
+            imagem =
+                excluded.imagem,
+
+            criado_em =
+                excluded.criado_em
         """,
         (
             oferta["item_id"],
@@ -882,24 +1209,19 @@ def salvar_oferta(oferta):
 
 
 # ============================================================
-# GERAÇÃO DE TEXTO
+# TEXTO
 # ============================================================
 
 def gerar_texto_oferta(oferta):
-    titulo = oferta["titulo"]
-    atual = moeda(oferta["preco_atual"])
-    original = moeda(oferta["preco_original"])
-    desconto = oferta["desconto"]
-    link = oferta["permalink"]
 
     return (
-        f"🔥 OFERTA ENCONTRADA!\n\n"
-        f"🛍️ {titulo}\n\n"
-        f"❌ De: {original}\n"
-        f"✅ Por: {atual}\n"
-        f"📉 {desconto:.0f}% OFF\n\n"
-        f"🛒 Comprar:\n"
-        f"{link}\n"
+        "🔥 OFERTA ENCONTRADA!\n\n"
+        f"🛍️ {oferta['titulo']}\n\n"
+        f"❌ De: {moeda(oferta['preco_original'])}\n"
+        f"✅ Por: {moeda(oferta['preco_atual'])}\n"
+        f"📉 {oferta['desconto']:.0f}% OFF\n\n"
+        "🛒 Comprar:\n"
+        f"{oferta['permalink']}"
     )
 
 
@@ -907,9 +1229,11 @@ def gerar_texto_oferta(oferta):
 # HTML
 # ============================================================
 
-HTML_BASE = """
+HTML = r"""
 <!DOCTYPE html>
+
 <html lang="pt-BR">
+
 <head>
 
 <meta charset="UTF-8">
@@ -928,12 +1252,8 @@ HTML_BASE = """
 }
 
 body {
+
     margin: 0;
-    font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
 
     background:
         linear-gradient(
@@ -942,14 +1262,25 @@ body {
             #141414
         );
 
-    color: #fff;
-    min-height: 100vh;
+    color: white;
+
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
 }
 
 .container {
-    width: min(1100px, 94%);
-    margin: auto;
-    padding: 25px 0 50px;
+
+    width:
+        min(1100px, 94%);
+
+    margin:
+        auto;
+
+    padding:
+        25px 0 50px;
 }
 
 h1 {
@@ -957,24 +1288,32 @@ h1 {
 }
 
 .sub {
-    color: #aaa;
-    margin-top: 0;
+    color: #999;
 }
 
 .card {
+
     background: #1d1d1d;
-    border: 1px solid #303030;
-    border-radius: 16px;
-    padding: 18px;
-    margin-top: 18px;
+
+    border:
+        1px solid #303030;
+
+    border-radius:
+        16px;
+
+    padding:
+        18px;
+
+    margin-top:
+        18px;
 }
 
 .form-grid {
+
     display: grid;
+
     grid-template-columns:
-        1fr
-        160px
-        160px;
+        1fr 160px 190px;
 
     gap: 10px;
 }
@@ -982,24 +1321,44 @@ h1 {
 input,
 select,
 button {
+
     width: 100%;
+
     border: 0;
-    border-radius: 10px;
-    padding: 13px;
-    font-size: 15px;
+
+    border-radius:
+        10px;
+
+    padding:
+        14px;
+
+    font-size:
+        16px;
 }
 
 input,
 select {
-    background: #292929;
-    color: #fff;
+
+    background:
+        #292929;
+
+    color:
+        white;
 }
 
 button {
-    background: #00a650;
-    color: #fff;
-    font-weight: 700;
-    cursor: pointer;
+
+    background:
+        #00a650;
+
+    color:
+        white;
+
+    font-weight:
+        800;
+
+    cursor:
+        pointer;
 }
 
 button:hover {
@@ -1007,6 +1366,7 @@ button:hover {
 }
 
 .stats {
+
     display: grid;
 
     grid-template-columns:
@@ -1014,175 +1374,302 @@ button:hover {
 
     gap: 10px;
 
-    margin-top: 15px;
+    margin-top:
+        15px;
 }
 
 .stat {
-    background: #222;
-    border-radius: 12px;
-    padding: 14px;
+
+    background:
+        #222;
+
+    border-radius:
+        12px;
+
+    padding:
+        14px;
 }
 
 .stat strong {
-    display: block;
-    font-size: 23px;
+
+    display:
+        block;
+
+    font-size:
+        25px;
 }
 
 .stat span {
-    color: #999;
-    font-size: 12px;
+
+    color:
+        #999;
+
+    font-size:
+        12px;
+}
+
+.notice {
+
+    background:
+        #332800;
+
+    border:
+        1px solid #665300;
+
+    color:
+        #ffe7a0;
+
+    padding:
+        15px;
+
+    border-radius:
+        12px;
+
+    margin-top:
+        15px;
+}
+
+.error {
+
+    background:
+        #3b1111;
+
+    border:
+        1px solid #7d2525;
+
+    color:
+        #ffb8b8;
+
+    padding:
+        15px;
+
+    border-radius:
+        12px;
+
+    margin-top:
+        15px;
+}
+
+.success {
+
+    background:
+        #10351f;
+
+    border:
+        1px solid #176b39;
+
+    color:
+        #b1ffcc;
+
+    padding:
+        15px;
+
+    border-radius:
+        12px;
+
+    margin-top:
+        15px;
 }
 
 .offer {
-    display: grid;
+
+    display:
+        grid;
 
     grid-template-columns:
         160px 1fr;
 
-    gap: 18px;
+    gap:
+        18px;
 
-    background: #1c1c1c;
+    background:
+        #1c1c1c;
 
-    border: 1px solid #303030;
+    border:
+        1px solid #303030;
 
-    border-radius: 16px;
+    border-radius:
+        16px;
 
-    padding: 15px;
+    padding:
+        15px;
 
-    margin-top: 15px;
+    margin-top:
+        15px;
 }
 
 .offer img {
-    width: 160px;
-    height: 160px;
-    object-fit: contain;
-    background: #fff;
-    border-radius: 10px;
+
+    width:
+        160px;
+
+    height:
+        160px;
+
+    object-fit:
+        contain;
+
+    background:
+        white;
+
+    border-radius:
+        10px;
 }
 
 .title {
-    font-size: 18px;
-    font-weight: 700;
+
+    font-size:
+        18px;
+
+    font-weight:
+        700;
 }
 
 .old {
-    color: #999;
-    text-decoration: line-through;
-    margin-top: 12px;
+
+    color:
+        #999;
+
+    text-decoration:
+        line-through;
+
+    margin-top:
+        12px;
 }
 
 .price {
-    color: #00d66b;
-    font-size: 27px;
-    font-weight: 800;
+
+    color:
+        #00dc6a;
+
+    font-size:
+        28px;
+
+    font-weight:
+        800;
 }
 
 .discount {
-    display: inline-block;
 
-    background: #00a650;
+    display:
+        inline-block;
 
-    padding: 5px 9px;
+    background:
+        #00a650;
 
-    border-radius: 8px;
+    padding:
+        5px 9px;
 
-    font-weight: 800;
+    border-radius:
+        8px;
 
-    margin: 5px 0 10px;
+    font-weight:
+        800;
 }
 
 .actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
+
+    display:
+        flex;
+
+    flex-wrap:
+        wrap;
+
+    gap:
+        8px;
+
+    margin-top:
+        12px;
 }
 
 .actions a,
 .actions button {
-    display: inline-block;
-    width: auto;
 
-    text-decoration: none;
+    width:
+        auto;
 
-    padding: 10px 13px;
+    text-decoration:
+        none;
 
-    border-radius: 9px;
+    background:
+        #333;
 
-    background: #333;
+    color:
+        white;
 
-    color: #fff;
+    padding:
+        10px 13px;
 
-    border: 0;
+    border-radius:
+        9px;
 
-    cursor: pointer;
-}
-
-.actions a:hover,
-.actions button:hover {
-    background: #444;
+    font-size:
+        14px;
 }
 
 .actions .green {
-    background: #00a650;
-}
-
-.notice {
-    background: #332800;
-    border: 1px solid #6b5500;
-    color: #ffe9a3;
-    padding: 14px;
-    border-radius: 12px;
-    margin-top: 15px;
-}
-
-.error {
-    background: #3a1111;
-    border: 1px solid #712121;
-    color: #ffb2b2;
-    padding: 14px;
-    border-radius: 12px;
-    margin-top: 15px;
-}
-
-.success {
-    background: #10351f;
-    border: 1px solid #176d3a;
-    color: #a7ffc9;
-    padding: 14px;
-    border-radius: 12px;
-    margin-top: 15px;
+    background:
+        #00a650;
 }
 
 .small {
-    color: #999;
-    font-size: 12px;
+
+    color:
+        #888;
+
+    font-size:
+        12px;
 }
 
-pre {
-    white-space: pre-wrap;
-    word-break: break-word;
+.debug {
+
+    background:
+        #101010;
+
+    border:
+        1px solid #292929;
+
+    border-radius:
+        12px;
+
+    padding:
+        12px;
+
+    overflow:
+        auto;
+
+    font-size:
+        12px;
 }
 
 @media(max-width: 800px) {
 
     .form-grid {
-        grid-template-columns: 1fr;
+
+        grid-template-columns:
+            1fr;
     }
 
     .stats {
+
         grid-template-columns:
             repeat(2, 1fr);
     }
 
     .offer {
-        grid-template-columns: 1fr;
+
+        grid-template-columns:
+            1fr;
     }
 
     .offer img {
-        width: 100%;
-        height: 220px;
-    }
 
+        width:
+            100%;
+
+        height:
+            220px;
+    }
 }
 
 </style>
@@ -1196,20 +1683,23 @@ pre {
 <h1>🔥 Caçador de Ofertas</h1>
 
 <p class="sub">
-Mercado Livre • busca de anúncios reais • filtro de desconto
+Mercado Livre • anúncios reais • filtro de desconto
 </p>
+
 
 <div class="card">
 
-<form action="/buscar" method="get">
+<form
+    action="/buscar"
+    method="get"
+>
 
 <div class="form-grid">
 
 <input
-    type="text"
     name="q"
+    value="{{ consulta }}"
     placeholder="Ex.: celular, air fryer, fone bluetooth..."
-    value="{{ consulta or '' }}"
     required
 >
 
@@ -1361,8 +1851,6 @@ Por: {{ oferta.preco_atual_fmt }}
 ID: {{ oferta.item_id }}
 </div>
 
-<br>
-
 <div class="actions">
 
 <a
@@ -1374,16 +1862,16 @@ ID: {{ oferta.item_id }}
 </a>
 
 <a
-    href="{{ afiliado_url }}"
+    href="https://www.mercadolivre.com.br/afiliados"
     target="_blank"
 >
 🔗 Gerar afiliado
 </a>
 
 <button
-    onclick="copiarOferta({{ oferta.texto_js|tojson }})"
+    onclick='copiarOferta({{ oferta.texto_js|tojson }})'
 >
-📋 Copiar oferta
+📋 Copiar
 </button>
 
 </div>
@@ -1398,14 +1886,33 @@ ID: {{ oferta.item_id }}
 
 <div class="card">
 
-<h3>
+<h2>
 Nenhuma oferta encontrada.
-</h3>
+</h2>
 
 <p class="small">
-Foram encontrados anúncios reais, mas nenhum apresentou
-preço original maior que o preço atual dentro do desconto mínimo.
+A busca foi executada, mas nenhum anúncio atingiu
+o desconto mínimo informado.
 </p>
+
+</div>
+
+{% endif %}
+
+
+{% if diagnostico %}
+
+<div class="card">
+
+<h3>
+🔎 Diagnóstico da descoberta
+</h3>
+
+<div class="debug">
+
+<pre>{{ diagnostico_json }}</pre>
+
+</div>
 
 </div>
 
@@ -1414,45 +1921,35 @@ preço original maior que o preço atual dentro do desconto mínimo.
 
 <div class="card">
 
-<h3>🔐 Mercado Livre</h3>
+<h3>
+🔐 Mercado Livre
+</h3>
 
 {% if oauth %}
 
 <div class="success">
 
 Conectado como:
+
 <strong>
 {{ oauth.nickname or oauth.user_id }}
 </strong>
 
-<br>
+<br><br>
 
 User ID:
 {{ oauth.user_id }}
 
 </div>
 
-<br>
-
-<a
-    href="/mercadolivre/status"
-    style="color:#00d66b"
->
-Ver status da conexão
-</a>
-
 {% else %}
-
-<p>
-Seu Mercado Livre ainda não está conectado.
-</p>
 
 <a
     href="/mercadolivre/login"
     style="
         display:inline-block;
         background:#00a650;
-        color:white;
+        color:#fff;
         padding:12px 15px;
         border-radius:9px;
         text-decoration:none;
@@ -1469,15 +1966,12 @@ Seu Mercado Livre ainda não está conectado.
 
 <p class="small">
 
-A descoberta dos anúncios usa a página pública de resultados
-do Mercado Livre; depois os IDs encontrados são conferidos
-pela API do Mercado Livre.
-
-O link de afiliado deve ser gerado pelo Gerador de Links
-ou pela Barra de Afiliados do Mercado Livre.
+Os dados do anúncio e preços são consultados pela API
+do Mercado Livre quando um ID real é encontrado.
+A busca pública é utilizada somente para descobrir
+as publicações.
 
 </p>
-
 
 </div>
 
@@ -1497,7 +1991,7 @@ function copiarOferta(texto) {
         .catch(function() {
 
             alert(
-                "Não foi possível copiar automaticamente."
+                "Não foi possível copiar."
             );
 
         });
@@ -1507,22 +2001,21 @@ function copiarOferta(texto) {
 </script>
 
 </body>
+
 </html>
 """
 
 
 # ============================================================
-# ROTAS
+# HOME
 # ============================================================
 
 @app.route("/")
 def index():
 
-    oauth = carregar_oauth()
-
     return render_template_string(
-        HTML_BASE,
-        oauth=oauth,
+        HTML,
+        oauth=carregar_oauth(),
         consulta="",
         desconto_min=10,
         ofertas=[],
@@ -1530,15 +2023,13 @@ def index():
         aviso=None,
         erro=None,
         buscou=False,
-        afiliado_url=(
-            "https://www.mercadolivre.com.br/"
-            "afiliados"
-        ),
+        diagnostico=None,
+        diagnostico_json=None,
     )
 
 
 # ============================================================
-# BUSCAR
+# BUSCAR OFERTAS
 # ============================================================
 
 @app.route("/buscar")
@@ -1546,73 +2037,96 @@ def buscar():
 
     consulta = request.args.get(
         "q",
-        ""
+        "",
     ).strip()
 
     try:
+
         desconto_min = float(
             request.args.get(
                 "desconto",
-                "10"
+                "10",
             )
         )
+
     except Exception:
+
         desconto_min = 10
+
+    stats = {
+        "descobertos":
+            0,
+
+        "anuncios":
+            0,
+
+        "ofertas":
+            0,
+
+        "com_desconto":
+            0,
+
+        "sem_original":
+            0,
+
+        "erros":
+            0,
+    }
 
     ofertas = []
 
-    stats = {
-        "descobertos": 0,
-        "anuncios": 0,
-        "ofertas": 0,
-        "com_desconto": 0,
-        "sem_original": 0,
-        "erros": 0,
-    }
+    diagnostico = None
 
     aviso = None
+
     erro = None
 
     if not consulta:
 
         return render_template_string(
-            HTML_BASE,
+            HTML,
             oauth=carregar_oauth(),
             consulta="",
             desconto_min=desconto_min,
             ofertas=[],
             stats=None,
             aviso=None,
-            erro="Digite o produto que deseja procurar.",
+            erro="Digite um produto.",
             buscou=True,
-            afiliado_url=(
-                "https://www.mercadolivre.com.br/"
-                "afiliados"
-            ),
+            diagnostico=None,
+            diagnostico_json=None,
         )
 
     # --------------------------------------------------------
-    # 1. Descobre IDs reais
+    # DESCOBRE IDS
     # --------------------------------------------------------
 
-    ids, info = buscar_ids_publicos(
+    ids, diagnostico = descobrir_anuncios(
         consulta
     )
 
-    stats["descobertos"] = len(ids)
+    stats[
+        "descobertos"
+    ] = len(ids)
 
     if not ids:
 
         erro = (
             "Não consegui descobrir anúncios reais "
-            "nessa busca. "
+            "nessa busca."
         )
 
-        if info.get("erro"):
-            erro += info["erro"]
+        diagnostico_json = (
+            __import__("json")
+            .dumps(
+                diagnostico,
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
 
         return render_template_string(
-            HTML_BASE,
+            HTML,
             oauth=carregar_oauth(),
             consulta=consulta,
             desconto_min=desconto_min,
@@ -1621,124 +2135,165 @@ def buscar():
             aviso=None,
             erro=erro,
             buscou=True,
-            afiliado_url=(
-                "https://www.mercadolivre.com.br/"
-                "afiliados"
-            ),
+            diagnostico=diagnostico,
+            diagnostico_json=
+                diagnostico_json,
         )
 
     # --------------------------------------------------------
-    # 2. Consulta anúncios pela API oficial
+    # CONSULTA API
     # --------------------------------------------------------
 
-    for item_id in ids[:MAX_ITEMS_TO_CHECK]:
+    for item_id in ids[:MAX_ITEMS]:
 
-        stats["anuncios"] += 1
+        stats[
+            "anuncios"
+        ] += 1
 
-        item, status, raw_error = obter_item(
+        item, status, raw = obter_item(
             item_id
         )
 
         if not item:
 
-            stats["erros"] += 1
+            stats[
+                "erros"
+            ] += 1
 
             continue
 
-        titulo = (
-            item.get("title")
-            or "Produto Mercado Livre"
+        dados = obter_precos_com_desconto(
+            item
         )
 
-        permalink = (
-            item.get("permalink")
-            or f"https://www.mercadolivre.com.br/"
-               f"{item_id}"
-        )
+        if not dados:
 
-        imagens = item.get(
-            "pictures",
-            []
-        )
-
-        imagem = ""
-
-        if isinstance(imagens, list) and imagens:
-
-            primeira = imagens[0]
-
-            if isinstance(primeira, dict):
-
-                imagem = (
-                    primeira.get("secure_url")
-                    or primeira.get("url")
-                    or ""
-                )
-
-        dados_preco = (
-            descobrir_preco_e_desconto(
-                item
-            )
-        )
-
-        if not dados_preco:
-
-            stats["erros"] += 1
+            stats[
+                "erros"
+            ] += 1
 
             continue
 
-        atual = dados_preco.get(
+        atual = dados.get(
             "atual"
         )
 
-        original = dados_preco.get(
+        original = dados.get(
             "original"
         )
 
-        desconto = dados_preco.get(
+        desconto = dados.get(
             "desconto",
-            0
+            0,
         )
 
         if original is None:
 
-            stats["sem_original"] += 1
+            stats[
+                "sem_original"
+            ] += 1
 
             continue
 
-        stats["com_desconto"] += 1
+        stats[
+            "com_desconto"
+        ] += 1
 
         if desconto < desconto_min:
-
             continue
 
+        titulo = (
+            item.get(
+                "title"
+            )
+            or "Produto Mercado Livre"
+        )
+
+        permalink = (
+            item.get(
+                "permalink"
+            )
+            or
+            f"https://www.mercadolivre.com.br/"
+            f"{item_id}"
+        )
+
+        imagem = ""
+
+        pictures = item.get(
+            "pictures",
+            [],
+        )
+
+        if isinstance(
+            pictures,
+            list,
+        ) and pictures:
+
+            primeira = pictures[0]
+
+            if isinstance(
+                primeira,
+                dict,
+            ):
+
+                imagem = (
+                    primeira.get(
+                        "secure_url"
+                    )
+                    or
+                    primeira.get(
+                        "url"
+                    )
+                    or
+                    ""
+                )
+
         oferta = {
-            "item_id": item_id,
-            "titulo": titulo,
-            "preco_atual": atual,
-            "preco_original": original,
-            "desconto": desconto,
-            "permalink": permalink,
-            "imagem": imagem,
+
+            "item_id":
+                item_id,
+
+            "titulo":
+                titulo,
+
+            "preco_atual":
+                atual,
+
+            "preco_original":
+                original,
+
+            "desconto":
+                desconto,
+
+            "permalink":
+                permalink,
+
+            "imagem":
+                imagem,
         }
 
-        oferta["preco_atual_fmt"] = moeda(
+        oferta[
+            "preco_atual_fmt"
+        ] = moeda(
             atual
         )
 
-        oferta["preco_original_fmt"] = moeda(
+        oferta[
+            "preco_original_fmt"
+        ] = moeda(
             original
         )
 
-        oferta["desconto_fmt"] = (
-            f"{desconto:.0f}%"
-        )
+        oferta[
+            "desconto_fmt"
+        ] = f"{desconto:.0f}%"
 
-        oferta["texto"] = gerar_texto_oferta(
+        oferta[
+            "texto_js"
+        ] = gerar_texto_oferta(
             oferta
         )
-
-        oferta["texto_js"] = oferta["texto"]
 
         ofertas.append(
             oferta
@@ -1748,43 +2303,54 @@ def buscar():
             oferta
         )
 
-        stats["ofertas"] += 1
+        stats[
+            "ofertas"
+        ] += 1
 
     # --------------------------------------------------------
-    # Ordena do maior desconto para menor
+    # ORDENA
     # --------------------------------------------------------
 
     ofertas.sort(
-        key=lambda x: x["desconto"],
+        key=lambda x:
+            x["desconto"],
         reverse=True,
     )
 
-    if stats["ofertas"]:
+    if ofertas:
 
         aviso = (
-            f"Encontradas "
-            f"{stats['ofertas']} oferta(s) "
-            f"com {desconto_min:.0f}% ou mais de desconto."
+            f"🔥 {len(ofertas)} oferta(s) "
+            f"encontrada(s) com "
+            f"{desconto_min:.0f}% ou mais."
         )
 
     elif stats["com_desconto"]:
 
         aviso = (
-            "Foram encontrados anúncios com "
-            "preço atual e preço original, "
-            "mas nenhum atingiu o desconto mínimo."
+            "Foram encontrados anúncios "
+            "com preço original, mas nenhum "
+            "atingiu o desconto mínimo."
         )
 
     else:
 
         aviso = (
             "Os anúncios foram encontrados, "
-            "mas a API não disponibilizou preço "
-            "original suficiente para confirmar desconto."
+            "mas não foi possível confirmar "
+            "um preço original suficiente."
         )
 
+    import json
+
+    diagnostico_json = json.dumps(
+        diagnostico,
+        indent=2,
+        ensure_ascii=False,
+    )
+
     return render_template_string(
-        HTML_BASE,
+        HTML,
         oauth=carregar_oauth(),
         consulta=consulta,
         desconto_min=desconto_min,
@@ -1793,11 +2359,181 @@ def buscar():
         aviso=aviso,
         erro=erro,
         buscou=True,
-        afiliado_url=(
-            "https://www.mercadolivre.com.br/"
-            "afiliados"
-        ),
+        diagnostico=diagnostico,
+        diagnostico_json=
+            diagnostico_json,
     )
+
+
+# ============================================================
+# TESTE DE BUSCA
+# ============================================================
+
+@app.route("/mercadolivre/teste-busca")
+def teste_busca():
+
+    consulta = request.args.get(
+        "q",
+        "celular",
+    ).strip()
+
+    ids, diagnostico = descobrir_anuncios(
+        consulta
+    )
+
+    testes_api = []
+
+    for item_id in ids[:5]:
+
+        item, status, raw = obter_item(
+            item_id
+        )
+
+        if item:
+
+            preco = obter_precos_com_desconto(
+                item
+            )
+
+            testes_api.append({
+
+                "item_id":
+                    item_id,
+
+                "http":
+                    status,
+
+                "titulo":
+                    item.get(
+                        "title"
+                    ),
+
+                "price":
+                    item.get(
+                        "price"
+                    ),
+
+                "original_price":
+                    item.get(
+                        "original_price"
+                    ),
+
+                "precos":
+                    preco,
+
+                "permalink":
+                    item.get(
+                        "permalink"
+                    ),
+            })
+
+        else:
+
+            testes_api.append({
+
+                "item_id":
+                    item_id,
+
+                "http":
+                    status,
+
+                "erro":
+                    raw,
+            })
+
+    return jsonify({
+
+        "consulta":
+            consulta,
+
+        "total_ids":
+            len(ids),
+
+        "ids":
+            ids,
+
+        "diagnostico":
+            diagnostico,
+
+        "testes_api":
+            testes_api,
+    })
+
+
+# ============================================================
+# TESTE DE PREÇO
+# ============================================================
+
+@app.route("/mercadolivre/teste-preco")
+def teste_preco():
+
+    item_id = request.args.get(
+        "item_id",
+        "",
+    ).strip().upper()
+
+    if not re.fullmatch(
+        r"MLB\d{6,12}",
+        item_id,
+    ):
+
+        return jsonify({
+            "erro":
+                "Informe um ID válido. "
+                "Exemplo: MLB123456789"
+        }), 400
+
+    item, status, raw = obter_item(
+        item_id
+    )
+
+    if not item:
+
+        return jsonify({
+            "http":
+                status,
+
+            "erro":
+                raw,
+        }), 400
+
+    dados = obter_precos_com_desconto(
+        item
+    )
+
+    return jsonify({
+
+        "item": {
+
+            "id":
+                item.get(
+                    "id"
+                ),
+
+            "title":
+                item.get(
+                    "title"
+                ),
+
+            "price":
+                item.get(
+                    "price"
+                ),
+
+            "original_price":
+                item.get(
+                    "original_price"
+                ),
+
+            "permalink":
+                item.get(
+                    "permalink"
+                ),
+        },
+
+        "precos":
+            dados,
+    })
 
 
 # ============================================================
@@ -1810,34 +2546,49 @@ def mercadolivre_login():
     if not CLIENT_ID:
 
         return (
-            "ERRO: ML_CLIENT_ID não configurado.",
+            "ML_CLIENT_ID não configurado.",
             500,
         )
 
-    state = secrets.token_urlsafe(32)
+    state = secrets.token_urlsafe(
+        32
+    )
 
     verifier = gerar_code_verifier()
+
     challenge = gerar_code_challenge(
         verifier
     )
 
     salvar_config(
         "oauth_state",
-        state
+        state,
     )
 
     salvar_config(
         "oauth_code_verifier",
-        verifier
+        verifier,
     )
 
     params = {
-        "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
+
+        "response_type":
+            "code",
+
+        "client_id":
+            CLIENT_ID,
+
+        "redirect_uri":
+            REDIRECT_URI,
+
+        "state":
+            state,
+
+        "code_challenge":
+            challenge,
+
+        "code_challenge_method":
+            "S256",
     }
 
     url = (
@@ -1845,7 +2596,9 @@ def mercadolivre_login():
         + urlencode(params)
     )
 
-    return redirect(url)
+    return redirect(
+        url
+    )
 
 
 # ============================================================
@@ -1861,10 +2614,11 @@ def mercadolivre_callback():
 
     if error:
 
-        return f"""
-        <h2>Erro no Mercado Livre</h2>
-        <pre>{html.escape(error)}</pre>
-        """
+        return (
+            f"<h2>Erro Mercado Livre</h2>"
+            f"<pre>{html.escape(error)}</pre>",
+            400,
+        )
 
     code = request.args.get(
         "code"
@@ -1885,11 +2639,11 @@ def mercadolivre_callback():
     if not code:
 
         return (
-            "Código de autorização não recebido.",
+            "Código não recebido.",
             400,
         )
 
-    if not state or state != saved_state:
+    if state != saved_state:
 
         return (
             "STATE inválido.",
@@ -1904,12 +2658,24 @@ def mercadolivre_callback():
         )
 
     payload = {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": verifier,
+
+        "grant_type":
+            "authorization_code",
+
+        "client_id":
+            CLIENT_ID,
+
+        "client_secret":
+            CLIENT_SECRET,
+
+        "code":
+            code,
+
+        "redirect_uri":
+            REDIRECT_URI,
+
+        "code_verifier":
+            verifier,
     }
 
     try:
@@ -1922,14 +2688,11 @@ def mercadolivre_callback():
 
         if response.status_code != 200:
 
-            return f"""
-            <h2>Erro ao obter token</h2>
-            <pre>
-HTTP {response.status_code}
-
-{html.escape(response.text)}
-            </pre>
-            """, 500
+            return (
+                "<h2>Erro ao obter token</h2>"
+                f"<pre>{html.escape(response.text)}</pre>",
+                500,
+            )
 
         data = response.json()
 
@@ -1944,65 +2707,78 @@ HTTP {response.status_code}
         expires_in = int(
             data.get(
                 "expires_in",
-                21600
+                21600,
             )
         )
 
         if not access_token:
 
             return (
-                "Mercado Livre não retornou access_token.",
+                "access_token não recebido.",
                 500,
             )
-
-        # ----------------------------------------------------
-        # Busca dados da conta
-        # ----------------------------------------------------
-
-        me = requests.get(
-            f"{ML_API}/users/me",
-            headers={
-                "Authorization":
-                    f"Bearer {access_token}"
-            },
-            timeout=HTTP_TIMEOUT,
-        )
 
         user_id = None
         nickname = None
 
-        if me.status_code == 200:
+        try:
 
-            user = me.json()
-
-            user_id = str(
-                user.get("id")
+            me = requests.get(
+                f"{ML_API}/users/me",
+                headers={
+                    "Authorization":
+                        f"Bearer {access_token}"
+                },
+                timeout=HTTP_TIMEOUT,
             )
 
-            nickname = user.get(
-                "nickname"
-            )
+            if me.status_code == 200:
 
-        salvar_oauth(
-            {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_at":
-                    int(time.time())
-                    + expires_in,
-                "user_id": user_id,
-                "nickname": nickname,
-            }
+                user = me.json()
+
+                user_id = str(
+                    user.get(
+                        "id"
+                    )
+                )
+
+                nickname = user.get(
+                    "nickname"
+                )
+
+        except Exception:
+            pass
+
+        salvar_oauth({
+
+            "access_token":
+                access_token,
+
+            "refresh_token":
+                refresh_token,
+
+            "expires_at":
+                int(time.time())
+                + expires_in,
+
+            "user_id":
+                user_id,
+
+            "nickname":
+                nickname,
+        })
+
+        return redirect(
+            "/"
         )
-
-        return redirect("/")
 
     except Exception as e:
 
-        return f"""
-        <h2>Erro no callback</h2>
-        <pre>{html.escape(str(e))}</pre>
-        """, 500
+        return (
+            f"<h2>Erro</h2>"
+            f"<pre>{html.escape(str(e))}</pre>",
+            500,
+        )
 
 
 # ============================================================
@@ -2016,263 +2792,127 @@ def mercadolivre_status():
 
     if not row:
 
-        return jsonify(
-            {
-                "conectado": False,
-                "mensagem":
-                    "Nenhum OAuth salvo."
-            }
-        )
+        return jsonify({
+            "conectado":
+                False,
+
+            "mensagem":
+                "Nenhum OAuth salvo.",
+        })
 
     token = obter_access_token()
 
     if not token:
 
-        return jsonify(
-            {
-                "conectado": False,
-                "mensagem":
-                    "Token ausente ou expirado.",
-                "user_id":
-                    row["user_id"],
-                "nickname":
-                    row["nickname"],
-            }
-        )
+        return jsonify({
+
+            "conectado":
+                False,
+
+            "mensagem":
+                "Token ausente ou expirado.",
+
+            "user_id":
+                row["user_id"],
+
+            "nickname":
+                row["nickname"],
+        })
 
     me, status = ml_get(
         "/users/me"
     )
 
-    return jsonify(
-        {
-            "conectado": status == 200,
-            "http": status,
-            "user_id":
-                row["user_id"],
-            "nickname":
-                row["nickname"],
-            "me":
-                me,
-        }
-    )
+    return jsonify({
+
+        "conectado":
+            status == 200,
+
+        "http":
+            status,
+
+        "user_id":
+            row["user_id"],
+
+        "nickname":
+            row["nickname"],
+
+        "me":
+            me,
+    })
 
 
 # ============================================================
-# DIAGNÓSTICO
+# DIAGNÓSTICO API
 # ============================================================
 
 @app.route("/mercadolivre/diagnostico")
-def mercadolivre_diagnostico():
+def diagnostico_api():
 
     resultado = {
-        "client_id_configurado":
+
+        "client_id":
             bool(CLIENT_ID),
 
-        "client_secret_configurado":
+        "client_secret":
             bool(CLIENT_SECRET),
 
         "redirect_uri":
             REDIRECT_URI,
 
-        "oauth_salvo":
+        "oauth":
             bool(carregar_oauth()),
 
         "token_valido":
             token_valido(),
-
-        "endpoints": {},
     }
 
-    # users/me
-    me, status_me = ml_get(
+    me, status = ml_get(
         "/users/me"
     )
 
-    resultado["endpoints"]["users_me"] = {
-        "http": status_me,
-        "resultado": me,
+    resultado[
+        "users_me"
+    ] = {
+
+        "http":
+            status,
+
+        "resultado":
+            me,
     }
 
-    # products/search
     produtos, status_produtos = ml_get(
         "/products/search",
         params={
-            "status": "active",
-            "site_id": "MLB",
-            "q": "celular",
-            "limit": 3,
+
+            "status":
+                "active",
+
+            "site_id":
+                "MLB",
+
+            "q":
+                "celular",
+
+            "limit":
+                3,
         },
     )
 
-    resultado["endpoints"][
+    resultado[
         "products_search"
     ] = {
-        "http": status_produtos,
-        "resultado": produtos,
+
+        "http":
+            status_produtos,
+
+        "resultado":
+            produtos,
     }
 
     return jsonify(
         resultado
-    )
-
-
-# ============================================================
-# TESTE DE BUSCA PÚBLICA
-# ============================================================
-
-@app.route("/mercadolivre/teste-busca")
-def teste_busca():
-
-    consulta = request.args.get(
-        "q",
-        "celular"
-    )
-
-    ids, info = buscar_ids_publicos(
-        consulta
-    )
-
-    resultado = {
-        "consulta": consulta,
-        "info": info,
-        "ids": ids,
-        "total": len(ids),
-    }
-
-    # Testa os primeiros 5 IDs na API.
-    testes = []
-
-    for item_id in ids[:5]:
-
-        item, status, erro = obter_item(
-            item_id
-        )
-
-        if item:
-
-            dados_preco = (
-                descobrir_preco_e_desconto(
-                    item
-                )
-            )
-
-            testes.append(
-                {
-                    "item_id": item_id,
-                    "http": status,
-                    "titulo":
-                        item.get("title"),
-                    "price":
-                        item.get("price"),
-                    "original_price":
-                        item.get(
-                            "original_price"
-                        ),
-                    "precos":
-                        dados_preco,
-                    "permalink":
-                        item.get(
-                            "permalink"
-                        ),
-                }
-            )
-
-        else:
-
-            testes.append(
-                {
-                    "item_id": item_id,
-                    "http": status,
-                    "erro": erro,
-                }
-            )
-
-    resultado["testes_api"] = testes
-
-    return jsonify(
-        resultado
-    )
-
-
-# ============================================================
-# TESTE DE PREÇO
-# ============================================================
-
-@app.route("/mercadolivre/teste-preco")
-def teste_preco():
-
-    item_id = request.args.get(
-        "item_id",
-        ""
-    ).strip().upper()
-
-    if not item_id:
-
-        return jsonify(
-            {
-                "erro":
-                    "Informe ?item_id=MLB123456789"
-            }
-        ), 400
-
-    item, status, erro = obter_item(
-        item_id
-    )
-
-    if not item:
-
-        return jsonify(
-            {
-                "item_id":
-                    item_id,
-                "http":
-                    status,
-                "erro":
-                    erro,
-            }
-        ), 400
-
-    sale = obter_preco_venda(
-        item_id
-    )
-
-    prices = obter_precos(
-        item_id
-    )
-
-    return jsonify(
-        {
-            "item": {
-                "id":
-                    item.get("id"),
-                "title":
-                    item.get("title"),
-                "price":
-                    item.get("price"),
-                "original_price":
-                    item.get(
-                        "original_price"
-                    ),
-                "permalink":
-                    item.get(
-                        "permalink"
-                    ),
-            },
-            "sale_price":
-                sale,
-            "prices":
-                prices,
-            "desconto":
-                calcular_desconto(
-                    item.get(
-                        "original_price"
-                    ),
-                    item.get(
-                        "price"
-                    ),
-                ),
-        }
     )
 
 
@@ -2281,7 +2921,7 @@ def teste_preco():
 # ============================================================
 
 @app.route("/ofertas")
-def listar_ofertas():
+def ofertas_historico():
 
     conn = get_db()
 
@@ -2296,17 +2936,10 @@ def listar_ofertas():
 
     conn.close()
 
-    resultado = []
-
-    for row in rows:
-
-        resultado.append(
-            dict(row)
-        )
-
-    return jsonify(
-        resultado
-    )
+    return jsonify([
+        dict(row)
+        for row in rows
+    ])
 
 
 # ============================================================
@@ -2316,15 +2949,17 @@ def listar_ofertas():
 @app.route("/health")
 def health():
 
-    return jsonify(
-        {
-            "status": "ok",
-            "app":
-                "cacador-de-ofertas",
-            "mercadolivre":
-                bool(carregar_oauth()),
-        }
-    )
+    return jsonify({
+
+        "status":
+            "ok",
+
+        "app":
+            "cacador-de-ofertas",
+
+        "oauth":
+            bool(carregar_oauth()),
+    })
 
 
 # ============================================================
@@ -2336,7 +2971,7 @@ if __name__ == "__main__":
     port = int(
         os.getenv(
             "PORT",
-            "8080"
+            "8080",
         )
     )
 
