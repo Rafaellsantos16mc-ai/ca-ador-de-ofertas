@@ -616,14 +616,16 @@ def parse_coupon_block(code, block, source_url=COUPONS_URL):
 
     usage_limit = None
     for pat in [
-        r"(?:limite de|limite:|até)\s*([0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes))",
-        r"([0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes))",
-        r"(?:disponível|disponiveis)\s*para\s*(?:os )?([0-9]{2,7})\s*(?:primeiros )?(?:usos|clientes)",
+        r"(?:limite de|limite:|até)\s*([0-9]{1,3}(?:[\.,][0-9]{3})*|[0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes)|cupons|clientes)",
+        r"([0-9]{1,3}(?:[\.,][0-9]{3})*|[0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes)|cupons|clientes)",
+        r"(?:disponível|disponiveis)\s*para\s*(?:os )?([0-9]{1,3}(?:[\.,][0-9]{3})*|[0-9]{2,7})\s*(?:primeiros )?(?:usos|clientes|cupons)",
     ]:
         m = re.search(pat, block, re.I)
         if m:
-            try: usage_limit = int(m.group(1))
-            except Exception: usage_limit = None
+            try:
+                usage_limit = int(str(m.group(1)).replace('.', '').replace(',', ''))
+            except Exception:
+                usage_limit = None
             break
 
     return {
@@ -783,24 +785,33 @@ def best_coupon(price):
     return max(choices, key=lambda x:(x["desconto_estimado"],x["percentual_efetivo"],-(float(x.get("min_purchase") or 0))), default=None)
 
 def choose_best_coupon(title, price, public_cards=None):
-    candidates = []
-    if public_cards:
-        matched = match_public_coupon(title, price, public_cards)
-        if matched:
-            d = calculate_public_coupon(matched, price)
-            if d > 0:
-                x = dict(matched); x["desconto_estimado"] = d
-                x["percentual_efetivo"] = round((d / float(price)) * 100, 2)
-                x["match_type"] = "produto_publico"
-                candidates.append(x)
-    for c in coupons():
-        d = coupon_discount(c, price)
-        if d <= 0: continue
-        x = dict(c); x["desconto_estimado"] = d
-        x["percentual_efetivo"] = round((d / float(price)) * 100, 2) if float(price) > 0 else 0
-        x["match_type"] = "regras_de_preco"
-        candidates.append(x)
-    return max(candidates, key=lambda x:(x.get("desconto_estimado") or 0,x.get("percentual_efetivo") or 0,1 if x.get("match_type")=="produto_publico" else 0,-(float(x.get("min_purchase") or 0))), default=None)
+    """Escolhe somente cupons com associação pública ao produto.
+
+    IMPORTANTE: não aplicamos mais um cupom genérico só porque o preço
+    atende ao mínimo/máximo. Isso foi o que fazia o S5PRUNK/R$70 aparecer
+    em praticamente todos os produtos. O Mercado Livre informa que cupons
+    são condicionados a produtos selecionados; portanto, sem uma associação
+    pública produto->cupom, o app não chama o cupom de aplicável.
+
+    O mesmo cupom pode continuar sendo usado em vários produtos quando cada
+    produto tiver sua própria associação pública.
+    """
+    if not public_cards:
+        return None
+
+    matched = match_public_coupon(title, price, public_cards)
+    if not matched:
+        return None
+
+    d = calculate_public_coupon(matched, price)
+    if d <= 0:
+        return None
+
+    x = dict(matched)
+    x["desconto_estimado"] = d
+    x["percentual_efetivo"] = round((d / float(price)) * 100, 2) if float(price) > 0 else 0
+    x["match_type"] = "produto_publico"
+    return x
 
 def detect_cash_discount(item, price):
     """Só aceita desconto à vista/Pix quando o próprio dado da API o informa.
@@ -1532,7 +1543,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema cruza os produtos com os cupons encontrados. O mesmo cupom pode aparecer em vários produtos quando as regras numéricas permitem o preço. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando encontrados, mas a quantidade restante só pode ser confirmada no Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema só marca um cupom como aplicável quando encontra uma associação pública entre o produto e o cupom. O mesmo cupom pode aparecer em vários produtos quando cada produto tiver essa associação. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando publicados pelo Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
