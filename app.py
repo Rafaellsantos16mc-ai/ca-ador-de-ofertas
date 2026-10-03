@@ -17,6 +17,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 # ============================================================
 
 app = Flask(__name__)
+
 app.secret_key = os.getenv(
     "FLASK_SECRET_KEY",
     "chave-cacador-ofertas"
@@ -37,18 +38,17 @@ ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
 DB_FILE = "ofertas.db"
 
-COUPONS_URL = (
-    "https://www.mercadolivre.com.br/l/promocoes"
-)
+COUPONS_URL = "https://www.mercadolivre.com.br/l/promocoes"
 
 MIN_PRODUCT_PRICE = 69.90
 
 
 # ============================================================
-# CATÁLOGO
+# CATEGORIAS
 # ============================================================
 
 CATALOG = {
+
     "📱 Celulares": [
         "smartphone",
         "iphone",
@@ -141,7 +141,7 @@ CATALOG = {
 
 
 # ============================================================
-# BANCO DE DADOS
+# BANCO
 # ============================================================
 
 def get_db():
@@ -151,6 +151,7 @@ def get_db():
 
 
 def init_db():
+
     conn = get_db()
 
     conn.execute("""
@@ -227,13 +228,11 @@ init_db()
 # ============================================================
 
 def json_safe(value):
+
     if value is None:
         return None
 
-    if isinstance(
-        value,
-        (str, int, float, bool)
-    ):
+    if isinstance(value, (str, int, float, bool)):
         return value
 
     if isinstance(value, dict):
@@ -252,6 +251,7 @@ def json_safe(value):
 
 
 def brl(value):
+
     try:
         return (
             f"R$ {float(value):,.2f}"
@@ -259,11 +259,13 @@ def brl(value):
             .replace(".", ",")
             .replace("X", ".")
         )
+
     except Exception:
         return "R$ 0,00"
 
 
 def norm(value):
+
     if not value:
         return ""
 
@@ -290,6 +292,7 @@ def norm(value):
 
 
 def number(value):
+
     if value is None:
         return None
 
@@ -307,11 +310,14 @@ def number(value):
 
 
 def discount(price, original):
+
     try:
+
         price = float(price)
         original = float(original)
 
         if original > price > 0:
+
             return round(
                 (1 - price / original) * 100,
                 2
@@ -324,16 +330,19 @@ def discount(price, original):
 
 
 def total(price, shipping):
+
     try:
         return round(
             float(price) + float(shipping or 0),
             2
         )
+
     except Exception:
         return None
 
 
 def model_name(title):
+
     if not title:
         return "Produto"
 
@@ -352,6 +361,7 @@ def model_name(title):
 
 
 def specs(title):
+
     if not title:
         return []
 
@@ -362,6 +372,7 @@ def specs(title):
         str(title),
         re.I
     ):
+
         value = value.upper()
 
         if value not in result:
@@ -372,6 +383,7 @@ def specs(title):
         str(title),
         re.I
     ):
+
         value = value.upper()
 
         if value not in result:
@@ -399,7 +411,9 @@ def specs(title):
 # ============================================================
 
 PROFILES = {
+
     "celular": {
+
         "strong": [
             "smartphone",
             "iphone",
@@ -411,6 +425,7 @@ PROFILES = {
             "poco",
             "realme"
         ],
+
         "bad": [
             "capa",
             "capinha",
@@ -427,12 +442,14 @@ PROFILES = {
     },
 
     "perfume": {
+
         "strong": [
             "perfume",
             "eau de parfum",
             "eau de toilette",
             "parfum"
         ],
+
         "bad": [
             "frasco vazio",
             "decant",
@@ -443,6 +460,7 @@ PROFILES = {
     },
 
     "academia": {
+
         "strong": [
             "roupa",
             "camiseta",
@@ -456,6 +474,7 @@ PROFILES = {
             "pre treino",
             "suplemento"
         ],
+
         "bad": [
             "halter",
             "halteres",
@@ -471,6 +490,7 @@ PROFILES = {
     },
 
     "ferramenta": {
+
         "strong": [
             "furadeira",
             "parafusadeira",
@@ -479,6 +499,7 @@ PROFILES = {
             "serra",
             "impacto"
         ],
+
         "bad": [
             "broca avulsa",
             "peca",
@@ -491,6 +512,7 @@ PROFILES = {
 
 
 def profile_for(query):
+
     query = norm(query)
 
     if any(
@@ -547,6 +569,7 @@ def profile_for(query):
 
 
 def relevance(title, query):
+
     title = norm(title)
     query = norm(query)
 
@@ -558,10 +581,12 @@ def relevance(title, query):
         profile,
         {}
     ).get("strong", []):
+
         if word in title:
             score += 35
 
     for word in query.split():
+
         if len(word) >= 3 and word in title:
             score += 10
 
@@ -569,6 +594,7 @@ def relevance(title, query):
         profile,
         {}
     ).get("bad", []):
+
         if word in title:
             score -= 90
 
@@ -580,6 +606,7 @@ def relevance(title, query):
 # ============================================================
 
 def pkce():
+
     verifier = secrets.token_urlsafe(64)
 
     digest = hashlib.sha256(
@@ -594,6 +621,7 @@ def pkce():
 
 
 def tokens():
+
     conn = get_db()
 
     row = conn.execute(
@@ -606,6 +634,7 @@ def tokens():
 
 
 def save_tokens(data, user=None):
+
     old = tokens() or {}
 
     conn = get_db()
@@ -636,8 +665,11 @@ def save_tokens(data, user=None):
                 oauth_tokens.nickname
             )
     """, (
+
         data.get("access_token"),
+
         data.get("refresh_token"),
+
         int(time.time())
         + int(
             data.get(
@@ -645,9 +677,11 @@ def save_tokens(data, user=None):
                 21600
             )
         ),
+
         str(user.get("id"))
         if user and user.get("id")
         else old.get("user_id"),
+
         user.get("nickname")
         if user
         else old.get("nickname")
@@ -658,6 +692,7 @@ def save_tokens(data, user=None):
 
 
 def refresh():
+
     data = tokens()
 
     if not data:
@@ -671,9 +706,11 @@ def refresh():
         return None
 
     try:
+
         response = requests.post(
             ML_TOKEN,
             data={
+
                 "grant_type":
                     "refresh_token",
 
@@ -714,6 +751,7 @@ def refresh():
 
 
 def access_token():
+
     data = tokens()
 
     if not data:
@@ -737,6 +775,7 @@ def access_token():
 
 
 def ml_get(path, params=None):
+
     token = access_token()
 
     if not token:
@@ -749,6 +788,7 @@ def ml_get(path, params=None):
     )
 
     try:
+
         response = requests.get(
             url,
             headers={
@@ -777,6 +817,7 @@ def ml_get(path, params=None):
         )
 
     except requests.RequestException as error:
+
         return {
             "error": str(error)
         }, 500, {}
@@ -788,7 +829,9 @@ def ml_get(path, params=None):
 
 @app.route("/mercadolivre/login")
 def ml_login():
+
     if not ML_CLIENT_ID:
+
         return jsonify({
             "erro":
                 "ML_CLIENT_ID não configurado."
@@ -802,6 +845,7 @@ def ml_login():
     session["ml_code_verifier"] = verifier
 
     params = {
+
         "response_type":
             "code",
 
@@ -830,8 +874,11 @@ def ml_login():
 
 @app.route("/mercadolivre/callback")
 def ml_callback():
+
     if request.args.get("error"):
+
         return jsonify({
+
             "erro":
                 request.args.get(
                     "error"
@@ -843,13 +890,9 @@ def ml_callback():
                 )
         }), 400
 
-    code = request.args.get(
-        "code"
-    )
+    code = request.args.get("code")
 
-    state = request.args.get(
-        "state"
-    )
+    state = request.args.get("state")
 
     if (
         not code
@@ -857,15 +900,18 @@ def ml_callback():
             "ml_state"
         )
     ):
+
         return jsonify({
             "erro":
                 "Código ou state inválido."
         }), 400
 
     try:
+
         response = requests.post(
             ML_TOKEN,
             data={
+
                 "grant_type":
                     "authorization_code",
 
@@ -890,7 +936,9 @@ def ml_callback():
         )
 
         if response.status_code != 200:
+
             return jsonify({
+
                 "erro":
                     "Falha ao obter token.",
 
@@ -902,9 +950,11 @@ def ml_callback():
             }), response.status_code
 
         data = response.json()
+
         user = None
 
         if data.get("access_token"):
+
             me = requests.get(
                 ML_API + "/users/me",
                 headers={
@@ -938,6 +988,7 @@ def ml_callback():
         )
 
     except Exception as error:
+
         return jsonify({
             "erro":
                 str(error)
@@ -946,6 +997,7 @@ def ml_callback():
 
 @app.route("/mercadolivre/logout")
 def ml_logout():
+
     conn = get_db()
 
     conn.execute(
@@ -961,10 +1013,11 @@ def ml_logout():
 
 
 # ============================================================
-# MERCADO LIVRE - PRODUTOS
+# MERCADO LIVRE
 # ============================================================
 
 def discover_categories(query):
+
     data, status, _ = ml_get(
         f"/sites/{SITE_ID}/domain_discovery/search",
         {"q": query}
@@ -979,6 +1032,7 @@ def discover_categories(query):
     result = []
 
     for item in data:
+
         category_id = (
             item.get("category_id")
             or item.get("id")
@@ -991,7 +1045,9 @@ def discover_categories(query):
         )
 
         if category_id:
+
             result.append({
+
                 "category_id":
                     category_id,
 
@@ -1003,6 +1059,7 @@ def discover_categories(query):
 
 
 def highlights(category_id):
+
     data, status, _ = ml_get(
         f"/highlights/"
         f"{SITE_ID}/category/"
@@ -1016,6 +1073,7 @@ def highlights(category_id):
         return data
 
     if isinstance(data, dict):
+
         return data.get(
             "content",
             data.get(
@@ -1028,6 +1086,7 @@ def highlights(category_id):
 
 
 def get_product(product_id):
+
     data, status, _ = ml_get(
         f"/products/{product_id}"
     )
@@ -1042,6 +1101,7 @@ def get_product(product_id):
 
 
 def product_items(product_id):
+
     data, status, _ = ml_get(
         f"/products/{product_id}/items"
     )
@@ -1053,6 +1113,7 @@ def product_items(product_id):
         return data
 
     if isinstance(data, dict):
+
         return data.get(
             "results",
             []
@@ -1062,6 +1123,7 @@ def product_items(product_id):
 
 
 def normalize_item(item):
+
     if (
         not isinstance(item, dict)
         or not item.get("item_id")
@@ -1086,6 +1148,7 @@ def normalize_item(item):
     )
 
     return {
+
         "item_id":
             item["item_id"],
 
@@ -1123,6 +1186,7 @@ def normalize_item(item):
 # ============================================================
 
 def normalize_coupon_text(raw):
+
     text = html_lib.unescape(
         raw or ""
     )
@@ -1170,6 +1234,7 @@ def normalize_coupon_text(raw):
 
 
 def valid_coupon_code(code):
+
     code = (
         code or ""
     ).strip().upper()
@@ -1196,12 +1261,6 @@ def valid_coupon_code(code):
 
 
 def coupon_blocks(text):
-    """
-    Cada cupom é separado do próximo.
-
-    Isso evita o problema que estava acontecendo:
-    1FRUIT pegando 15% / R$70 do S5PRUNK.
-    """
 
     pattern = re.compile(
         r"\bCupom\s+"
@@ -1214,9 +1273,11 @@ def coupon_blocks(text):
     found = []
 
     for match in pattern.finditer(text):
+
         code = match.group(1).upper()
 
         if valid_coupon_code(code):
+
             found.append(
                 (
                     match.start(),
@@ -1247,11 +1308,13 @@ def coupon_blocks(text):
             "Restrições de Uso",
             "Termos e Condições"
         ]:
+
             position = block.lower().find(
                 marker.lower()
             )
 
             if position >= 0:
+
                 block = block[
                     :position
                 ].strip()
@@ -1267,9 +1330,11 @@ def coupon_blocks(text):
 
 
 def parse_coupon(code, block):
+
     percent = None
 
     percent_patterns = [
+
         r"(?:até\s+)?"
         r"(\d+(?:[.,]\d+)?)"
         r"\s*%\s*"
@@ -1282,6 +1347,7 @@ def parse_coupon(code, block):
     ]
 
     for pattern in percent_patterns:
+
         match = re.search(
             pattern,
             block,
@@ -1289,14 +1355,17 @@ def parse_coupon(code, block):
         )
 
         if match:
+
             percent = number(
                 match.group(1)
             )
+
             break
 
     fixed = None
 
     fixed_patterns = [
+
         r"R\$\s*"
         r"(\d+(?:[.,]\d+)?)"
         r"\s*(?:OFF|de desconto)",
@@ -1307,6 +1376,7 @@ def parse_coupon(code, block):
     ]
 
     for pattern in fixed_patterns:
+
         match = re.search(
             pattern,
             block,
@@ -1314,14 +1384,17 @@ def parse_coupon(code, block):
         )
 
         if match:
+
             fixed = number(
                 match.group(1)
             )
+
             break
 
     minimum = None
 
     minimum_patterns = [
+
         r"(?:a partir de|partir de|"
         r"compra mínima de|mínimo de|"
         r"valor mínimo de)"
@@ -1334,6 +1407,7 @@ def parse_coupon(code, block):
     ]
 
     for pattern in minimum_patterns:
+
         match = re.search(
             pattern,
             block,
@@ -1341,14 +1415,17 @@ def parse_coupon(code, block):
         )
 
         if match:
+
             minimum = number(
                 match.group(1)
             )
+
             break
 
     maximum = None
 
     maximum_patterns = [
+
         r"(?:máximo de|maximo de|"
         r"limitado a)"
         r"\s*R?\$?\s*"
@@ -1360,6 +1437,7 @@ def parse_coupon(code, block):
     ]
 
     for pattern in maximum_patterns:
+
         match = re.search(
             pattern,
             block,
@@ -1367,12 +1445,15 @@ def parse_coupon(code, block):
         )
 
         if match:
+
             maximum = number(
                 match.group(1)
             )
+
             break
 
     return {
+
         "code":
             code,
 
@@ -1400,10 +1481,13 @@ def parse_coupon(code, block):
 
 
 def sync_coupons():
+
     try:
+
         response = requests.get(
             COUPONS_URL,
             headers={
+
                 "User-Agent":
                     "Mozilla/5.0 "
                     "(Windows NT 10.0; Win64; x64) "
@@ -1417,6 +1501,7 @@ def sync_coupons():
         )
 
         if response.status_code != 200:
+
             return {
                 "ok": False,
                 "status":
@@ -1434,6 +1519,7 @@ def sync_coupons():
         parsed = []
 
         for code, block in blocks:
+
             coupon = parse_coupon(
                 code,
                 block
@@ -1454,6 +1540,7 @@ def sync_coupons():
             )
 
         if not parsed:
+
             return {
                 "ok": False,
                 "erro":
@@ -1462,12 +1549,12 @@ def sync_coupons():
 
         conn = get_db()
 
-        # Desativa os antigos.
         conn.execute(
             "UPDATE cupons SET active=0"
         )
 
         for coupon in parsed:
+
             conn.execute("""
                 INSERT INTO cupons(
                     code,
@@ -1504,6 +1591,7 @@ def sync_coupons():
                     active=1,
                     updated_at=CURRENT_TIMESTAMP
             """, (
+
                 coupon["code"],
                 coupon["description"],
                 coupon["discount_percent"],
@@ -1517,9 +1605,12 @@ def sync_coupons():
         conn.commit()
         conn.close()
 
-        print("[CUPONS] Atualização concluída")
+        print(
+            "[CUPONS] Atualização concluída"
+        )
 
         for coupon in parsed:
+
             print(
                 "[CUPOM OK]",
                 coupon["code"],
@@ -1545,6 +1636,7 @@ def sync_coupons():
         }
 
     except Exception as error:
+
         return {
             "ok": False,
             "erro":
@@ -1553,6 +1645,7 @@ def sync_coupons():
 
 
 def coupons():
+
     conn = get_db()
 
     rows = conn.execute("""
@@ -1573,7 +1666,9 @@ def coupons():
 
 
 def coupon_discount(coupon, price):
+
     try:
+
         price = float(price)
 
         minimum = coupon.get(
@@ -1605,6 +1700,7 @@ def coupon_discount(coupon, price):
         )
 
         if percent > 0:
+
             value = (
                 price
                 * percent
@@ -1612,6 +1708,7 @@ def coupon_discount(coupon, price):
             )
 
             if maximum:
+
                 value = min(
                     value,
                     float(maximum)
@@ -1622,9 +1719,11 @@ def coupon_discount(coupon, price):
             )
 
         if fixed > 0:
+
             value = fixed
 
             if maximum:
+
                 value = min(
                     value,
                     float(maximum)
@@ -1643,13 +1742,16 @@ def coupon_discount(coupon, price):
         )
 
     except Exception:
+
         return 0
 
 
 def best_coupon(price):
+
     choices = []
 
     for coupon in coupons():
+
         saving = coupon_discount(
             coupon,
             price
@@ -1680,6 +1782,7 @@ def best_coupon(price):
     return max(
         choices,
         key=lambda x: (
+
             x[
                 "desconto_estimado"
             ],
@@ -1700,14 +1803,17 @@ def scan_queries(
     queries,
     min_discount=0
 ):
+
     products = {}
 
     for query in queries:
+
         categories = discover_categories(
             query
         )[:4]
 
         for category in categories:
+
             items = highlights(
                 category[
                     "category_id"
@@ -1715,6 +1821,7 @@ def scan_queries(
             )
 
             for item in items:
+
                 if item.get(
                     "type"
                 ) != "PRODUCT":
@@ -1728,6 +1835,7 @@ def scan_queries(
                 )
 
                 if product_id:
+
                     products.setdefault(
                         product_id,
                         {
@@ -1747,6 +1855,7 @@ def scan_queries(
                     )
 
     offers = []
+
     seen_items = set()
 
     for product_id, base in products.items():
@@ -1782,10 +1891,12 @@ def scan_queries(
         image = None
 
         if pictures:
+
             if isinstance(
                 pictures[0],
                 dict
             ):
+
                 image = pictures[0].get(
                     "url"
                 )
@@ -1793,6 +1904,7 @@ def scan_queries(
         for raw_item in product_items(
             product_id
         ):
+
             item = normalize_item(
                 raw_item
             )
@@ -1810,13 +1922,15 @@ def scan_queries(
             )
 
             try:
+
                 price = float(
                     item["price"]
                 )
+
             except Exception:
+
                 continue
 
-            # Produto mínimo de R$69,90.
             if price < MIN_PRODUCT_PRICE:
                 continue
 
@@ -1825,12 +1939,15 @@ def scan_queries(
             )
 
             try:
+
                 original = (
                     float(original)
                     if original is not None
                     else None
                 )
+
             except Exception:
+
                 original = None
 
             seller_discount = discount(
@@ -1856,9 +1973,9 @@ def scan_queries(
                 else price
             )
 
-            # =================================================
-            # CUPOM PRINCIPAL
-            # =================================================
+            # ==================================================
+            # MAIOR CUPOM REAL
+            # ==================================================
 
             coupon = best_coupon(
                 price
@@ -1886,6 +2003,7 @@ def scan_queries(
             )
 
             offers.append({
+
                 "product_id":
                     product_id,
 
@@ -1927,19 +2045,12 @@ def scan_queries(
                 "original_price":
                     original,
 
-                # Esse é o desconto que já existe
-                # no vendedor.
                 "discount":
                     seller_discount,
 
                 "seller_id":
                     item.get(
                         "seller_id"
-                    ),
-
-                "condition":
-                    item.get(
-                        "condition"
                     ),
 
                 "free_shipping":
@@ -1996,11 +2107,12 @@ def scan_queries(
             })
 
     # ============================================================
-    # ORDEM
+    # RANKING
     # ============================================================
 
     offers.sort(
         key=lambda item: (
+
             -(
                 item.get(
                     "maior_desconto"
@@ -2035,12 +2147,15 @@ def scan_queries(
     groups = {}
 
     for offer in offers:
+
         product_id = offer[
             "product_id"
         ]
 
         if product_id not in groups:
+
             groups[product_id] = {
+
                 "product_id":
                     product_id,
 
@@ -2083,6 +2198,7 @@ def scan_queries(
             "ofertas"
         ].sort(
             key=lambda item: (
+
                 -(
                     item.get(
                         "maior_desconto"
@@ -2098,6 +2214,7 @@ def scan_queries(
         )
 
         if group["ofertas"]:
+
             best = group[
                 "ofertas"
             ][0]
@@ -2105,6 +2222,7 @@ def scan_queries(
             for offer in group[
                 "ofertas"
             ]:
+
                 offer[
                     "menor_preco_modelo"
                 ] = (
@@ -2115,13 +2233,14 @@ def scan_queries(
             group
         )
 
-    # Evita repetir o mesmo modelo.
     unique = []
+
     signatures = set()
 
     for group in sorted(
         models,
         key=lambda x: (
+
             -(
                 x["ofertas"][0].get(
                     "maior_desconto"
@@ -2135,6 +2254,7 @@ def scan_queries(
             or 999999
         )
     ):
+
         signature = norm(
             group[
                 "modelo_nome"
@@ -2162,11 +2282,14 @@ def scan_queries(
         ]
     ]
 
+    # ============================================================
+    # RESULTADO — APENAS 4 CAMPOS
+    # ============================================================
+
     valores = [
         offer.get("price")
         for offer in flat
-        if offer.get("price")
-        is not None
+        if offer.get("price") is not None
     ]
 
     valores_com_desconto = [
@@ -2179,15 +2302,12 @@ def scan_queries(
         ) is not None
     ]
 
-    # ============================================================
-    # PAINEL — SOMENTE 4 INFORMAÇÕES
-    # ============================================================
-
     stats = {
+
         "ofertas":
             len(flat),
 
-        "cupom aplicável":
+        "cupom_aplicavel":
             sum(
                 1
                 for offer in flat
@@ -2202,7 +2322,7 @@ def scan_queries(
                 )
             ),
 
-        "valor com o desconto":
+        "valor_com_desconto":
             brl(
                 min(
                     valores_com_desconto,
@@ -2212,6 +2332,7 @@ def scan_queries(
     }
 
     return {
+
         "stats":
             stats,
 
@@ -2227,12 +2348,16 @@ def auto_scan(
     category=None,
     min_discount=0
 ):
+
     if category:
+
         queries = CATALOG.get(
             category,
             []
         )[:3]
+
     else:
+
         queries = [
             query
             for values in CATALOG.values()
@@ -2253,120 +2378,71 @@ def ad_text(
     offer,
     affiliate=""
 ):
+
     lines = [
+
         "🔥 OFERTA ENCONTRADA!",
+
         "",
+
         "🛍️ "
         + offer.get(
             "title",
             "Produto"
+        ),
+
+        "",
+
+        "💰 Valor: "
+        + brl(
+            offer.get(
+                "price",
+                0
+            )
         )
     ]
-
-    if offer.get(
-        "original_price"
-    ):
-        lines.append(
-            "💸 De: "
-            + brl(
-                offer[
-                    "original_price"
-                ]
-            )
-        )
-
-    lines.append(
-        "🔥 Por: "
-        + brl(
-            offer[
-                "price"
-            ]
-        )
-    )
-
-    if offer.get(
-        "discount",
-        0
-    ) > 0:
-        lines.append(
-            "🏷️ "
-            + str(
-                offer[
-                    "discount"
-                ]
-            )
-            + "% OFF"
-        )
-
-    if offer.get(
-        "free_shipping"
-    ):
-        lines.append(
-            "🚚 Frete grátis"
-        )
 
     coupon = offer.get(
         "cupom"
     )
 
     if coupon:
+
         lines += [
+
             "",
+
             "🎟️ CUPOM: "
-            + coupon["code"]
-        ]
+            + coupon["code"],
 
-        if coupon.get(
-            "discount_percent"
-        ):
-            lines.append(
-                "🔥 Até "
-                + str(
-                    coupon[
-                        "discount_percent"
-                    ]
-                )
-                + "% OFF"
-            )
-
-        if coupon.get(
-            "max_discount"
-        ):
-            lines.append(
-                "💰 Desconto máximo: "
-                + brl(
-                    coupon[
-                        "max_discount"
-                    ]
-                )
-            )
-
-        lines.append(
-            "💵 Desconto estimado: "
+            "💵 Desconto: "
             + brl(
                 offer.get(
                     "desconto_cupom",
                     0
                 )
-            )
-        )
+            ),
 
-        lines += [
-            "",
-            "💥 PREÇO ESTIMADO COM CUPOM: "
+            "🔥 Valor com desconto: "
             + brl(
-                offer[
-                    "preco_com_cupom"
-                ]
+                offer.get(
+                    "preco_com_cupom",
+                    0
+                )
             )
         ]
 
     lines += [
+
         "",
-        "⚠️ Consulte as condições "
-        "e confirme o cupom no checkout.",
+
+        "⚠️ Confirme o cupom "
+        "no checkout.",
+
         "",
+
         "🛒 PEGAR OFERTA:",
+
         affiliate
         or "Cole aqui seu link de afiliado."
     ]
@@ -2380,12 +2456,14 @@ def ad_text(
 
 @app.route("/api/buscar")
 def api_buscar():
+
     query = request.args.get(
         "q",
         ""
     ).strip()
 
     if not query:
+
         return jsonify({
             "erro":
                 "Informe uma busca."
@@ -2408,6 +2486,7 @@ def api_buscar():
 
 @app.route("/api/cacar")
 def api_cacar():
+
     sync_coupons()
 
     category = request.args.get(
@@ -2430,14 +2509,17 @@ def api_cacar():
 
 @app.route("/api/cupons")
 def api_cupons():
+
     synchronization = None
 
     if request.args.get(
         "atualizar"
     ) == "1":
+
         synchronization = sync_coupons()
 
     return jsonify({
+
         "cupons":
             json_safe(
                 coupons()
@@ -2455,7 +2537,9 @@ def api_cupons():
 
 @app.route("/api/gerar-anuncio")
 def api_anuncio():
+
     offer = {
+
         "title":
             request.args.get(
                 "title",
@@ -2468,11 +2552,6 @@ def api_anuncio():
                 0
             ),
 
-        "original_price":
-            request.args.get(
-                "original_price"
-            ),
-
         "discount":
             float(
                 request.args.get(
@@ -2481,11 +2560,6 @@ def api_anuncio():
                 )
                 or 0
             ),
-
-        "free_shipping":
-            request.args.get(
-                "shipping_free"
-            ) == "1",
 
         "cupom":
             None,
@@ -2500,6 +2574,7 @@ def api_anuncio():
     ).strip().upper()
 
     if code:
+
         conn = get_db()
 
         row = conn.execute(
@@ -2515,6 +2590,7 @@ def api_anuncio():
         conn.close()
 
         if row:
+
             coupon = dict(row)
 
             saving = coupon_discount(
@@ -2533,6 +2609,10 @@ def api_anuncio():
             ] = coupon
 
             offer[
+                "desconto_cupom"
+            ] = saving
+
+            offer[
                 "preco_com_cupom"
             ] = max(
                 0,
@@ -2542,6 +2622,7 @@ def api_anuncio():
             )
 
     return jsonify({
+
         "anuncio":
             ad_text(
                 offer,
@@ -2557,10 +2638,9 @@ def api_anuncio():
 # DIAGNÓSTICO
 # ============================================================
 
-@app.route(
-    "/mercadolivre/teste-produto-itens"
-)
+@app.route("/mercadolivre/teste-produto-itens")
 def teste_items():
+
     product_id = request.args.get(
         "product_id",
         "MLB58793248"
@@ -2572,6 +2652,7 @@ def teste_items():
     )
 
     return jsonify({
+
         "product_id":
             product_id,
 
@@ -2583,10 +2664,9 @@ def teste_items():
     }), status
 
 
-@app.route(
-    "/mercadolivre/teste-produto"
-)
+@app.route("/mercadolivre/teste-produto")
 def teste_product():
+
     product_id = request.args.get(
         "product_id",
         "MLB58793248"
@@ -2597,6 +2677,7 @@ def teste_product():
     )
 
     return jsonify({
+
         "product_id":
             product_id,
 
@@ -2608,13 +2689,13 @@ def teste_product():
     }), status
 
 
-@app.route(
-    "/mercadolivre/diagnostico"
-)
+@app.route("/mercadolivre/diagnostico")
 def diagnostico():
+
     data = tokens()
 
     result = {
+
         "configurado":
             bool(
                 ML_CLIENT_ID
@@ -2627,6 +2708,7 @@ def diagnostico():
     }
 
     if access_token():
+
         me, status, _ = ml_get(
             "/users/me"
         )
@@ -2634,6 +2716,7 @@ def diagnostico():
         result[
             "users_me"
         ] = {
+
             "status_http":
                 status,
 
@@ -2642,9 +2725,11 @@ def diagnostico():
         }
 
     if data:
+
         result[
             "token_local"
         ] = {
+
             "user_id":
                 data.get(
                     "user_id"
@@ -2754,13 +2839,15 @@ button{
     text-align:left
 }
 
+
+/* =========================================================
+   RESULTADO — SOMENTE 4 INFORMAÇÕES
+   ========================================================= */
+
 .stats{
     display:grid;
     grid-template-columns:
-        repeat(
-            2,
-            minmax(0,1fr)
-        );
+        repeat(2,minmax(0,1fr));
     gap:10px
 }
 
@@ -2771,12 +2858,24 @@ button{
     min-width:0
 }
 
-.stat b{
+.stat-label{
+    font-size:14px;
+    color:#555;
+    font-weight:500
+}
+
+.stat-value{
     display:block;
-    font-size:23px;
+    font-size:22px;
+    font-weight:bold;
     margin-top:6px;
     word-break:break-word
 }
+
+
+/* =========================================================
+   PRODUTO
+   ========================================================= */
 
 .modelo{
     border:2px solid #eee;
@@ -2814,54 +2913,56 @@ button{
     margin:3px
 }
 
-.seller{
-    background:#fafafa;
+.offer{
+    background:#fff;
     border:1px solid #eee;
-    border-radius:12px;
-    padding:12px;
-    margin-top:10px
+    border-radius:14px;
+    padding:15px;
+    margin-top:12px
+}
+
+.offer-best{
+    border:2px solid #49ad68
 }
 
 .price{
-    font-size:22px;
-    font-weight:bold
-}
-
-.green{
-    color:#00a650;
-    font-weight:bold
-}
-
-.old{
-    text-decoration:line-through;
-    color:#777
+    font-size:26px;
+    font-weight:bold;
+    margin-top:8px
 }
 
 .coupon{
     background:#fff8d6;
-    border:1px dashed #d7ad00;
-    border-radius:10px;
-    padding:10px;
-    margin-top:9px
+    border:2px dashed #e1bb00;
+    border-radius:12px;
+    padding:14px;
+    margin-top:13px
 }
 
-.final{
+.coupon-code{
+    font-size:19px;
+    font-weight:bold
+}
+
+.coupon-discount{
+    margin-top:8px;
+    font-size:15px
+}
+
+.coupon-final{
     background:#eaf8ef;
     color:#008a3e;
-    font-weight:bold;
-    padding:10px;
-    border-radius:8px;
-    margin-top:8px
+    border-radius:10px;
+    padding:12px;
+    margin-top:10px;
+    font-size:19px;
+    font-weight:bold
 }
 
-.ad{
-    display:none;
-    white-space:pre-wrap;
-    background:#f7f7f7;
-    padding:10px;
-    border-radius:9px;
-    margin-top:8px;
-    font-size:13px
+.no-coupon{
+    color:#777;
+    font-size:13px;
+    margin-top:10px
 }
 
 .small{
@@ -2875,24 +2976,45 @@ button{
     border-radius:9px
 }
 
+.ad{
+    display:none;
+    white-space:pre-wrap;
+    background:#f7f7f7;
+    padding:10px;
+    border-radius:9px;
+    margin-top:8px;
+    font-size:13px
+}
+
+a.product-link{
+    display:block;
+    margin-top:14px;
+    font-size:17px
+}
+
 @media(max-width:600px){
 
     .stats{
         grid-template-columns:
-            repeat(
-                2,
-                minmax(0,1fr)
-            )
+            repeat(2,minmax(0,1fr))
     }
 
     .stat{
         padding:13px
     }
 
-    .stat b{
-        font-size:20px
+    .stat-value{
+        font-size:19px
     }
 
+    .mh img{
+        width:75px;
+        height:75px
+    }
+
+    .title{
+        font-size:17px
+    }
 }
 
 </style>
@@ -2915,9 +3037,7 @@ async function cacar(category){
             ?
             '?categoria='
             +
-            encodeURIComponent(
-                category
-            )
+            encodeURIComponent(category)
             :
             ''
         );
@@ -2935,7 +3055,7 @@ async function cacar(category){
         document.getElementById(
             'status'
         ).textContent =
-            '✅ Busca atualizada agora.';
+            '✅ Busca atualizada.';
 
     }catch(error){
 
@@ -2952,9 +3072,7 @@ async function cacar(category){
 async function buscar(){
 
     const input =
-        document.getElementById(
-            'q'
-        );
+        document.getElementById('q');
 
     const query =
         input.value.trim();
@@ -2974,9 +3092,7 @@ async function buscar(){
             await fetch(
                 '/api/buscar?q='
                 +
-                encodeURIComponent(
-                    query
-                )
+                encodeURIComponent(query)
             );
 
         const data =
@@ -2987,7 +3103,7 @@ async function buscar(){
         document.getElementById(
             'status'
         ).textContent =
-            '✅ Busca atualizada agora.';
+            '✅ Busca atualizada.';
 
     }catch(error){
 
@@ -3008,19 +3124,68 @@ function render(data){
 
     document.getElementById(
         'stats'
-    ).innerHTML =
-        Object.entries(stats)
-        .map(
-            ([key,value]) => `
-                <div class="stat">
-                    ${esc(key)}
-                    <b>
-                        ${esc(value)}
-                    </b>
-                </div>
-            `
-        )
-        .join('');
+    ).innerHTML = `
+
+        <div class="stat">
+
+            <span class="stat-label">
+                🛍️ Ofertas
+            </span>
+
+            <b class="stat-value">
+                ${esc(
+                    stats.ofertas || 0
+                )}
+            </b>
+
+        </div>
+
+
+        <div class="stat">
+
+            <span class="stat-label">
+                🎟️ Cupom aplicável
+            </span>
+
+            <b class="stat-value">
+                ${esc(
+                    stats.cupom_aplicavel || 0
+                )}
+            </b>
+
+        </div>
+
+
+        <div class="stat">
+
+            <span class="stat-label">
+                💰 Valor
+            </span>
+
+            <b class="stat-value">
+                ${esc(
+                    stats.valor || 'R$ 0,00'
+                )}
+            </b>
+
+        </div>
+
+
+        <div class="stat">
+
+            <span class="stat-label">
+                🔥 Valor com o desconto
+            </span>
+
+            <b class="stat-value">
+                ${esc(
+                    stats.valor_com_desconto
+                    || 'R$ 0,00'
+                )}
+            </b>
+
+        </div>
+    `;
 
 
     const models =
@@ -3030,8 +3195,8 @@ function render(data){
     document.getElementById(
         'results'
     ).innerHTML =
-        models
-        .map(
+
+        models.map(
             (model,index) => `
 
                 <div class="modelo">
@@ -3063,37 +3228,16 @@ function render(data){
                                 )}
                             </div>
 
-                            ${
-                                (
-                                    model.especificacoes
-                                    || []
-                                )
-                                .map(
-                                    spec => `
-                                        <span class="tag">
-                                            ${esc(spec)}
-                                        </span>
-                                    `
-                                )
-                                .join('')
-                            }
-
-                            <div class="small">
-                                ${
-                                    model.ofertas.length
-                                }
-                                vendedor(es)
-                            </div>
-
                         </div>
 
                     </div>
+
 
                     ${
                         model.ofertas
                         .map(
                             (offer,offerIndex) =>
-                                seller(
+                                renderOffer(
                                     offer,
                                     index,
                                     offerIndex
@@ -3104,14 +3248,15 @@ function render(data){
 
                 </div>
             `
-        )
-        .join('')
+        ).join('')
+
         ||
+
         '<p>Nenhuma oportunidade encontrada.</p>';
 }
 
 
-function seller(
+function renderOffer(
     offer,
     modelIndex,
     offerIndex
@@ -3129,7 +3274,14 @@ function seller(
 
     return `
 
-        <div class="seller">
+        <div class="
+            offer
+            ${
+                offer.menor_preco_modelo
+                ? 'offer-best'
+                : ''
+            }
+        ">
 
             ${
                 offer.menor_preco_modelo
@@ -3138,8 +3290,8 @@ function seller(
                 <span
                     class="tag"
                     style="
-                        background:#00a650;
-                        color:white
+                        background:#49ad68;
+                        color:white;
                     "
                 >
                     🏆 MELHOR OPÇÃO
@@ -3149,69 +3301,18 @@ function seller(
                 ''
             }
 
+
+            <!-- SOMENTE VALOR -->
+
             <div class="price">
-                ${brl(offer.price)}
+                💰
+                ${brl(
+                    offer.price
+                )}
             </div>
 
-            ${
-                offer.original_price
-                ?
-                `
-                <div class="old">
-                    De:
-                    ${brl(
-                        offer.original_price
-                    )}
-                </div>
-                `
-                :
-                ''
-            }
 
-            ${
-                offer.discount > 0
-                ?
-                `
-                <div class="green">
-                    🔥
-                    ${offer.discount}%
-                    OFF
-                    <span class="small">
-                        desconto do vendedor
-                    </span>
-                </div>
-                `
-                :
-                ''
-            }
-
-            ${
-                offer.free_shipping
-                ?
-                `
-                <div class="green">
-                    🚚 Frete grátis
-                </div>
-                `
-                :
-                ''
-            }
-
-            ${
-                offer.shipping_known
-                ?
-                `
-                <div class="green">
-                    💰 Total:
-                    ${brl(
-                        offer.total_price
-                    )}
-                </div>
-                `
-                :
-                ''
-            }
-
+            <!-- SOMENTE CUPOM -->
 
             ${
                 coupon
@@ -3220,19 +3321,20 @@ function seller(
 
                 <div class="coupon">
 
-                    <b>
+                    <div class="coupon-code">
                         🎟️ CUPOM:
                         ${esc(
                             coupon.code
                         )}
-                    </b>
+                    </div>
+
 
                     ${
                         coupon.discount_percent
                         ?
                         `
-                        <div>
-                            🔥 Até
+                        <div class="coupon-discount">
+                            🔥
                             ${
                                 coupon.discount_percent
                             }%
@@ -3243,11 +3345,12 @@ function seller(
                         ''
                     }
 
+
                     ${
                         coupon.fixed_discount
                         ?
                         `
-                        <div>
+                        <div class="coupon-discount">
                             💰
                             ${brl(
                                 coupon.fixed_discount
@@ -3259,38 +3362,9 @@ function seller(
                         ''
                     }
 
-                    ${
-                        coupon.min_purchase
-                        ?
-                        `
-                        <div class="small">
-                            Compra mínima:
-                            ${brl(
-                                coupon.min_purchase
-                            )}
-                        </div>
-                        `
-                        :
-                        ''
-                    }
 
-                    ${
-                        coupon.max_discount
-                        ?
-                        `
-                        <div class="small">
-                            Desconto máximo:
-                            ${brl(
-                                coupon.max_discount
-                            )}
-                        </div>
-                        `
-                        :
-                        ''
-                    }
-
-                    <div>
-                        💵 Desconto estimado:
+                    <div class="coupon-discount">
+                        💵 Desconto:
                         <b>
                             ${brl(
                                 offer.desconto_cupom
@@ -3298,15 +3372,20 @@ function seller(
                         </b>
                     </div>
 
-                    <div class="final">
-                        💥 Estimado com cupom:
+
+                    <!-- VALOR FINAL -->
+
+                    <div class="coupon-final">
+                        🔥 Valor com o desconto:
+                        <br>
                         ${brl(
                             offer.preco_com_cupom
                         )}
                     </div>
 
+
                     <div class="small">
-                        ⚠️ Estimativa.
+                        ⚠️ Valor estimado.
                         Confirme no checkout.
                     </div>
 
@@ -3314,31 +3393,31 @@ function seller(
 
                 `
                 :
-                ''
+                `
+
+                <div class="no-coupon">
+                    ⚠️ Nenhum cupom aplicável
+                    encontrado para este produto.
+                </div>
+
+                `
             }
 
 
-            <div class="small">
-                👤 Vendedor:
-                ${
-                    offer.seller_id
-                    || 'N/A'
-                }
-            </div>
-
-            <br>
-
             <a
+                class="product-link"
                 href="${offer.permalink}"
                 target="_blank"
             >
                 🛒 Ver produto
             </a>
 
+
             <input
                 id="link_${id}"
                 placeholder="Cole seu link de afiliado"
             >
+
 
             <button
                 onclick='anuncio(
@@ -3348,6 +3427,7 @@ function seller(
             >
                 📢 Gerar anúncio
             </button>
+
 
             <button
                 id="copy_${id}"
@@ -3359,6 +3439,7 @@ function seller(
             >
                 📋 Copiar anúncio
             </button>
+
 
             <div
                 id="ad_${id}"
@@ -3383,6 +3464,7 @@ async function anuncio(
 
     const params =
         new URLSearchParams({
+
             title:
                 offer.title,
 
@@ -3390,12 +3472,7 @@ async function anuncio(
                 offer.price,
 
             discount:
-                offer.discount,
-
-            shipping_free:
-                offer.free_shipping
-                ? '1'
-                : '0',
+                0,
 
             cupom:
                 offer.cupom
@@ -3405,16 +3482,6 @@ async function anuncio(
             affiliate_link:
                 link
         });
-
-
-    if(
-        offer.original_price
-    ){
-        params.set(
-            'original_price',
-            offer.original_price
-        );
-    }
 
 
     const response =
@@ -3482,15 +3549,17 @@ function brl(value){
 function esc(value){
 
     return String(
-        value || ''
+        value ?? ''
     ).replace(
         /[&<>"']/g,
         char => ({
+
             '&':'&amp;',
             '<':'&lt;',
             '>':'&gt;',
             '"':'&quot;',
             "'":'&#039;'
+
         }[char])
     );
 }
@@ -3527,10 +3596,13 @@ function esc(value){
                 🟢 Mercado Livre conectado
 
                 {% if nickname %}
+
                     <br>
+
                     <b>
                         {{nickname}}
                     </b>
+
                 {% endif %}
 
             </div>
@@ -3539,9 +3611,11 @@ function esc(value){
             <a
                 href="/mercadolivre/logout"
             >
+
                 <button>
                     Desconectar
                 </button>
+
             </a>
 
         {% else %}
@@ -3549,9 +3623,11 @@ function esc(value){
             <a
                 href="/mercadolivre/login"
             >
+
                 <button class="login">
                     🔗 Conectar Mercado Livre
                 </button>
+
             </a>
 
         {% endif %}
@@ -3612,10 +3688,7 @@ function esc(value){
 
         <input
             id="q"
-            placeholder="
-                Ex: celular,
-                perfume, furadeira...
-            "
+            placeholder="Ex: celular, perfume, furadeira"
         >
 
         <button
@@ -3627,6 +3700,10 @@ function esc(value){
     </div>
 
 
+    <!-- ======================================================
+         RESULTADO — AGORA SÓ 4 CAMPOS
+         ====================================================== -->
+
     <div class="card">
 
         <h2>
@@ -3636,10 +3713,67 @@ function esc(value){
         <div
             id="stats"
             class="stats"
-        ></div>
+        >
+
+            <div class="stat">
+
+                <span class="stat-label">
+                    🛍️ Ofertas
+                </span>
+
+                <b class="stat-value">
+                    0
+                </b>
+
+            </div>
+
+
+            <div class="stat">
+
+                <span class="stat-label">
+                    🎟️ Cupom aplicável
+                </span>
+
+                <b class="stat-value">
+                    0
+                </b>
+
+            </div>
+
+
+            <div class="stat">
+
+                <span class="stat-label">
+                    💰 Valor
+                </span>
+
+                <b class="stat-value">
+                    R$ 0,00
+                </b>
+
+            </div>
+
+
+            <div class="stat">
+
+                <span class="stat-label">
+                    🔥 Valor com o desconto
+                </span>
+
+                <b class="stat-value">
+                    R$ 0,00
+                </b>
+
+            </div>
+
+        </div>
 
     </div>
 
+
+    <!-- ======================================================
+         OFERTAS
+         ====================================================== -->
 
     <div class="card">
 
@@ -3648,9 +3782,9 @@ function esc(value){
         </h2>
 
         <p class="small">
-            O cupom mostrado é o que
-            apresenta o maior desconto
-            real para aquele produto.
+            O sistema mostra o cupom que
+            oferece o maior desconto real
+            disponível para cada produto.
         </p>
 
         <div id="results">
@@ -3696,23 +3830,28 @@ function esc(value){
 
 
 # ============================================================
-# PÁGINAS
+# PÁGINA PRINCIPAL
 # ============================================================
 
 @app.route("/")
 def index():
+
     data = tokens()
 
     return render_template_string(
+
         HTML,
+
         conectado=bool(
             access_token()
         ),
+
         nickname=(
             data.get("nickname")
             if data
             else None
         ),
+
         categorias=list(
             CATALOG.keys()
         )
@@ -3721,6 +3860,7 @@ def index():
 
 @app.route("/buscar")
 def buscar_page():
+
     query = request.args.get(
         "q",
         ""
@@ -3742,27 +3882,34 @@ def buscar_page():
     data = tokens()
 
     return render_template_string(
+
         HTML,
+
         conectado=bool(
             access_token()
         ),
+
         nickname=(
             data.get("nickname")
             if data
             else None
         ),
+
         categorias=list(
             CATALOG.keys()
         ),
+
         resultado=result
     )
 
 
 @app.route("/cupons")
 def coupons_page():
+
     sync_coupons()
 
     return jsonify({
+
         "cupons":
             json_safe(
                 coupons()
@@ -3773,9 +3920,15 @@ def coupons_page():
     })
 
 
+# ============================================================
+# HEALTH
+# ============================================================
+
 @app.route("/health")
 def health():
+
     return jsonify({
+
         "status":
             "ok",
 
@@ -3801,10 +3954,10 @@ def health():
 
         "painel":
             [
-                "ofertas",
-                "cupom aplicável",
-                "valor",
-                "valor com o desconto"
+                "Ofertas",
+                "Cupom aplicável",
+                "Valor",
+                "Valor com o desconto"
             ]
     })
 
@@ -3815,7 +3968,9 @@ def health():
 
 @app.errorhandler(404)
 def error_404(error):
+
     return jsonify({
+
         "erro":
             "Rota não encontrada.",
 
@@ -3826,7 +3981,9 @@ def error_404(error):
 
 @app.errorhandler(500)
 def error_500(error):
+
     return jsonify({
+
         "erro":
             "Erro interno no servidor.",
 
@@ -3840,13 +3997,17 @@ def error_500(error):
 # ============================================================
 
 if __name__ == "__main__":
+
     app.run(
+
         host="0.0.0.0",
+
         port=int(
             os.getenv(
                 "PORT",
                 "8080"
             )
         ),
+
         debug=False
     )
