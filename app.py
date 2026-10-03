@@ -1120,7 +1120,7 @@ def scan_queries(queries, min_discount=0):
         "cupom aplicável": len(with_coupon),
         "produtos sem cupom": len(flat) - len(with_coupon),
         "maior desconto": brl(max([o.get("desconto_cupom",0) for o in with_coupon] or [0])),
-        "menor preço final": brl(min(finais or [0])),
+        "menor preço final": brl(min(finais)) if finais else "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais_conhecidos or [0])),
     }
