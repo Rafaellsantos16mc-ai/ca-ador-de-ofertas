@@ -1,27 +1,36 @@
 import os
 import re
+import json
 import time
-import base64
+import html as html_lib
+import sqlite3
 import hashlib
 import secrets
-import sqlite3
-import html as html_lib
 from urllib.parse import urlencode
 
 import requests
-from flask import Flask, request, redirect, session, jsonify, render_template_string
-
+from flask import (
+    Flask,
+    request,
+    redirect,
+    session,
+    render_template_string,
+    jsonify,
+    send_file,
+)
 
 # ============================================================
-# APP
+# CONFIG
 # ============================================================
 
 app = Flask(__name__)
 
 app.secret_key = os.getenv(
     "FLASK_SECRET_KEY",
-    "chave-cacador-ofertas"
+    "troque-esta-chave-no-railway"
 )
+
+DB_PATH = os.getenv("DB_PATH", "ofertas.db")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
 ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
@@ -31,190 +40,252 @@ ML_REDIRECT_URI = os.getenv(
     "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
 
+ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization"
+ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 ML_API = "https://api.mercadolibre.com"
-ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
-ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 
 SITE_ID = "MLB"
-DB_FILE = "ofertas.db"
-
-COUPONS_URL = "https://www.mercadolivre.com.br/l/promocoes"
 
 MIN_PRODUCT_PRICE = 69.90
 
+COUPON_PAGE = "https://www.mercadolivre.com.br/l/promocoes"
+
+REQUEST_TIMEOUT = 20
+
+# Quantidade máxima de produtos por consulta
+PRODUCTS_PER_QUERY = 20
+
+# Quantidade máxima de publicações comparadas por produto
+MAX_ITEMS_PER_PRODUCT = 8
+
 
 # ============================================================
-# CATEGORIAS
+# CATEGORIAS / BUSCAS
 # ============================================================
 
-CATALOG = {
-
-    "📱 Celulares": [
+SEARCH_QUERIES = {
+    "Celulares": [
+        "celular",
         "smartphone",
         "iphone",
         "samsung galaxy",
-        "motorola moto",
-        "xiaomi redmi",
-        "poco smartphone",
-        "realme smartphone"
     ],
-
-    "🌸 Perfumes": [
-        "perfume masculino",
-        "perfume feminino",
-        "perfume importado",
-        "perfume nacional",
-        "perfume eau de parfum"
+    "Eletrônicos": [
+        "smart tv",
+        "fone bluetooth",
+        "notebook",
+        "tablet",
     ],
-
-    "🏋️ Academia": [
-        "roupa academia masculina",
-        "roupa academia feminina",
-        "camiseta academia",
-        "short academia",
-        "legging academia",
-        "tenis academia",
-        "tenis corrida",
-        "tenis treino",
-        "whey protein",
+    "Casa": [
+        "air fryer",
+        "liquidificador",
+        "aspirador",
+        "cafeteira",
+    ],
+    "Cozinha": [
+        "panela",
+        "jogo de panelas",
+        "sandwich maker",
+        "microondas",
+    ],
+    "Academia": [
+        "halter",
         "creatina",
-        "pre treino",
-        "suplementos"
+        "whey protein",
+        "kit academia",
     ],
-
-    "🔧 Ferramentas": [
+    "Ferramentas": [
         "furadeira",
         "parafusadeira",
-        "esmerilhadeira",
-        "kit ferramentas",
-        "maleta ferramentas",
-        "serra",
-        "chave de impacto"
+        "jogo de ferramentas",
+        "chave de impacto",
     ],
-
-    "🎧 Eletrônicos": [
-        "fone bluetooth",
-        "headset",
-        "smartwatch",
-        "tablet",
-        "caixa de som bluetooth",
-        "camera digital",
-        "power bank"
+    "Automotivo": [
+        "pneu",
+        "central multimidia",
+        "capa banco carro",
+        "kit led automotivo",
     ],
-
-    "🏠 Casa": [
-        "aspirador de pó",
-        "liquidificador",
-        "cafeteira",
-        "air fryer",
-        "ventilador",
-        "ferro de passar"
-    ],
-
-    "🍳 Cozinha": [
-        "air fryer",
-        "panela elétrica",
-        "jogo de panelas",
-        "cafeteira",
-        "liquidificador",
-        "sandwichera"
-    ],
-
-    "🚗 Automotivo": [
-        "compressor automotivo",
-        "aspirador automotivo",
-        "suporte celular carro",
-        "carregador automotivo",
-        "ferramentas automotivas",
-        "tapete automotivo"
-    ],
-
-    "👕 Moda": [
-        "tenis masculino",
+    "Moda": [
+        "tenis",
         "tenis feminino",
+        "tenis masculino",
         "mochila",
-        "relogio masculino",
-        "bolsa feminina",
-        "oculos de sol"
-    ]
+    ],
+    "Perfumes": [
+        "perfume",
+        "perfume feminino",
+        "perfume masculino",
+        "kit perfume",
+    ],
 }
+
+
+# ============================================================
+# SESSÃO / TOKENS
+# ============================================================
+
+def get_access_token():
+    return session.get("ml_access_token")
+
+
+def get_refresh_token():
+    return session.get("ml_refresh_token")
+
+
+def ml_headers():
+    token = get_access_token()
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "CacadorDeOfertas/1.0",
+    }
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    return headers
+
+
+def save_tokens(data):
+    if data.get("access_token"):
+        session["ml_access_token"] = data["access_token"]
+
+    if data.get("refresh_token"):
+        session["ml_refresh_token"] = data["refresh_token"]
+
+    if data.get("expires_in"):
+        session["ml_expires_in"] = data["expires_in"]
+
+    session["ml_token_saved_at"] = int(time.time())
+
+    session.modified = True
+
+
+def refresh_access_token():
+    refresh_token = get_refresh_token()
+
+    if not refresh_token:
+        return False
+
+    if not ML_CLIENT_ID or not ML_CLIENT_SECRET:
+        return False
+
+    try:
+        response = requests.post(
+            ML_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": ML_CLIENT_ID,
+                "client_secret": ML_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            print(
+                "[TOKEN REFRESH ERRO]",
+                response.status_code,
+                response.text[:500],
+            )
+            return False
+
+        data = response.json()
+        save_tokens(data)
+
+        print("[TOKEN] Refresh realizado")
+        return True
+
+    except Exception as e:
+        print("[TOKEN REFRESH EXCEPTION]", e)
+        return False
+
+
+# ============================================================
+# REQUEST MERCADO LIVRE
+# ============================================================
+
+def ml_get(path, params=None, retry=True):
+    token = get_access_token()
+
+    if not token:
+        return None
+
+    url = path
+
+    if not url.startswith("http"):
+        url = ML_API + path
+
+    try:
+        response = requests.get(
+            url,
+            headers=ml_headers(),
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code == 401 and retry:
+            print("[ML] Token expirado. Tentando refresh...")
+
+            if refresh_access_token():
+                return ml_get(path, params=params, retry=False)
+
+        return response
+
+    except requests.RequestException as e:
+        print("[ML GET ERRO]", url, e)
+        return None
 
 
 # ============================================================
 # BANCO
 # ============================================================
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
+def db():
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
+    conn = db()
 
-    conn = get_db()
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS oauth_tokens (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            access_token TEXT,
-            refresh_token TEXT,
-            expires_at INTEGER,
-            user_id TEXT,
-            nickname TEXT
-        )
-    """)
-
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS ofertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id TEXT,
             item_id TEXT,
             title TEXT,
-            permalink TEXT,
+            category TEXT,
             price REAL,
-            original_price REAL,
+            coupon_code TEXT,
+            coupon_type TEXT,
+            coupon_value REAL,
             discount REAL,
+            final_price REAL,
+            url TEXT,
             seller_id TEXT,
-            image TEXT,
-            category_id TEXT,
-            category_name TEXT,
-            condition TEXT,
-            listing_type_id TEXT,
-            free_shipping INTEGER DEFAULT 0,
-            shipping_cost REAL,
-            total_price REAL,
-            relevance_score REAL DEFAULT 0,
-            affiliate_link TEXT,
-            extra_earnings REAL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at INTEGER
         )
-    """)
+        """
+    )
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cupons (
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coupons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT UNIQUE,
-            description TEXT,
-            discount_percent REAL,
-            fixed_discount REAL DEFAULT 0,
+            coupon_type TEXT,
+            value REAL,
             min_purchase REAL,
             max_discount REAL,
-            valid_until TEXT,
-            source_url TEXT,
-            conditions TEXT,
-            active INTEGER DEFAULT 1,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            raw_text TEXT,
+            updated_at INTEGER
         )
-    """)
-
-    try:
-        conn.execute(
-            "ALTER TABLE cupons "
-            "ADD COLUMN fixed_discount REAL DEFAULT 0"
-        )
-    except sqlite3.OperationalError:
-        pass
+        """
+    )
 
     conn.commit()
     conn.close()
@@ -224,1036 +295,483 @@ init_db()
 
 
 # ============================================================
-# UTILIDADES
+# OAUTH PKCE
 # ============================================================
 
-def json_safe(value):
+def base64url(data):
+    import base64
 
-    if value is None:
-        return None
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
-    if isinstance(value, (str, int, float, bool)):
-        return value
 
-    if isinstance(value, dict):
-        return {
-            str(k): json_safe(v)
-            for k, v in value.items()
-        }
-
-    if isinstance(value, list):
-        return [
-            json_safe(v)
-            for v in value
-        ]
-
-    return str(value)
-
-
-def brl(value):
-
-    try:
-        return (
-            f"R$ {float(value):,.2f}"
-            .replace(",", "X")
-            .replace(".", ",")
-            .replace("X", ".")
-        )
-
-    except Exception:
-        return "R$ 0,00"
-
-
-def norm(value):
-
-    if not value:
-        return ""
-
-    value = str(value).lower()
-
-    trans = str.maketrans(
-        "áàãâäéèêëíìîïóòõôöúùûüç",
-        "aaaaaeeeeiiiiooooouuuuc"
-    )
-
-    value = value.translate(trans)
-
-    value = re.sub(
-        r"[^a-z0-9\s]+",
-        " ",
-        value
-    )
-
-    return re.sub(
-        r"\s+",
-        " ",
-        value
-    ).strip()
-
-
-def number(value):
-
-    if value is None:
-        return None
-
-    match = re.search(
-        r"(\d+(?:[.,]\d+)?)",
-        str(value)
-    )
-
-    if not match:
-        return None
-
-    return float(
-        match.group(1).replace(",", ".")
-    )
-
-
-def discount(price, original):
-
-    try:
-
-        price = float(price)
-        original = float(original)
-
-        if original > price > 0:
-
-            return round(
-                (1 - price / original) * 100,
-                2
-            )
-
-    except Exception:
-        pass
-
-    return 0
-
-
-def total(price, shipping):
-
-    try:
-        return round(
-            float(price) + float(shipping or 0),
-            2
-        )
-
-    except Exception:
-        return None
-
-
-def model_name(title):
-
-    if not title:
-        return "Produto"
-
-    title = re.sub(
-        r"\b(novo|original|oficial|promoção|frete grátis)\b",
-        "",
-        str(title),
-        flags=re.I
-    )
-
-    return re.sub(
-        r"\s+",
-        " ",
-        title
-    ).strip()
-
-
-def specs(title):
-
-    if not title:
-        return []
-
-    result = []
-
-    for value in re.findall(
-        r"\b\d+(?:GB|TB)\b",
-        str(title),
-        re.I
-    ):
-
-        value = value.upper()
-
-        if value not in result:
-            result.append(value)
-
-    for value in re.findall(
-        r"\b(?:2G|3G|4G|5G)\b",
-        str(title),
-        re.I
-    ):
-
-        value = value.upper()
-
-        if value not in result:
-            result.append(value)
-
-    if re.search(
-        r"dual\s*sim",
-        str(title),
-        re.I
-    ):
-        result.append("Dual SIM")
-
-    if re.search(
-        r"\bnfc\b",
-        str(title),
-        re.I
-    ):
-        result.append("NFC")
-
-    return result
-
-
-# ============================================================
-# RELEVÂNCIA
-# ============================================================
-
-PROFILES = {
-
-    "celular": {
-
-        "strong": [
-            "smartphone",
-            "iphone",
-            "galaxy",
-            "samsung",
-            "motorola",
-            "xiaomi",
-            "redmi",
-            "poco",
-            "realme"
-        ],
-
-        "bad": [
-            "capa",
-            "capinha",
-            "pelicula",
-            "suporte",
-            "ventosa",
-            "carregador",
-            "cabo",
-            "adaptador",
-            "bateria",
-            "case",
-            "holder"
-        ]
-    },
-
-    "perfume": {
-
-        "strong": [
-            "perfume",
-            "eau de parfum",
-            "eau de toilette",
-            "parfum"
-        ],
-
-        "bad": [
-            "frasco vazio",
-            "decant",
-            "amostra",
-            "porta perfume",
-            "refil vazio"
-        ]
-    },
-
-    "academia": {
-
-        "strong": [
-            "roupa",
-            "camiseta",
-            "short",
-            "legging",
-            "tenis",
-            "corrida",
-            "treino",
-            "whey",
-            "creatina",
-            "pre treino",
-            "suplemento"
-        ],
-
-        "bad": [
-            "halter",
-            "halteres",
-            "anilha",
-            "barra",
-            "banco musculacao",
-            "caneleira",
-            "elastico",
-            "adesivo",
-            "capa",
-            "suporte"
-        ]
-    },
-
-    "ferramenta": {
-
-        "strong": [
-            "furadeira",
-            "parafusadeira",
-            "esmerilhadeira",
-            "ferramenta",
-            "serra",
-            "impacto"
-        ],
-
-        "bad": [
-            "broca avulsa",
-            "peca",
-            "carvao",
-            "bateria avulsa",
-            "capa"
-        ]
-    }
-}
-
-
-def profile_for(query):
-
-    query = norm(query)
-
-    if any(
-        x in query
-        for x in [
-            "iphone",
-            "samsung",
-            "galaxy",
-            "motorola",
-            "xiaomi",
-            "redmi",
-            "poco",
-            "smartphone",
-            "celular"
-        ]
-    ):
-        return "celular"
-
-    if "perfume" in query:
-        return "perfume"
-
-    if any(
-        x in query
-        for x in [
-            "academia",
-            "roupa academia",
-            "camiseta academia",
-            "short academia",
-            "legging academia",
-            "tenis academia",
-            "tenis corrida",
-            "tenis treino",
-            "whey",
-            "creatina",
-            "pre treino",
-            "suplemento"
-        ]
-    ):
-        return "academia"
-
-    if any(
-        x in query
-        for x in [
-            "furadeira",
-            "parafusadeira",
-            "ferramenta",
-            "esmerilhadeira",
-            "serra"
-        ]
-    ):
-        return "ferramenta"
-
-    return None
-
-
-def relevance(title, query):
-
-    title = norm(title)
-    query = norm(query)
-
-    profile = profile_for(query)
-
-    score = 0
-
-    for word in PROFILES.get(
-        profile,
-        {}
-    ).get("strong", []):
-
-        if word in title:
-            score += 35
-
-    for word in query.split():
-
-        if len(word) >= 3 and word in title:
-            score += 10
-
-    for word in PROFILES.get(
-        profile,
-        {}
-    ).get("bad", []):
-
-        if word in title:
-            score -= 90
-
-    return score
-
-
-# ============================================================
-# OAUTH
-# ============================================================
-
-def pkce():
-
+def create_pkce():
     verifier = secrets.token_urlsafe(64)
 
     digest = hashlib.sha256(
-        verifier.encode()
+        verifier.encode("ascii")
     ).digest()
 
-    challenge = base64.urlsafe_b64encode(
-        digest
-    ).decode().rstrip("=")
+    challenge = base64url(digest)
 
     return verifier, challenge
 
 
-def tokens():
-
-    conn = get_db()
-
-    row = conn.execute(
-        "SELECT * FROM oauth_tokens WHERE id=1"
-    ).fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
-
-
-def save_tokens(data, user=None):
-
-    old = tokens() or {}
-
-    conn = get_db()
-
-    conn.execute("""
-        INSERT INTO oauth_tokens(
-            id,
-            access_token,
-            refresh_token,
-            expires_at,
-            user_id,
-            nickname
-        )
-        VALUES(1,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET
-            access_token=excluded.access_token,
-            refresh_token=COALESCE(
-                excluded.refresh_token,
-                oauth_tokens.refresh_token
-            ),
-            expires_at=excluded.expires_at,
-            user_id=COALESCE(
-                excluded.user_id,
-                oauth_tokens.user_id
-            ),
-            nickname=COALESCE(
-                excluded.nickname,
-                oauth_tokens.nickname
-            )
-    """, (
-
-        data.get("access_token"),
-
-        data.get("refresh_token"),
-
-        int(time.time())
-        + int(
-            data.get(
-                "expires_in",
-                21600
-            )
-        ),
-
-        str(user.get("id"))
-        if user and user.get("id")
-        else old.get("user_id"),
-
-        user.get("nickname")
-        if user
-        else old.get("nickname")
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def refresh():
-
-    data = tokens()
-
-    if not data:
-        return None
-
-    refresh_token = data.get(
-        "refresh_token"
-    )
-
-    if not refresh_token:
-        return None
-
-    try:
-
-        response = requests.post(
-            ML_TOKEN,
-            data={
-
-                "grant_type":
-                    "refresh_token",
-
-                "client_id":
-                    ML_CLIENT_ID,
-
-                "client_secret":
-                    ML_CLIENT_SECRET,
-
-                "refresh_token":
-                    refresh_token
-            },
-            timeout=30
-        )
-
-        if response.status_code != 200:
-            return None
-
-        new_data = response.json()
-
-        save_tokens(
-            new_data,
-            {
-                "id":
-                    data.get("user_id"),
-
-                "nickname":
-                    data.get("nickname")
-            }
-        )
-
-        return new_data.get(
-            "access_token"
-        )
-
-    except Exception:
-        return None
-
-
-def access_token():
-
-    data = tokens()
-
-    if not data:
-        return None
-
-    expires_at = data.get(
-        "expires_at"
-    ) or 0
-
-    if (
-        data.get("access_token")
-        and time.time()
-        < expires_at - 120
-    ):
-        return data["access_token"]
-
-    return (
-        refresh()
-        or data.get("access_token")
-    )
-
-
-def ml_get(path, params=None):
-
-    token = access_token()
-
-    if not token:
-        return {}, 401, {}
-
-    url = (
-        path
-        if path.startswith("http")
-        else ML_API + path
-    )
-
-    try:
-
-        response = requests.get(
-            url,
-            headers={
-                "Authorization":
-                    f"Bearer {token}",
-
-                "Accept":
-                    "application/json"
-            },
-            params=params,
-            timeout=30
-        )
-
-        try:
-            data = response.json()
-        except Exception:
-            data = {
-                "message":
-                    response.text
-            }
-
-        return (
-            data,
-            response.status_code,
-            dict(response.headers)
-        )
-
-    except requests.RequestException as error:
-
-        return {
-            "error": str(error)
-        }, 500, {}
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-@app.route("/mercadolivre/login")
-def ml_login():
-
+@app.route("/mercadolivre/connect")
+def mercadolivre_connect():
     if not ML_CLIENT_ID:
-
-        return jsonify({
-            "erro":
-                "ML_CLIENT_ID não configurado."
-        }), 500
-
-    verifier, challenge = pkce()
+        return "ML_CLIENT_ID não configurado.", 500
 
     state = secrets.token_urlsafe(32)
 
-    session["ml_state"] = state
-    session["ml_code_verifier"] = verifier
+    verifier, challenge = create_pkce()
+
+    session["oauth_state"] = state
+    session["oauth_verifier"] = verifier
 
     params = {
-
-        "response_type":
-            "code",
-
-        "client_id":
-            ML_CLIENT_ID,
-
-        "redirect_uri":
-            ML_REDIRECT_URI,
-
-        "state":
-            state,
-
-        "code_challenge":
-            challenge,
-
-        "code_challenge_method":
-            "S256"
+        "response_type": "code",
+        "client_id": ML_CLIENT_ID,
+        "redirect_uri": ML_REDIRECT_URI,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     }
 
-    return redirect(
-        ML_AUTH
-        + "?"
-        + urlencode(params)
-    )
+    url = ML_AUTH_URL + "?" + urlencode(params)
+
+    return redirect(url)
 
 
 @app.route("/mercadolivre/callback")
-def ml_callback():
+def mercadolivre_callback():
+    error = request.args.get("error")
 
-    if request.args.get("error"):
-
-        return jsonify({
-
-            "erro":
-                request.args.get(
-                    "error"
-                ),
-
-            "descricao":
-                request.args.get(
-                    "error_description"
-                )
-        }), 400
-
-    code = request.args.get("code")
+    if error:
+        return f"""
+        <h2>Erro ao conectar Mercado Livre</h2>
+        <p>{html_lib.escape(error)}</p>
+        <a href="/">Voltar</a>
+        """
 
     state = request.args.get("state")
+    code = request.args.get("code")
 
-    if (
-        not code
-        or state != session.get(
-            "ml_state"
-        )
-    ):
+    if not state or state != session.get("oauth_state"):
+        return "Estado OAuth inválido.", 400
 
-        return jsonify({
-            "erro":
-                "Código ou state inválido."
-        }), 400
+    if not code:
+        return "Código de autorização não recebido.", 400
+
+    verifier = session.get("oauth_verifier")
+
+    if not verifier:
+        return "PKCE verifier não encontrado.", 400
 
     try:
-
         response = requests.post(
-            ML_TOKEN,
+            ML_TOKEN_URL,
             data={
-
-                "grant_type":
-                    "authorization_code",
-
-                "client_id":
-                    ML_CLIENT_ID,
-
-                "client_secret":
-                    ML_CLIENT_SECRET,
-
-                "code":
-                    code,
-
-                "redirect_uri":
-                    ML_REDIRECT_URI,
-
-                "code_verifier":
-                    session.get(
-                        "ml_code_verifier"
-                    )
+                "grant_type": "authorization_code",
+                "client_id": ML_CLIENT_ID,
+                "client_secret": ML_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": ML_REDIRECT_URI,
+                "code_verifier": verifier,
             },
-            timeout=30
+            timeout=REQUEST_TIMEOUT,
         )
 
         if response.status_code != 200:
-
-            return jsonify({
-
-                "erro":
-                    "Falha ao obter token.",
-
-                "status":
-                    response.status_code,
-
-                "resposta":
-                    response.text
-            }), response.status_code
+            return f"""
+            <h2>Erro ao obter token</h2>
+            <pre>{html_lib.escape(response.text)}</pre>
+            """, 400
 
         data = response.json()
 
-        user = None
+        save_tokens(data)
 
-        if data.get("access_token"):
+        session.pop("oauth_state", None)
+        session.pop("oauth_verifier", None)
 
-            me = requests.get(
-                ML_API + "/users/me",
-                headers={
-                    "Authorization":
-                        "Bearer "
-                        + data["access_token"]
-                },
-                timeout=30
-            )
+        return redirect("/")
 
-            if me.status_code == 200:
-                user = me.json()
-
-        save_tokens(
-            data,
-            user
-        )
-
-        session.pop(
-            "ml_state",
-            None
-        )
-
-        session.pop(
-            "ml_code_verifier",
-            None
-        )
-
-        return redirect(
-            "/?conectado=1"
-        )
-
-    except Exception as error:
-
-        return jsonify({
-            "erro":
-                str(error)
-        }), 500
+    except Exception as e:
+        return f"Erro OAuth: {e}", 500
 
 
-@app.route("/mercadolivre/logout")
-def ml_logout():
-
-    conn = get_db()
-
-    conn.execute(
-        "DELETE FROM oauth_tokens WHERE id=1"
-    )
-
-    conn.commit()
-    conn.close()
-
-    session.clear()
+@app.route("/mercadolivre/disconnect")
+def mercadolivre_disconnect():
+    for key in [
+        "ml_access_token",
+        "ml_refresh_token",
+        "ml_expires_in",
+        "ml_token_saved_at",
+    ]:
+        session.pop(key, None)
 
     return redirect("/")
 
 
 # ============================================================
-# MERCADO LIVRE
+# USUÁRIO ML
 # ============================================================
 
-def discover_categories(query):
+def get_ml_user():
+    response = ml_get("/users/me")
 
-    data, status, _ = ml_get(
-        f"/sites/{SITE_ID}/domain_discovery/search",
-        {"q": query}
+    if not response or response.status_code != 200:
+        return None
+
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+# ============================================================
+# BUSCA DE PRODUTOS
+# ============================================================
+
+def product_search(query, limit=PRODUCTS_PER_QUERY):
+    response = ml_get(
+        "/products/search",
+        params={
+            "site_id": SITE_ID,
+            "q": query,
+            "limit": limit,
+            "offset": 0,
+        },
     )
 
-    if (
-        status != 200
-        or not isinstance(data, list)
-    ):
+    if not response:
         return []
 
-    result = []
-
-    for item in data:
-
-        category_id = (
-            item.get("category_id")
-            or item.get("id")
+    if response.status_code != 200:
+        print(
+            "[PRODUCT SEARCH]",
+            query,
+            response.status_code,
+            response.text[:300],
         )
-
-        category_name = (
-            item.get("category_name")
-            or item.get("name")
-            or category_id
-        )
-
-        if category_id:
-
-            result.append({
-
-                "category_id":
-                    category_id,
-
-                "category_name":
-                    category_name
-            })
-
-    return result
-
-
-def highlights(category_id):
-
-    data, status, _ = ml_get(
-        f"/highlights/"
-        f"{SITE_ID}/category/"
-        f"{category_id}"
-    )
-
-    if status != 200:
         return []
 
-    if isinstance(data, list):
-        return data
+    try:
+        data = response.json()
+    except Exception:
+        return []
 
-    if isinstance(data, dict):
+    results = data.get("results", [])
 
-        return data.get(
-            "content",
-            data.get(
-                "results",
-                []
-            )
-        )
+    if not isinstance(results, list):
+        return []
 
-    return []
+    return results
 
+
+# ============================================================
+# DETALHE DO PRODUTO
+# ============================================================
 
 def get_product(product_id):
-
-    data, status, _ = ml_get(
+    response = ml_get(
         f"/products/{product_id}"
     )
 
-    if (
-        status == 200
-        and isinstance(data, dict)
-    ):
-        return data
+    if not response:
+        return None
+
+    if response.status_code != 200:
+        print(
+            "[PRODUCT DETAIL]",
+            product_id,
+            response.status_code,
+        )
+        return None
+
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+# ============================================================
+# ITENS DO PRODUTO
+# ============================================================
+
+def get_product_items(product_id):
+    response = ml_get(
+        f"/products/{product_id}/items"
+    )
+
+    if not response:
+        return []
+
+    if response.status_code != 200:
+        print(
+            "[PRODUCT ITEMS]",
+            product_id,
+            response.status_code,
+            response.text[:300],
+        )
+        return []
+
+    try:
+        data = response.json()
+    except Exception:
+        return []
+
+    results = data.get("results", [])
+
+    if not isinstance(results, list):
+        return []
+
+    return results
+
+
+# ============================================================
+# PREÇO ATUAL - SALE PRICE
+# ============================================================
+
+def get_sale_price(item_id):
+    """
+    Primeiro método:
+    /items/{item_id}/sale_price?context=channel_marketplace
+
+    Esse é o método prioritário para descobrir o preço
+    de venda atual.
+    """
+
+    response = ml_get(
+        f"/items/{item_id}/sale_price",
+        params={
+            "context": "channel_marketplace"
+        },
+    )
+
+    if not response:
+        return None
+
+    if response.status_code == 200:
+        try:
+            data = response.json()
+
+            amount = data.get("amount")
+
+            if amount is not None:
+                return {
+                    "amount": float(amount),
+                    "regular_amount": (
+                        float(data["regular_amount"])
+                        if data.get("regular_amount") is not None
+                        else None
+                    ),
+                    "source": "sale_price",
+                    "metadata": data.get("metadata") or {},
+                }
+
+        except Exception as e:
+            print(
+                "[SALE PRICE JSON ERRO]",
+                item_id,
+                e,
+            )
+
+    elif response.status_code not in (403, 404):
+        print(
+            "[SALE PRICE]",
+            item_id,
+            response.status_code,
+            response.text[:250],
+        )
 
     return None
 
 
-def product_items(product_id):
+# ============================================================
+# PREÇOS - FALLBACK
+# ============================================================
 
-    data, status, _ = ml_get(
-        f"/products/{product_id}/items"
+def get_prices(item_id):
+    """
+    Fallback:
+    /items/{item_id}/prices
+    """
+
+    response = ml_get(
+        f"/items/{item_id}/prices"
     )
 
-    if status != 200:
-        return []
-
-    if isinstance(data, list):
-        return data
-
-    if isinstance(data, dict):
-
-        return data.get(
-            "results",
-            []
-        )
-
-    return []
-
-
-def normalize_item(item):
-
-    if (
-        not isinstance(item, dict)
-        or not item.get("item_id")
-    ):
+    if not response:
         return None
 
-    shipping = (
-        item.get("shipping")
-        or {}
+    if response.status_code != 200:
+        if response.status_code not in (403, 404):
+            print(
+                "[PRICES]",
+                item_id,
+                response.status_code,
+            )
+        return None
+
+    try:
+        data = response.json()
+    except Exception:
+        return None
+
+    prices = data.get("prices", [])
+
+    if not isinstance(prices, list):
+        return None
+
+    now = time.time()
+
+    candidates = []
+
+    for price in prices:
+        try:
+            amount = price.get("amount")
+
+            if amount is None:
+                continue
+
+            context = price.get("context") or []
+
+            if isinstance(context, str):
+                context = [context]
+
+            if "channel_marketplace" not in context:
+                continue
+
+            date_from = price.get("date_from")
+            date_to = price.get("date_to")
+
+            # Se houver datas, tenta validar
+            if date_from or date_to:
+                try:
+                    from datetime import datetime, timezone
+
+                    if date_from:
+                        dt_from = datetime.fromisoformat(
+                            date_from.replace("Z", "+00:00")
+                        ).timestamp()
+
+                        if now < dt_from:
+                            continue
+
+                    if date_to:
+                        dt_to = datetime.fromisoformat(
+                            date_to.replace("Z", "+00:00")
+                        ).timestamp()
+
+                        if now > dt_to:
+                            continue
+
+                except Exception:
+                    pass
+
+            candidates.append(price)
+
+        except Exception:
+            continue
+
+    if not candidates:
+        return None
+
+    # Promoções normalmente possuem type promotion.
+    # Se não houver, pega o menor valor válido.
+    candidates.sort(
+        key=lambda x: float(x.get("amount", 999999999))
     )
 
-    free_shipping = bool(
-        shipping.get(
-            "free_shipping"
-        )
-    )
-
-    shipping_cost = (
-        0
-        if free_shipping
-        else shipping.get("cost")
-    )
+    selected = candidates[0]
 
     return {
-
-        "item_id":
-            item["item_id"],
-
-        "seller_id":
-            item.get("seller_id"),
-
-        "price":
-            item.get("price"),
-
-        "original_price":
-            item.get("original_price"),
-
-        "condition":
-            item.get("condition"),
-
-        "listing_type_id":
-            item.get("listing_type_id"),
-
-        "free_shipping":
-            free_shipping,
-
-        "shipping_cost":
-            shipping_cost,
-
-        "permalink":
-            item.get("permalink"),
-
-        "user_product_id":
-            item.get("user_product_id")
+        "amount": float(selected["amount"]),
+        "regular_amount": (
+            float(selected["regular_amount"])
+            if selected.get("regular_amount") is not None
+            else None
+        ),
+        "source": "prices",
+        "metadata": selected.get("metadata") or {},
     }
+
+
+# ============================================================
+# PREÇO FINAL DA PUBLICAÇÃO
+# ============================================================
+
+def get_current_item_price(item):
+    item_id = item.get("item_id")
+
+    if not item_id:
+        return None
+
+    # 1º: sale_price
+    sale = get_sale_price(item_id)
+
+    if sale and sale.get("amount") is not None:
+        return sale
+
+    # 2º: prices
+    prices = get_prices(item_id)
+
+    if prices and prices.get("amount") is not None:
+        return prices
+
+    # 3º: fallback da resposta de product/items
+    raw_price = item.get("price")
+
+    if raw_price is not None:
+        try:
+            return {
+                "amount": float(raw_price),
+                "regular_amount": (
+                    float(item["original_price"])
+                    if item.get("original_price") is not None
+                    else None
+                ),
+                "source": "product_items_fallback",
+                "metadata": {},
+            }
+        except Exception:
+            pass
+
+    return None
 
 
 # ============================================================
 # CUPONS
 # ============================================================
 
-def normalize_coupon_text(raw):
+def normalize_coupon_text(text):
+    if not text:
+        return ""
 
-    text = html_lib.unescape(
-        raw or ""
-    )
+    text = html_lib.unescape(text)
 
-    text = re.sub(
-        r"<script.*?</script>"
-        r"|<style.*?</style>"
-        r"|<noscript.*?</noscript>",
-        " ",
-        text,
-        flags=re.I | re.S
-    )
+    text = text.replace("\xa0", " ")
+    text = text.replace("\r", " ")
+    text = text.replace("\n", " ")
 
-    text = re.sub(
-        r"</(?:div|p|li|h1|h2|h3|h4|h5|h6|section|article|br|tr)>",
-        "\n",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text
-    )
-
-    text = text.replace(
-        "\r",
-        "\n"
-    )
-
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\n[ \t]+",
-        "\n",
-        text
-    )
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
 def valid_coupon_code(code):
+    if not code:
+        return False
 
-    code = (
-        code or ""
-    ).strip().upper()
+    code = code.strip().upper()
+
+    if len(code) < 4 or len(code) > 30:
+        return False
 
     if not re.fullmatch(
-        r"[A-Z0-9][A-Z0-9_-]{5,29}",
-        code
-    ):
-        return False
-
-    if not re.search(
-        r"[A-Z]",
-        code
-    ):
-        return False
-
-    if not re.search(
-        r"\d",
-        code
+        r"[A-Z0-9][A-Z0-9_-]*",
+        code,
     ):
         return False
 
@@ -1261,2735 +779,1930 @@ def valid_coupon_code(code):
 
 
 def coupon_blocks(text):
+    text = normalize_coupon_text(text)
 
     pattern = re.compile(
-        r"\bCupom\s+"
-        r"([A-Z0-9][A-Z0-9_-]{5,29})"
-        r"\b"
-        r"(?=\s+Cupom\s+v[aá]lido)",
-        re.I
+        r"\bCupom\s+([A-Z0-9][A-Z0-9_-]{3,29})\b"
+        r"(?=\s+Cupom\s+válido)",
+        re.IGNORECASE,
     )
 
-    found = []
-
-    for match in pattern.finditer(text):
-
-        code = match.group(1).upper()
-
-        if valid_coupon_code(code):
-
-            found.append(
-                (
-                    match.start(),
-                    match.end(),
-                    code
-                )
-            )
+    matches = list(pattern.finditer(text))
 
     blocks = []
 
-    for index, (
-        start,
-        end,
-        code
-    ) in enumerate(found):
+    for index, match in enumerate(matches):
+        code = match.group(1).upper()
 
-        next_start = (
-            found[index + 1][0]
-            if index + 1 < len(found)
-            else len(text)
-        )
+        if not valid_coupon_code(code):
+            continue
 
-        block = text[
-            end:next_start
-        ].strip()
+        start = match.start()
 
-        for marker in [
-            "Restrições de Uso",
-            "Termos e Condições"
-        ]:
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        else:
+            end = len(text)
 
-            position = block.lower().find(
-                marker.lower()
-            )
-
-            if position >= 0:
-
-                block = block[
-                    :position
-                ].strip()
+        block = text[start:end]
 
         blocks.append(
-            (
-                code,
-                block
-            )
+            (code, block)
         )
 
     return blocks
 
 
 def parse_coupon(code, block):
+    code = code.upper()
 
-    percent = None
+    coupon = {
+        "code": code,
+        "type": None,
+        "value": None,
+        "min_purchase": 0.0,
+        "max_discount": None,
+        "raw_text": block,
+    }
+
+    # ========================================================
+    # PORCENTAGEM
+    # ========================================================
 
     percent_patterns = [
-
-        r"(?:até\s+)?"
-        r"(\d+(?:[.,]\d+)?)"
-        r"\s*%\s*"
-        r"(?:off|de desconto)?",
-
-        r"(?:desconto de|desconto)"
-        r"\s+"
-        r"(\d+(?:[.,]\d+)?)"
-        r"\s*%"
+        r"(\d+(?:[.,]\d+)?)\s*%\s*OFF",
+        r"(\d+(?:[.,]\d+)?)\s*%\s*de\s*desconto",
+        r"desconto\s+de\s+(\d+(?:[.,]\d+)?)\s*%",
+        r"até\s+(\d+(?:[.,]\d+)?)\s*%",
     ]
 
     for pattern in percent_patterns:
-
         match = re.search(
             pattern,
             block,
-            re.I
+            re.IGNORECASE,
         )
 
         if match:
+            try:
+                value = float(
+                    match.group(1).replace(",", ".")
+                )
 
-            percent = number(
-                match.group(1)
-            )
+                if 0 < value <= 100:
+                    coupon["type"] = "percent"
+                    coupon["value"] = value
+                    break
 
-            break
+            except Exception:
+                pass
 
-    fixed = None
+    # ========================================================
+    # VALOR MÍNIMO
+    # ========================================================
 
-    fixed_patterns = [
-
-        r"R\$\s*"
-        r"(\d+(?:[.,]\d+)?)"
-        r"\s*(?:OFF|de desconto)",
-
-        r"(?:desconto de|ganhe)"
-        r"\s*R\$\s*"
-        r"(\d+(?:[.,]\d+)?)"
+    min_patterns = [
+        r"mínimo\s+de\s+R?\$?\s*([\d\.,]+)",
+        r"valor\s+mínimo\s+de\s+R?\$?\s*([\d\.,]+)",
+        r"compras\s+a\s+partir\s+de\s+R?\$?\s*([\d\.,]+)",
+        r"acima\s+de\s+R?\$?\s*([\d\.,]+)",
     ]
 
-    for pattern in fixed_patterns:
-
+    for pattern in min_patterns:
         match = re.search(
             pattern,
             block,
-            re.I
+            re.IGNORECASE,
         )
 
         if match:
+            try:
+                value = parse_brazilian_money(
+                    match.group(1)
+                )
 
-            fixed = number(
-                match.group(1)
-            )
+                if value is not None:
+                    coupon["min_purchase"] = value
+                    break
 
-            break
+            except Exception:
+                pass
 
-    minimum = None
+    # ========================================================
+    # DESCONTO MÁXIMO
+    # ========================================================
 
-    minimum_patterns = [
-
-        r"(?:a partir de|partir de|"
-        r"compra mínima de|mínimo de|"
-        r"valor mínimo de)"
-        r"\s*R?\$?\s*"
-        r"(\d+(?:[.,]\d+)?)",
-
-        r"R\$\s*"
-        r"(\d+(?:[.,]\d+)?)"
-        r"\s*(?:ou mais|em compras)"
+    max_patterns = [
+        r"máximo\s+de\s+R?\$?\s*([\d\.,]+)",
+        r"até\s+R?\$?\s*([\d\.,]+)\s+de\s+desconto",
+        r"desconto\s+m[aá]ximo\s+de\s+R?\$?\s*([\d\.,]+)",
     ]
 
-    for pattern in minimum_patterns:
-
+    for pattern in max_patterns:
         match = re.search(
             pattern,
             block,
-            re.I
+            re.IGNORECASE,
         )
 
         if match:
+            try:
+                value = parse_brazilian_money(
+                    match.group(1)
+                )
 
-            minimum = number(
-                match.group(1)
+                if value is not None:
+                    coupon["max_discount"] = value
+                    break
+
+            except Exception:
+                pass
+
+    # ========================================================
+    # CUPOM FIXO
+    # ========================================================
+
+    if coupon["type"] is None:
+        fixed_patterns = [
+            r"R\$\s*([\d\.,]+)\s+de\s+desconto",
+            r"desconto\s+de\s+R\$\s*([\d\.,]+)",
+            r"R\$\s*([\d\.,]+)\s+OFF",
+        ]
+
+        for pattern in fixed_patterns:
+            match = re.search(
+                pattern,
+                block,
+                re.IGNORECASE,
             )
 
-            break
+            if match:
+                try:
+                    value = parse_brazilian_money(
+                        match.group(1)
+                    )
 
-    maximum = None
+                    if value is not None and value > 0:
+                        coupon["type"] = "fixed"
+                        coupon["value"] = value
+                        break
 
-    maximum_patterns = [
+                except Exception:
+                    pass
 
-        r"(?:máximo de|maximo de|"
-        r"limitado a)"
-        r"\s*R?\$?\s*"
-        r"(\d+(?:[.,]\d+)?)",
+    return coupon
 
-        r"máximo.*?"
-        r"R\$\s*"
-        r"(\d+(?:[.,]\d+)?)"
-    ]
 
-    for pattern in maximum_patterns:
+def parse_brazilian_money(value):
+    if value is None:
+        return None
 
-        match = re.search(
-            pattern,
-            block,
-            re.I
-        )
+    value = str(value).strip()
 
-        if match:
+    value = value.replace("R$", "")
+    value = value.replace(" ", "")
 
-            maximum = number(
-                match.group(1)
-            )
+    if "," in value:
+        value = value.replace(".", "")
+        value = value.replace(",", ".")
+    else:
+        # caso seja "70"
+        value = value.replace(",", "")
 
-            break
-
-    return {
-
-        "code":
-            code,
-
-        "description":
-            block[:2500],
-
-        "discount_percent":
-            percent,
-
-        "fixed_discount":
-            fixed or 0,
-
-        "min_purchase":
-            minimum,
-
-        "max_discount":
-            maximum,
-
-        "source_url":
-            COUPONS_URL,
-
-        "conditions":
-            block[:2500]
-    }
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def sync_coupons():
+    print("[CUPONS] Atualizando...")
 
     try:
-
         response = requests.get(
-            COUPONS_URL,
+            COUPON_PAGE,
             headers={
-
-                "User-Agent":
-                    "Mozilla/5.0 "
-                    "(Windows NT 10.0; Win64; x64) "
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 "
-                    "Chrome/140 Safari/537.36",
-
-                "Accept-Language":
-                    "pt-BR,pt;q=0.9"
+                    "Chrome/140 Safari/537.36"
+                )
             },
-            timeout=30
+            timeout=REQUEST_TIMEOUT,
         )
 
         if response.status_code != 200:
-
-            return {
-                "ok": False,
-                "status":
-                    response.status_code
-            }
-
-        text = normalize_coupon_text(
-            response.text
-        )
-
-        blocks = coupon_blocks(
-            text
-        )
-
-        parsed = []
-
-        for code, block in blocks:
-
-            coupon = parse_coupon(
-                code,
-                block
+            print(
+                "[CUPONS] HTTP",
+                response.status_code,
             )
+            return []
 
-            if (
-                not coupon.get(
-                    "discount_percent"
-                )
-                and not coupon.get(
-                    "fixed_discount"
-                )
-            ):
-                continue
+        page = response.text
 
-            parsed.append(
-                coupon
-            )
+    except Exception as e:
+        print("[CUPONS] ERRO", e)
+        return []
 
-        if not parsed:
+    text = normalize_coupon_text(page)
 
-            return {
-                "ok": False,
-                "erro":
-                    "Nenhum cupom válido encontrado."
-            }
+    blocks = coupon_blocks(text)
 
-        conn = get_db()
+    coupons = []
 
-        conn.execute(
-            "UPDATE cupons SET active=0"
+    for code, block in blocks:
+        coupon = parse_coupon(
+            code,
+            block,
         )
 
-        for coupon in parsed:
+        if not coupon.get("type"):
+            continue
 
-            conn.execute("""
-                INSERT INTO cupons(
-                    code,
-                    description,
-                    discount_percent,
-                    fixed_discount,
-                    min_purchase,
-                    max_discount,
-                    source_url,
-                    conditions,
-                    active,
-                    updated_at
-                )
-                VALUES(
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    1,
-                    CURRENT_TIMESTAMP
-                )
-                ON CONFLICT(code) DO UPDATE SET
-                    description=excluded.description,
-                    discount_percent=excluded.discount_percent,
-                    fixed_discount=excluded.fixed_discount,
-                    min_purchase=excluded.min_purchase,
-                    max_discount=excluded.max_discount,
-                    source_url=excluded.source_url,
-                    conditions=excluded.conditions,
-                    active=1,
-                    updated_at=CURRENT_TIMESTAMP
-            """, (
-
-                coupon["code"],
-                coupon["description"],
-                coupon["discount_percent"],
-                coupon["fixed_discount"],
-                coupon["min_purchase"],
-                coupon["max_discount"],
-                coupon["source_url"],
-                coupon["conditions"]
-            ))
-
-        conn.commit()
-        conn.close()
+        coupons.append(coupon)
 
         print(
-            "[CUPONS] Atualização concluída"
+            "[CUPOM OK]",
+            code,
+            "|",
+            coupon["type"],
+            "|",
+            coupon["value"],
+            "| min",
+            coupon["min_purchase"],
+            "| max",
+            coupon["max_discount"],
         )
 
-        for coupon in parsed:
+    # ========================================================
+    # SALVAR NO BANCO
+    # ========================================================
 
-            print(
-                "[CUPOM OK]",
-                coupon["code"],
-                "|",
-                coupon.get(
-                    "discount_percent"
-                ),
-                "%",
-                "| min:",
-                coupon.get(
-                    "min_purchase"
-                ),
-                "| max:",
-                coupon.get(
-                    "max_discount"
-                )
+    conn = db()
+
+    for coupon in coupons:
+        conn.execute(
+            """
+            INSERT INTO coupons (
+                code,
+                coupon_type,
+                value,
+                min_purchase,
+                max_discount,
+                raw_text,
+                updated_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(code)
+            DO UPDATE SET
+                coupon_type=excluded.coupon_type,
+                value=excluded.value,
+                min_purchase=excluded.min_purchase,
+                max_discount=excluded.max_discount,
+                raw_text=excluded.raw_text,
+                updated_at=excluded.updated_at
+            """,
+            (
+                coupon["code"],
+                coupon["type"],
+                coupon["value"],
+                coupon["min_purchase"],
+                coupon["max_discount"],
+                coupon["raw_text"],
+                int(time.time()),
+            ),
+        )
 
-        return {
-            "ok": True,
-            "cupons_encontrados":
-                len(parsed)
-        }
+    conn.commit()
+    conn.close()
 
-    except Exception as error:
-
-        return {
-            "ok": False,
-            "erro":
-                str(error)
-        }
+    return coupons
 
 
-def coupons():
+def get_saved_coupons():
+    conn = db()
 
-    conn = get_db()
-
-    rows = conn.execute("""
-        SELECT *
-        FROM cupons
-        WHERE active=1
-        ORDER BY
-            discount_percent DESC,
-            max_discount DESC
-    """).fetchall()
+    rows = conn.execute(
+        """
+        SELECT
+            code,
+            coupon_type,
+            value,
+            min_purchase,
+            max_discount,
+            raw_text
+        FROM coupons
+        ORDER BY id DESC
+        """
+    ).fetchall()
 
     conn.close()
 
-    return [
-        dict(row)
-        for row in rows
-    ]
+    coupons = []
+
+    for row in rows:
+        coupons.append(
+            {
+                "code": row["code"],
+                "type": row["coupon_type"],
+                "value": row["value"],
+                "min_purchase": row["min_purchase"] or 0,
+                "max_discount": row["max_discount"],
+                "raw_text": row["raw_text"],
+            }
+        )
+
+    return coupons
 
 
-def coupon_discount(coupon, price):
+# ============================================================
+# CÁLCULO CUPOM
+# ============================================================
+
+def coupon_discount(price, coupon):
+    if price is None:
+        return 0.0
 
     try:
-
         price = float(price)
-
-        minimum = coupon.get(
-            "min_purchase"
-        )
-
-        if (
-            minimum
-            and price < float(minimum)
-        ):
-            return 0
-
-        discounts = []
-
-        percent = float(
-            coupon.get(
-                "discount_percent"
-            ) or 0
-        )
-
-        fixed = float(
-            coupon.get(
-                "fixed_discount"
-            ) or 0
-        )
-
-        maximum = coupon.get(
-            "max_discount"
-        )
-
-        if percent > 0:
-
-            value = (
-                price
-                * percent
-                / 100
-            )
-
-            if maximum:
-
-                value = min(
-                    value,
-                    float(maximum)
-                )
-
-            discounts.append(
-                value
-            )
-
-        if fixed > 0:
-
-            value = fixed
-
-            if maximum:
-
-                value = min(
-                    value,
-                    float(maximum)
-                )
-
-            discounts.append(
-                value
-            )
-
-        return round(
-            max(
-                discounts,
-                default=0
-            ),
-            2
-        )
-
     except Exception:
+        return 0.0
 
-        return 0
+    minimum = float(
+        coupon.get("min_purchase") or 0
+    )
+
+    if price < minimum:
+        return 0.0
+
+    coupon_type = coupon.get("type")
+    value = coupon.get("value")
+
+    if value is None:
+        return 0.0
+
+    try:
+        value = float(value)
+    except Exception:
+        return 0.0
+
+    if coupon_type == "percent":
+        discount = price * (value / 100.0)
+
+    elif coupon_type == "fixed":
+        discount = value
+
+    else:
+        return 0.0
+
+    maximum = coupon.get("max_discount")
+
+    if maximum is not None:
+        try:
+            discount = min(
+                discount,
+                float(maximum),
+            )
+        except Exception:
+            pass
+
+    discount = min(
+        discount,
+        price,
+    )
+
+    return round(
+        max(0, discount),
+        2,
+    )
 
 
-def best_coupon(price):
+def best_coupon(price, coupons):
+    best = None
 
-    choices = []
-
-    for coupon in coupons():
-
-        saving = coupon_discount(
+    for coupon in coupons:
+        discount = coupon_discount(
+            price,
             coupon,
-            price
         )
 
-        if saving <= 0:
+        if discount <= 0:
             continue
 
-        item = dict(coupon)
-
-        item[
-            "desconto_estimado"
-        ] = saving
-
-        item[
-            "percentual_efetivo"
-        ] = round(
-            saving
-            / float(price)
-            * 100,
-            2
+        final_price = round(
+            price - discount,
+            2,
         )
 
-        choices.append(
+        effective_percent = (
+            discount / price * 100
+            if price > 0
+            else 0
+        )
+
+        candidate = {
+            **coupon,
+            "discount": discount,
+            "final_price": final_price,
+            "effective_percent": effective_percent,
+        }
+
+        if best is None:
+            best = candidate
+            continue
+
+        # Primeiro: maior economia em reais
+        if discount > best["discount"]:
+            best = candidate
+            continue
+
+        # Empate: maior percentual
+        if (
+            discount == best["discount"]
+            and effective_percent
+            > best["effective_percent"]
+        ):
+            best = candidate
+            continue
+
+        # Empate: menor preço final
+        if (
+            discount == best["discount"]
+            and final_price < best["final_price"]
+        ):
+            best = candidate
+
+    return best
+
+
+# ============================================================
+# NORMALIZAÇÃO DE ITEM
+# ============================================================
+
+def normalize_item(item):
+    if not isinstance(item, dict):
+        return None
+
+    item_id = item.get("item_id")
+
+    if not item_id:
+        return None
+
+    return {
+        "item_id": item_id,
+        "seller_id": item.get("seller_id"),
+        "price_raw": item.get("price"),
+        "original_price": item.get("original_price"),
+        "shipping": item.get("shipping") or {},
+        "condition": item.get("condition"),
+        "listing_type_id": item.get("listing_type_id"),
+        "user_product_id": item.get("user_product_id"),
+    }
+
+
+# ============================================================
+# BUY BOX
+# ============================================================
+
+def get_buy_box_item(product):
+    if not isinstance(product, dict):
+        return None
+
+    winner = product.get("buy_box_winner")
+
+    if isinstance(winner, dict):
+        return winner.get("item_id")
+
+    return None
+
+
+# ============================================================
+# ESCOLHA DE PUBLICAÇÕES
+# ============================================================
+
+def select_candidate_items(product, items):
+    """
+    Para cada produto:
+
+    1. Coloca buy_box_winner primeiro.
+    2. Depois compara outras publicações.
+    3. Limita quantidade para evitar centenas de chamadas.
+    """
+
+    winner_id = get_buy_box_item(product)
+
+    normalized = []
+
+    seen = set()
+
+    if winner_id:
+        for raw in items:
+            if raw.get("item_id") == winner_id:
+                normalized.append(
+                    normalize_item(raw)
+                )
+                seen.add(winner_id)
+                break
+
+    others = []
+
+    for raw in items:
+        item_id = raw.get("item_id")
+
+        if not item_id:
+            continue
+
+        if item_id in seen:
+            continue
+
+        normalized_item = normalize_item(raw)
+
+        if not normalized_item:
+            continue
+
+        others.append(normalized_item)
+
+    # Ordenação preliminar pelo preço bruto apenas para
+    # reduzir chamadas. O preço final será corrigido depois.
+    others.sort(
+        key=lambda x: (
+            float(x["price_raw"])
+            if x["price_raw"] is not None
+            else 999999999
+        )
+    )
+
+    normalized.extend(
+        others[:MAX_ITEMS_PER_PRODUCT]
+    )
+
+    return normalized
+
+
+# ============================================================
+# AVALIAÇÃO DE UMA PUBLICAÇÃO
+# ============================================================
+
+def evaluate_item(
+    product,
+    item,
+    coupons,
+    price_cache,
+):
+    item_id = item.get("item_id")
+
+    if not item_id:
+        return None
+
+    if item_id in price_cache:
+        price_data = price_cache[item_id]
+
+    else:
+        print(
+            "[PREÇO] Consultando",
+            item_id,
+        )
+
+        price_data = get_current_item_price(
             item
         )
 
-    return max(
-        choices,
-        key=lambda x: (
+        price_cache[item_id] = price_data
 
-            x[
-                "desconto_estimado"
-            ],
+    if not price_data:
+        return None
 
-            x[
-                "percentual_efetivo"
-            ]
-        ),
-        default=None
+    price = price_data.get("amount")
+
+    if price is None:
+        return None
+
+    try:
+        price = float(price)
+    except Exception:
+        return None
+
+    # Regra mínima
+    if price < MIN_PRODUCT_PRICE:
+        return None
+
+    coupon = best_coupon(
+        price,
+        coupons,
     )
 
-
-# ============================================================
-# CAÇA
-# ============================================================
-
-def scan_queries(
-    queries,
-    min_discount=0
-):
-
-    products = {}
-
-    for query in queries:
-
-        categories = discover_categories(
-            query
-        )[:4]
-
-        for category in categories:
-
-            items = highlights(
-                category[
-                    "category_id"
-                ]
-            )
-
-            for item in items:
-
-                if item.get(
-                    "type"
-                ) != "PRODUCT":
-                    continue
-
-                product_id = (
-                    item.get("id")
-                    or item.get(
-                        "product_id"
-                    )
-                )
-
-                if product_id:
-
-                    products.setdefault(
-                        product_id,
-                        {
-                            "category_id":
-                                category[
-                                    "category_id"
-                                ],
-
-                            "category_name":
-                                category[
-                                    "category_name"
-                                ],
-
-                            "query":
-                                query
-                        }
-                    )
-
-    offers = []
-
-    seen_items = set()
-
-    for product_id, base in products.items():
-
-        product_data = get_product(
-            product_id
-        )
-
-        if not product_data:
-            continue
-
-        title = (
-            product_data.get("name")
-            or product_data.get("title")
-            or product_id
-        )
-
-        score = relevance(
-            title,
-            base["query"]
-        )
-
-        if score < 15:
-            continue
-
-        pictures = (
-            product_data.get(
-                "pictures"
-            )
-            or []
-        )
-
-        image = None
-
-        if pictures:
-
-            if isinstance(
-                pictures[0],
-                dict
-            ):
-
-                image = pictures[0].get(
-                    "url"
-                )
-
-        for raw_item in product_items(
-            product_id
-        ):
-
-            item = normalize_item(
-                raw_item
-            )
-
-            if not item:
-                continue
-
-            if item[
-                "item_id"
-            ] in seen_items:
-                continue
-
-            seen_items.add(
-                item["item_id"]
-            )
-
-            try:
-
-                price = float(
-                    item["price"]
-                )
-
-            except Exception:
-
-                continue
-
-            if price < MIN_PRODUCT_PRICE:
-                continue
-
-            original = item.get(
-                "original_price"
-            )
-
-            try:
-
-                original = (
-                    float(original)
-                    if original is not None
-                    else None
-                )
-
-            except Exception:
-
-                original = None
-
-            seller_discount = discount(
-                price,
-                original
-            )
-
-            if seller_discount < float(
-                min_discount or 0
-            ):
-                continue
-
-            shipping = item.get(
-                "shipping_cost"
-            )
-
-            total_price = (
-                total(
-                    price,
-                    shipping
-                )
-                if shipping is not None
-                else price
-            )
-
-            # ==================================================
-            # MAIOR CUPOM REAL
-            # ==================================================
-
-            coupon = best_coupon(
-                price
-            )
-
-            coupon_saving = (
-                coupon[
-                    "desconto_estimado"
-                ]
-                if coupon
-                else 0
-            )
-
-            final_price = (
-                round(
-                    max(
-                        0,
-                        total_price
-                        - coupon_saving
-                    ),
-                    2
-                )
-                if coupon
-                else total_price
-            )
-
-            offers.append({
-
-                "product_id":
-                    product_id,
-
-                "item_id":
-                    item["item_id"],
-
-                "title":
-                    title,
-
-                "modelo_nome":
-                    model_name(title),
-
-                "especificacoes":
-                    specs(title),
-
-                "image":
-                    image,
-
-                "category_name":
-                    base[
-                        "category_name"
-                    ],
-
-                "permalink":
-                    item.get(
-                        "permalink"
-                    )
-                    or product_data.get(
-                        "permalink"
-                    )
-                    or (
-                        "https://www.mercadolivre.com.br/p/"
-                        + product_id
-                    ),
-
-                "price":
-                    price,
-
-                "original_price":
-                    original,
-
-                "discount":
-                    seller_discount,
-
-                "seller_id":
-                    item.get(
-                        "seller_id"
-                    ),
-
-                "free_shipping":
-                    item.get(
-                        "free_shipping"
-                    ),
-
-                "shipping_cost":
-                    shipping,
-
-                "shipping_known":
-                    shipping is not None,
-
-                "total_price":
-                    total_price,
-
-                "relevance_score":
-                    score,
-
-                "cupom":
-                    coupon,
-
-                "desconto_cupom":
-                    coupon_saving,
-
-                "percentual_cupom_efetivo":
-                    (
-                        round(
-                            coupon_saving
-                            / price
-                            * 100,
-                            2
-                        )
-                        if coupon_saving
-                        else 0
-                    ),
-
-                "preco_com_cupom":
-                    final_price
-                    if coupon
-                    else None,
-
-                "preco_final_melhor":
-                    final_price,
-
-                "maior_desconto":
-                    coupon_saving,
-
-                "affiliate_link":
-                    "",
-
-                "extra_earnings":
-                    0
-            })
-
-    # ============================================================
-    # RANKING
-    # ============================================================
-
-    offers.sort(
-        key=lambda item: (
-
-            -(
-                item.get(
-                    "maior_desconto"
-                )
-                or 0
-            ),
-
-            -(
-                item.get(
-                    "percentual_cupom_efetivo"
-                )
-                or 0
-            ),
-
-            item.get(
-                "preco_final_melhor"
-            )
-            or 999999,
-
-            0
-            if item.get(
-                "free_shipping"
-            )
-            else 1
-        )
-    )
-
-    # ============================================================
-    # AGRUPAMENTO
-    # ============================================================
-
-    groups = {}
-
-    for offer in offers:
-
-        product_id = offer[
-            "product_id"
-        ]
-
-        if product_id not in groups:
-
-            groups[product_id] = {
-
-                "product_id":
-                    product_id,
-
-                "title":
-                    offer["title"],
-
-                "modelo_nome":
-                    offer["modelo_nome"],
-
-                "especificacoes":
-                    offer[
-                        "especificacoes"
-                    ],
-
-                "image":
-                    offer["image"],
-
-                "category_name":
-                    offer[
-                        "category_name"
-                    ],
-
-                "ofertas":
-                    []
-            }
-
-        groups[
-            product_id
-        ][
-            "ofertas"
-        ].append(
-            offer
-        )
-
-    models = []
-
-    for group in groups.values():
-
-        group[
-            "ofertas"
-        ].sort(
-            key=lambda item: (
-
-                -(
-                    item.get(
-                        "maior_desconto"
-                    )
-                    or 0
-                ),
-
-                item.get(
-                    "preco_final_melhor"
-                )
-                or 999999
-            )
-        )
-
-        if group["ofertas"]:
-
-            best = group[
-                "ofertas"
-            ][0]
-
-            for offer in group[
-                "ofertas"
-            ]:
-
-                offer[
-                    "menor_preco_modelo"
-                ] = (
-                    offer is best
-                )
-
-        models.append(
-            group
-        )
-
-    unique = []
-
-    signatures = set()
-
-    for group in sorted(
-        models,
-        key=lambda x: (
-
-            -(
-                x["ofertas"][0].get(
-                    "maior_desconto"
-                )
-                or 0
-            ),
-
-            x["ofertas"][0].get(
-                "preco_final_melhor"
-            )
-            or 999999
-        )
-    ):
-
-        signature = norm(
-            group[
-                "modelo_nome"
-            ]
-        )
-
-        if signature in signatures:
-            continue
-
-        signatures.add(
-            signature
-        )
-
-        unique.append(
-            group
-        )
-
-    models = unique[:30]
-
-    flat = [
-        offer
-        for group in models
-        for offer in group[
-            "ofertas"
-        ]
-    ]
-
-    # ============================================================
-    # RESULTADO — APENAS 4 CAMPOS
-    # ============================================================
-
-    valores = [
-        offer.get("price")
-        for offer in flat
-        if offer.get("price") is not None
-    ]
-
-    valores_com_desconto = [
-        offer.get(
-            "preco_final_melhor"
-        )
-        for offer in flat
-        if offer.get(
-            "preco_final_melhor"
-        ) is not None
-    ]
-
-    stats = {
-
-        "ofertas":
-            len(flat),
-
-        "cupom_aplicavel":
-            sum(
-                1
-                for offer in flat
-                if offer.get("cupom")
-            ),
-
-        "valor":
-            brl(
-                min(
-                    valores,
-                    default=0
-                )
-            ),
-
-        "valor_com_desconto":
-            brl(
-                min(
-                    valores_com_desconto,
-                    default=0
-                )
-            )
-    }
-
-    return {
-
-        "stats":
-            stats,
-
-        "modelos":
-            models,
-
-        "ofertas":
-            flat
-    }
-
-
-def auto_scan(
-    category=None,
-    min_discount=0
-):
-
-    if category:
-
-        queries = CATALOG.get(
-            category,
-            []
-        )[:3]
-
-    else:
-
-        queries = [
-            query
-            for values in CATALOG.values()
-            for query in values
-        ][:18]
-
-    return scan_queries(
-        queries,
-        min_discount
-    )
-
-
-# ============================================================
-# ANÚNCIO
-# ============================================================
-
-def ad_text(
-    offer,
-    affiliate=""
-):
-
-    lines = [
-
-        "🔥 OFERTA ENCONTRADA!",
-
-        "",
-
-        "🛍️ "
-        + offer.get(
-            "title",
-            "Produto"
-        ),
-
-        "",
-
-        "💰 Valor: "
-        + brl(
-            offer.get(
-                "price",
-                0
-            )
-        )
-    ]
-
-    coupon = offer.get(
-        "cupom"
-    )
+    # ========================================================
+    # SEM CUPOM
+    # ========================================================
 
     if coupon:
+        final_price = coupon["final_price"]
+        discount = coupon["discount"]
+        coupon_code = coupon["code"]
+        coupon_type = coupon["type"]
+        coupon_value = coupon["value"]
+    else:
+        final_price = round(price, 2)
+        discount = 0.0
+        coupon_code = None
+        coupon_type = None
+        coupon_value = None
 
-        lines += [
+    winner_id = get_buy_box_item(product)
 
-            "",
+    is_buy_box = (
+        winner_id == item_id
+        if winner_id
+        else False
+    )
 
-            "🎟️ CUPOM: "
-            + coupon["code"],
+    shipping = item.get("shipping") or {}
 
-            "💵 Desconto: "
-            + brl(
-                offer.get(
-                    "desconto_cupom",
-                    0
-                )
-            ),
+    free_shipping = bool(
+        shipping.get("free_shipping")
+    )
 
-            "🔥 Valor com desconto: "
-            + brl(
-                offer.get(
-                    "preco_com_cupom",
-                    0
-                )
+    return {
+        "product_id": product.get("id"),
+        "item_id": item_id,
+        "seller_id": item.get("seller_id"),
+        "title": (
+            product.get("name")
+            or product.get("title")
+            or item_id
+        ),
+        "price": round(price, 2),
+        "regular_amount": price_data.get(
+            "regular_amount"
+        ),
+        "price_source": price_data.get(
+            "source"
+        ),
+        "coupon_code": coupon_code,
+        "coupon_type": coupon_type,
+        "coupon_value": coupon_value,
+        "discount": round(
+            discount,
+            2,
+        ),
+        "final_price": round(
+            final_price,
+            2,
+        ),
+        "effective_percent": (
+            round(
+                discount / price * 100,
+                2,
             )
-        ]
-
-    lines += [
-
-        "",
-
-        "⚠️ Confirme o cupom "
-        "no checkout.",
-
-        "",
-
-        "🛒 PEGAR OFERTA:",
-
-        affiliate
-        or "Cole aqui seu link de afiliado."
-    ]
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# API
-# ============================================================
-
-@app.route("/api/buscar")
-def api_buscar():
-
-    query = request.args.get(
-        "q",
-        ""
-    ).strip()
-
-    if not query:
-
-        return jsonify({
-            "erro":
-                "Informe uma busca."
-        }), 400
-
-    sync_coupons()
-
-    result = scan_queries(
-        [query],
-        request.args.get(
-            "desconto",
-            0
-        )
-    )
-
-    return jsonify(
-        json_safe(result)
-    )
-
-
-@app.route("/api/cacar")
-def api_cacar():
-
-    sync_coupons()
-
-    category = request.args.get(
-        "categoria",
-        ""
-    ).strip() or None
-
-    result = auto_scan(
-        category,
-        request.args.get(
-            "desconto",
-            0
-        )
-    )
-
-    return jsonify(
-        json_safe(result)
-    )
-
-
-@app.route("/api/cupons")
-def api_cupons():
-
-    synchronization = None
-
-    if request.args.get(
-        "atualizar"
-    ) == "1":
-
-        synchronization = sync_coupons()
-
-    return jsonify({
-
-        "cupons":
-            json_safe(
-                coupons()
-            ),
-
-        "fonte":
-            COUPONS_URL,
-
-        "sincronizacao":
-            json_safe(
-                synchronization
-            )
-    })
-
-
-@app.route("/api/gerar-anuncio")
-def api_anuncio():
-
-    offer = {
-
-        "title":
-            request.args.get(
-                "title",
-                "Produto"
-            ),
-
-        "price":
-            request.args.get(
-                "price",
-                0
-            ),
-
-        "discount":
-            float(
-                request.args.get(
-                    "discount",
-                    0
-                )
-                or 0
-            ),
-
-        "cupom":
-            None,
-
-        "preco_com_cupom":
-            None
+            if price > 0
+            else 0
+        ),
+        "free_shipping": free_shipping,
+        "is_buy_box": is_buy_box,
+        "url": (
+            f"https://www.mercadolivre.com.br/"
+            f"{item_id}"
+        ),
     }
 
-    code = request.args.get(
-        "cupom",
-        ""
-    ).strip().upper()
 
-    if code:
+# ============================================================
+# ESCOLHA DA MELHOR PUBLICAÇÃO DO PRODUTO
+# ============================================================
 
-        conn = get_db()
+def choose_best_product_offer(offers):
+    if not offers:
+        return None
 
-        row = conn.execute(
+    def ranking(offer):
+        return (
+            # 1. menor preço final
+            offer["final_price"],
+
+            # 2. maior desconto
+            -offer["discount"],
+
+            # 3. maior percentual
+            -offer["effective_percent"],
+
+            # 4. frete grátis
+            0 if offer["free_shipping"] else 1,
+
+            # 5. buy box
+            0 if offer["is_buy_box"] else 1,
+
+            # 6. menor preço atual
+            offer["price"],
+        )
+
+    return sorted(
+        offers,
+        key=ranking,
+    )[0]
+
+
+# ============================================================
+# SCAN
+# ============================================================
+
+def scan_all():
+    if not get_access_token():
+        return {
+            "ok": False,
+            "error": "Conecte sua conta do Mercado Livre primeiro.",
+        }
+
+    print("")
+    print("=" * 70)
+    print("CAÇADOR DE OFERTAS - SCAN")
+    print("=" * 70)
+
+    # ========================================================
+    # CUPONS
+    # ========================================================
+
+    coupons = sync_coupons()
+
+    if not coupons:
+        coupons = get_saved_coupons()
+
+    print(
+        "[CUPONS]",
+        len(coupons),
+    )
+
+    # ========================================================
+    # PRODUTOS
+    # ========================================================
+
+    products_map = {}
+
+    total_queries = sum(
+        len(values)
+        for values in SEARCH_QUERIES.values()
+    )
+
+    query_number = 0
+
+    for category, queries in SEARCH_QUERIES.items():
+
+        for query in queries:
+
+            query_number += 1
+
+            print(
+                f"[BUSCA {query_number}/{total_queries}]",
+                category,
+                "|",
+                query,
+            )
+
+            results = product_search(
+                query
+            )
+
+            for product in results:
+
+                product_id = (
+                    product.get("id")
+                    or product.get("product_id")
+                )
+
+                if not product_id:
+                    continue
+
+                if product_id not in products_map:
+                    products_map[product_id] = {
+                        "product": product,
+                        "category": category,
+                    }
+
+    print(
+        "[PRODUTOS ÚNICOS]",
+        len(products_map),
+    )
+
+    # ========================================================
+    # AVALIAÇÃO
+    # ========================================================
+
+    selected_offers = []
+
+    price_cache = {}
+
+    processed = 0
+
+    for product_id, info in products_map.items():
+
+        processed += 1
+
+        product = get_product(
+            product_id
+        )
+
+        if not product:
+            product = info["product"]
+
+        print(
+            f"[PRODUTO {processed}/{len(products_map)}]",
+            product_id,
+        )
+
+        raw_items = get_product_items(
+            product_id
+        )
+
+        if not raw_items:
+            continue
+
+        candidate_items = select_candidate_items(
+            product,
+            raw_items,
+        )
+
+        product_offers = []
+
+        for item in candidate_items:
+
+            offer = evaluate_item(
+                product,
+                item,
+                coupons,
+                price_cache,
+            )
+
+            if offer:
+                offer["category"] = info[
+                    "category"
+                ]
+
+                product_offers.append(
+                    offer
+                )
+
+        # ====================================================
+        # UM PRODUTO = UMA OFERTA
+        # ====================================================
+
+        best = choose_best_product_offer(
+            product_offers
+        )
+
+        if best:
+            selected_offers.append(
+                best
+            )
+
+            print(
+                "[MELHOR OFERTA]",
+                best["title"][:70],
+                "| R$",
+                best["price"],
+                "| CUPOM",
+                best["coupon_code"],
+                "| FINAL R$",
+                best["final_price"],
+                "| FONTE",
+                best["price_source"],
+            )
+
+    # ========================================================
+    # DEDUP EXTRA
+    # ========================================================
+
+    unique = {}
+
+    for offer in selected_offers:
+        key = offer["product_id"]
+
+        old = unique.get(key)
+
+        if old is None:
+            unique[key] = offer
+            continue
+
+        if offer["final_price"] < old["final_price"]:
+            unique[key] = offer
+
+    selected_offers = list(
+        unique.values()
+    )
+
+    # ========================================================
+    # ORDENAR
+    # ========================================================
+
+    selected_offers.sort(
+        key=lambda x: (
+            # Primeiro ofertas com cupom
+            0 if x["coupon_code"] else 1,
+
+            # Depois maior desconto
+            -x["discount"],
+
+            # Depois menor preço final
+            x["final_price"],
+        )
+    )
+
+    # ========================================================
+    # SALVAR
+    # ========================================================
+
+    conn = db()
+
+    conn.execute(
+        "DELETE FROM ofertas"
+    )
+
+    for offer in selected_offers:
+        conn.execute(
             """
-            SELECT *
-            FROM cupons
-            WHERE code=?
-            AND active=1
+            INSERT INTO ofertas (
+                product_id,
+                item_id,
+                title,
+                category,
+                price,
+                coupon_code,
+                coupon_type,
+                coupon_value,
+                discount,
+                final_price,
+                url,
+                seller_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (code,)
-        ).fetchone()
-
-        conn.close()
-
-        if row:
-
-            coupon = dict(row)
-
-            saving = coupon_discount(
-                coupon,
-                float(
-                    offer["price"]
-                )
-            )
-
-            coupon[
-                "desconto_estimado"
-            ] = saving
-
-            offer[
-                "cupom"
-            ] = coupon
-
-            offer[
-                "desconto_cupom"
-            ] = saving
-
-            offer[
-                "preco_com_cupom"
-            ] = max(
-                0,
-                float(
-                    offer["price"]
-                ) - saving
-            )
-
-    return jsonify({
-
-        "anuncio":
-            ad_text(
-                offer,
-                request.args.get(
-                    "affiliate_link",
-                    ""
-                ).strip()
-            )
-    })
-
-
-# ============================================================
-# DIAGNÓSTICO
-# ============================================================
-
-@app.route("/mercadolivre/teste-produto-itens")
-def teste_items():
-
-    product_id = request.args.get(
-        "product_id",
-        "MLB58793248"
-    )
-
-    data, status, _ = ml_get(
-        f"/products/"
-        f"{product_id}/items"
-    )
-
-    return jsonify({
-
-        "product_id":
-            product_id,
-
-        "status_http":
-            status,
-
-        "resposta":
-            data
-    }), status
-
-
-@app.route("/mercadolivre/teste-produto")
-def teste_product():
-
-    product_id = request.args.get(
-        "product_id",
-        "MLB58793248"
-    )
-
-    data, status, _ = ml_get(
-        f"/products/{product_id}"
-    )
-
-    return jsonify({
-
-        "product_id":
-            product_id,
-
-        "status_http":
-            status,
-
-        "resposta":
-            data
-    }), status
-
-
-@app.route("/mercadolivre/diagnostico")
-def diagnostico():
-
-    data = tokens()
-
-    result = {
-
-        "configurado":
-            bool(
-                ML_CLIENT_ID
+            (
+                offer["product_id"],
+                offer["item_id"],
+                offer["title"],
+                offer["category"],
+                offer["price"],
+                offer["coupon_code"],
+                offer["coupon_type"],
+                offer["coupon_value"],
+                offer["discount"],
+                offer["final_price"],
+                offer["url"],
+                offer["seller_id"],
+                int(time.time()),
             ),
-
-        "conectado":
-            bool(
-                access_token()
-            )
-    }
-
-    if access_token():
-
-        me, status, _ = ml_get(
-            "/users/me"
         )
 
-        result[
-            "users_me"
-        ] = {
+    conn.commit()
+    conn.close()
 
-            "status_http":
-                status,
+    print("")
+    print("=" * 70)
+    print(
+        "CAÇA FINALIZADA:",
+        len(selected_offers),
+        "produtos únicos",
+    )
+    print("=" * 70)
 
-            "resposta":
-                me
+    return {
+        "ok": True,
+        "offers": selected_offers,
+        "coupons": coupons,
+    }
+
+
+# ============================================================
+# LEITURA DAS OFERTAS SALVAS
+# ============================================================
+
+def load_offers():
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM ofertas
+        ORDER BY
+            CASE
+                WHEN coupon_code IS NULL THEN 1
+                ELSE 0
+            END,
+            discount DESC,
+            final_price ASC
+        """
+    ).fetchall()
+
+    conn.close()
+
+    result = []
+
+    for row in rows:
+
+        result.append(
+            {
+                "product_id": row["product_id"],
+                "item_id": row["item_id"],
+                "title": row["title"],
+                "category": row["category"],
+                "price": row["price"],
+                "coupon_code": row["coupon_code"],
+                "coupon_type": row["coupon_type"],
+                "coupon_value": row["coupon_value"],
+                "discount": row["discount"],
+                "final_price": row["final_price"],
+                "url": row["url"],
+                "seller_id": row["seller_id"],
+            }
+        )
+
+    return result
+
+
+# ============================================================
+# ROTAS API
+# ============================================================
+
+@app.route("/health")
+def health():
+    return jsonify(
+        {
+            "status": "ok",
+            "app": "Cacador de Ofertas",
+            "mercadolivre": bool(
+                get_access_token()
+            ),
         }
+    )
 
-    if data:
 
-        result[
-            "token_local"
-        ] = {
-
-            "user_id":
-                data.get(
-                    "user_id"
-                ),
-
-            "nickname":
-                data.get(
-                    "nickname"
-                ),
-
-            "expires_at":
-                data.get(
-                    "expires_at"
-                )
+@app.route("/api/offers")
+def api_offers():
+    return jsonify(
+        {
+            "ok": True,
+            "offers": load_offers(),
         }
+    )
+
+
+@app.route("/api/scan", methods=["POST"])
+def api_scan():
+    result = scan_all()
 
     return jsonify(result)
 
 
+@app.route("/api/coupons")
+def api_coupons():
+    return jsonify(
+        {
+            "ok": True,
+            "coupons": get_saved_coupons(),
+        }
+    )
+
+
 # ============================================================
-# HTML
+# GERAR ANÚNCIO
 # ============================================================
 
-HTML = r"""
-<!doctype html>
+@app.route("/api/generate-ad", methods=["POST"])
+def generate_ad():
+    data = request.get_json(
+        silent=True
+    ) or {}
 
+    title = data.get(
+        "title",
+        "Oferta Mercado Livre"
+    )
+
+    price = data.get(
+        "price"
+    )
+
+    final_price = data.get(
+        "final_price"
+    )
+
+    coupon = data.get(
+        "coupon_code"
+    )
+
+    url = data.get(
+        "url",
+        ""
+    )
+
+    text = f"🔥 OFERTA NO MERCADO LIVRE\n\n"
+
+    text += f"{title}\n\n"
+
+    if price is not None:
+        text += (
+            f"💰 De R$ {float(price):.2f}"
+            .replace(".", ",")
+            + "\n"
+        )
+
+    if final_price is not None:
+        text += (
+            f"🔥 Por R$ {float(final_price):.2f}"
+            .replace(".", ",")
+            + "\n"
+        )
+
+    if coupon:
+        text += (
+            f"\n🎟️ Cupom: {coupon}\n"
+        )
+
+    text += (
+        "\n⚠️ Preço e disponibilidade podem mudar."
+        "\nConfira no Mercado Livre antes de comprar.\n"
+    )
+
+    if url:
+        text += f"\n👉 {url}"
+
+    return jsonify(
+        {
+            "ok": True,
+            "text": text,
+        }
+    )
+
+
+# ============================================================
+# INTERFACE
+# ============================================================
+
+HTML = r'''
+<!DOCTYPE html>
 <html lang="pt-BR">
 
 <head>
 
-<meta charset="utf-8">
+<meta charset="UTF-8">
 
 <meta
     name="viewport"
-    content="width=device-width,initial-scale=1"
+    content="width=device-width, initial-scale=1.0"
 >
 
-<title>
-    Caçador de Ofertas
-</title>
+<title>Caçador de Ofertas</title>
 
 <style>
 
-*{
-    box-sizing:border-box
+* {
+    box-sizing: border-box;
 }
 
-body{
-    margin:0;
-    background:#f4f5f7;
-    font-family:Arial,sans-serif;
-    color:#222
+body {
+    margin: 0;
+    background: #080b10;
+    color: #f5f5f5;
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
 }
 
-.container{
-    max-width:1050px;
-    margin:auto;
-    padding:18px
+.container {
+    width: min(1180px, 94%);
+    margin: auto;
+    padding: 22px 0 60px;
 }
 
-.card{
-    background:#fff;
-    border-radius:16px;
-    padding:18px;
-    margin-bottom:18px;
-    box-shadow:
-        0 5px 20px
-        #0000000c
+.header {
+    background: #111722;
+    border: 1px solid #222b39;
+    border-radius: 18px;
+    padding: 20px;
+    margin-bottom: 18px;
+}
+
+.header h1 {
+    margin: 0 0 7px;
+    font-size: 25px;
+}
+
+.header p {
+    margin: 0;
+    color: #9ca7b7;
+}
+
+.connection {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
 }
 
 button,
-input{
-    width:100%;
-    padding:13px;
-    border-radius:10px;
-    border:1px solid #ddd;
-    font-size:15px
+.btn {
+    border: 0;
+    border-radius: 10px;
+    padding: 12px 16px;
+    background: #3483fa;
+    color: white;
+    cursor: pointer;
+    font-weight: 700;
+    text-decoration: none;
+    display: inline-block;
 }
 
-button{
-    border:0;
-    background:#3483fa;
-    color:white;
-    cursor:pointer;
-    margin-top:7px
+button:hover,
+.btn:hover {
+    opacity: .9;
 }
 
-.login{
-    background:#ffe600;
-    color:#222
+.btn-dark {
+    background: #202938;
 }
 
-.grid{
-    display:grid;
+.status {
+    color: #72e58b;
+    font-weight: 700;
+}
+
+.stats {
+    display: grid;
     grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(150px,1fr)
-        );
-    gap:9px
+        repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
 }
 
-.cat{
-    background:#fff;
-    border:1px solid #ddd;
-    color:#222;
-    text-align:left
+.stat {
+    background: #111722;
+    border: 1px solid #222b39;
+    border-radius: 15px;
+    padding: 16px;
 }
 
+.stat small {
+    color: #8e99aa;
+    display: block;
+    margin-bottom: 8px;
+}
 
-/* =========================================================
-   RESULTADO — SOMENTE 4 INFORMAÇÕES
-   ========================================================= */
+.stat strong {
+    font-size: 23px;
+}
 
-.stats{
-    display:grid;
+.scan-box {
+    background: #111722;
+    border: 1px solid #222b39;
+    border-radius: 18px;
+    padding: 18px;
+    margin-bottom: 18px;
+}
+
+.scan-box h2 {
+    margin-top: 0;
+}
+
+.progress {
+    margin-top: 12px;
+    color: #aeb8c7;
+    min-height: 22px;
+}
+
+.offers {
+    display: grid;
     grid-template-columns:
-        repeat(2,minmax(0,1fr));
-    gap:10px
+        repeat(auto-fill, minmax(285px, 1fr));
+    gap: 14px;
 }
 
-.stat{
-    background:#f3f4f6;
-    padding:15px;
-    border-radius:12px;
-    min-width:0
+.offer {
+    background: #111722;
+    border: 1px solid #252f3e;
+    border-radius: 18px;
+    padding: 17px;
+    position: relative;
 }
 
-.stat-label{
-    font-size:14px;
-    color:#555;
-    font-weight:500
+.offer h3 {
+    font-size: 16px;
+    line-height: 1.35;
+    margin: 0 0 15px;
 }
 
-.stat-value{
-    display:block;
-    font-size:22px;
-    font-weight:bold;
-    margin-top:6px;
-    word-break:break-word
+.label {
+    color: #8e99aa;
+    font-size: 12px;
 }
 
-
-/* =========================================================
-   PRODUTO
-   ========================================================= */
-
-.modelo{
-    border:2px solid #eee;
-    border-radius:15px;
-    padding:14px;
-    margin:13px 0
+.value {
+    font-size: 20px;
+    font-weight: 800;
+    margin-top: 4px;
 }
 
-.mh{
-    display:flex;
-    gap:12px;
-    align-items:center
+.coupon {
+    margin-top: 14px;
+    background: #17251d;
+    border: 1px solid #2d6840;
+    padding: 11px;
+    border-radius: 12px;
 }
 
-.mh img{
-    width:85px;
-    height:85px;
-    object-fit:contain;
-    background:#fafafa;
-    border-radius:10px
+.coupon-code {
+    color: #72e58b;
+    font-weight: 900;
+    font-size: 17px;
 }
 
-.title{
-    font-size:18px;
-    font-weight:bold
+.final {
+    margin-top: 14px;
+    background: #182335;
+    border-radius: 12px;
+    padding: 12px;
 }
 
-.tag{
-    display:inline-block;
-    background:#eef4ff;
-    color:#3483fa;
-    border-radius:7px;
-    padding:5px 8px;
-    font-size:11px;
-    margin:3px
+.final .value {
+    color: #58a6ff;
+    font-size: 23px;
 }
 
-.offer{
-    background:#fff;
-    border:1px solid #eee;
-    border-radius:14px;
-    padding:15px;
-    margin-top:12px
+.actions {
+    margin-top: 15px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
-.offer-best{
-    border:2px solid #49ad68
+input {
+    width: 100%;
+    padding: 11px;
+    background: #0b1018;
+    color: white;
+    border: 1px solid #2a3443;
+    border-radius: 9px;
+    outline: none;
 }
 
-.price{
-    font-size:26px;
-    font-weight:bold;
-    margin-top:8px
+.empty {
+    background: #111722;
+    border: 1px solid #222b39;
+    padding: 25px;
+    border-radius: 16px;
+    color: #9ca7b7;
 }
 
-.coupon{
-    background:#fff8d6;
-    border:2px dashed #e1bb00;
-    border-radius:12px;
-    padding:14px;
-    margin-top:13px
+.note {
+    margin-top: 18px;
+    color: #7f8a9b;
+    font-size: 12px;
+    line-height: 1.5;
 }
 
-.coupon-code{
-    font-size:19px;
-    font-weight:bold
-}
+@media (max-width: 800px) {
 
-.coupon-discount{
-    margin-top:8px;
-    font-size:15px
-}
-
-.coupon-final{
-    background:#eaf8ef;
-    color:#008a3e;
-    border-radius:10px;
-    padding:12px;
-    margin-top:10px;
-    font-size:19px;
-    font-weight:bold
-}
-
-.no-coupon{
-    color:#777;
-    font-size:13px;
-    margin-top:10px
-}
-
-.small{
-    font-size:12px;
-    color:#666
-}
-
-.status{
-    background:#eef8f0;
-    padding:10px;
-    border-radius:9px
-}
-
-.ad{
-    display:none;
-    white-space:pre-wrap;
-    background:#f7f7f7;
-    padding:10px;
-    border-radius:9px;
-    margin-top:8px;
-    font-size:13px
-}
-
-a.product-link{
-    display:block;
-    margin-top:14px;
-    font-size:17px
-}
-
-@media(max-width:600px){
-
-    .stats{
+    .stats {
         grid-template-columns:
-            repeat(2,minmax(0,1fr))
+            repeat(2, 1fr);
     }
 
-    .stat{
-        padding:13px
+}
+
+@media (max-width: 480px) {
+
+    .stats {
+        grid-template-columns: 1fr 1fr;
     }
 
-    .stat-value{
-        font-size:19px
+    .container {
+        width: 92%;
     }
 
-    .mh img{
-        width:75px;
-        height:75px
-    }
-
-    .title{
-        font-size:17px
-    }
 }
 
 </style>
 
-
-<script>
-
-async function cacar(category){
-
-    document.getElementById(
-        'status'
-    ).textContent =
-        '🔄 Caçando promoções...';
-
-    const url =
-        '/api/cacar'
-        +
-        (
-            category
-            ?
-            '?categoria='
-            +
-            encodeURIComponent(category)
-            :
-            ''
-        );
-
-    try{
-
-        const response =
-            await fetch(url);
-
-        const data =
-            await response.json();
-
-        render(data);
-
-        document.getElementById(
-            'status'
-        ).textContent =
-            '✅ Busca atualizada.';
-
-    }catch(error){
-
-        document.getElementById(
-            'status'
-        ).textContent =
-            '❌ Erro ao buscar ofertas.';
-
-        console.error(error);
-    }
-}
-
-
-async function buscar(){
-
-    const input =
-        document.getElementById('q');
-
-    const query =
-        input.value.trim();
-
-    if(!query){
-        return;
-    }
-
-    document.getElementById(
-        'status'
-    ).textContent =
-        '🔄 Procurando...';
-
-    try{
-
-        const response =
-            await fetch(
-                '/api/buscar?q='
-                +
-                encodeURIComponent(query)
-            );
-
-        const data =
-            await response.json();
-
-        render(data);
-
-        document.getElementById(
-            'status'
-        ).textContent =
-            '✅ Busca atualizada.';
-
-    }catch(error){
-
-        document.getElementById(
-            'status'
-        ).textContent =
-            '❌ Erro ao procurar.';
-
-        console.error(error);
-    }
-}
-
-
-function render(data){
-
-    const stats =
-        data.stats || {};
-
-    document.getElementById(
-        'stats'
-    ).innerHTML = `
-
-        <div class="stat">
-
-            <span class="stat-label">
-                🛍️ Ofertas
-            </span>
-
-            <b class="stat-value">
-                ${esc(
-                    stats.ofertas || 0
-                )}
-            </b>
-
-        </div>
-
-
-        <div class="stat">
-
-            <span class="stat-label">
-                🎟️ Cupom aplicável
-            </span>
-
-            <b class="stat-value">
-                ${esc(
-                    stats.cupom_aplicavel || 0
-                )}
-            </b>
-
-        </div>
-
-
-        <div class="stat">
-
-            <span class="stat-label">
-                💰 Valor
-            </span>
-
-            <b class="stat-value">
-                ${esc(
-                    stats.valor || 'R$ 0,00'
-                )}
-            </b>
-
-        </div>
-
-
-        <div class="stat">
-
-            <span class="stat-label">
-                🔥 Valor com o desconto
-            </span>
-
-            <b class="stat-value">
-                ${esc(
-                    stats.valor_com_desconto
-                    || 'R$ 0,00'
-                )}
-            </b>
-
-        </div>
-    `;
-
-
-    const models =
-        data.modelos || [];
-
-
-    document.getElementById(
-        'results'
-    ).innerHTML =
-
-        models.map(
-            (model,index) => `
-
-                <div class="modelo">
-
-                    <div class="mh">
-
-                        ${
-                            model.image
-                            ?
-                            `
-                            <img
-                                src="${model.image}"
-                            >
-                            `
-                            :
-                            ''
-                        }
-
-                        <div>
-
-                            <span class="tag">
-                                🔥 MODELO
-                                ${index + 1}
-                            </span>
-
-                            <div class="title">
-                                ${esc(
-                                    model.modelo_nome
-                                )}
-                            </div>
-
-                        </div>
-
-                    </div>
-
-
-                    ${
-                        model.ofertas
-                        .map(
-                            (offer,offerIndex) =>
-                                renderOffer(
-                                    offer,
-                                    index,
-                                    offerIndex
-                                )
-                        )
-                        .join('')
-                    }
-
-                </div>
-            `
-        ).join('')
-
-        ||
-
-        '<p>Nenhuma oportunidade encontrada.</p>';
-}
-
-
-function renderOffer(
-    offer,
-    modelIndex,
-    offerIndex
-){
-
-    const id =
-        'offer_'
-        + modelIndex
-        + '_'
-        + offerIndex;
-
-    const coupon =
-        offer.cupom;
-
-
-    return `
-
-        <div class="
-            offer
-            ${
-                offer.menor_preco_modelo
-                ? 'offer-best'
-                : ''
-            }
-        ">
-
-            ${
-                offer.menor_preco_modelo
-                ?
-                `
-                <span
-                    class="tag"
-                    style="
-                        background:#49ad68;
-                        color:white;
-                    "
-                >
-                    🏆 MELHOR OPÇÃO
-                </span>
-                `
-                :
-                ''
-            }
-
-
-            <!-- SOMENTE VALOR -->
-
-            <div class="price">
-                💰
-                ${brl(
-                    offer.price
-                )}
-            </div>
-
-
-            <!-- SOMENTE CUPOM -->
-
-            ${
-                coupon
-                ?
-                `
-
-                <div class="coupon">
-
-                    <div class="coupon-code">
-                        🎟️ CUPOM:
-                        ${esc(
-                            coupon.code
-                        )}
-                    </div>
-
-
-                    ${
-                        coupon.discount_percent
-                        ?
-                        `
-                        <div class="coupon-discount">
-                            🔥
-                            ${
-                                coupon.discount_percent
-                            }%
-                            OFF
-                        </div>
-                        `
-                        :
-                        ''
-                    }
-
-
-                    ${
-                        coupon.fixed_discount
-                        ?
-                        `
-                        <div class="coupon-discount">
-                            💰
-                            ${brl(
-                                coupon.fixed_discount
-                            )}
-                            OFF
-                        </div>
-                        `
-                        :
-                        ''
-                    }
-
-
-                    <div class="coupon-discount">
-                        💵 Desconto:
-                        <b>
-                            ${brl(
-                                offer.desconto_cupom
-                            )}
-                        </b>
-                    </div>
-
-
-                    <!-- VALOR FINAL -->
-
-                    <div class="coupon-final">
-                        🔥 Valor com o desconto:
-                        <br>
-                        ${brl(
-                            offer.preco_com_cupom
-                        )}
-                    </div>
-
-
-                    <div class="small">
-                        ⚠️ Valor estimado.
-                        Confirme no checkout.
-                    </div>
-
-                </div>
-
-                `
-                :
-                `
-
-                <div class="no-coupon">
-                    ⚠️ Nenhum cupom aplicável
-                    encontrado para este produto.
-                </div>
-
-                `
-            }
-
-
-            <a
-                class="product-link"
-                href="${offer.permalink}"
-                target="_blank"
-            >
-                🛒 Ver produto
-            </a>
-
-
-            <input
-                id="link_${id}"
-                placeholder="Cole seu link de afiliado"
-            >
-
-
-            <button
-                onclick='anuncio(
-                    "${id}",
-                    ${JSON.stringify(offer)}
-                )'
-            >
-                📢 Gerar anúncio
-            </button>
-
-
-            <button
-                id="copy_${id}"
-                style="
-                    display:none;
-                    background:#ff8a00
-                "
-                onclick="copyAd('${id}')"
-            >
-                📋 Copiar anúncio
-            </button>
-
-
-            <div
-                id="ad_${id}"
-                class="ad"
-            ></div>
-
-        </div>
-    `;
-}
-
-
-async function anuncio(
-    id,
-    offer
-){
-
-    const link =
-        document.getElementById(
-            'link_' + id
-        ).value;
-
-
-    const params =
-        new URLSearchParams({
-
-            title:
-                offer.title,
-
-            price:
-                offer.price,
-
-            discount:
-                0,
-
-            cupom:
-                offer.cupom
-                ? offer.cupom.code
-                : '',
-
-            affiliate_link:
-                link
-        });
-
-
-    const response =
-        await fetch(
-            '/api/gerar-anuncio?'
-            + params
-        );
-
-
-    const data =
-        await response.json();
-
-
-    document.getElementById(
-        'ad_' + id
-    ).style.display =
-        'block';
-
-
-    document.getElementById(
-        'ad_' + id
-    ).textContent =
-        data.anuncio;
-
-
-    document.getElementById(
-        'copy_' + id
-    ).style.display =
-        'block';
-}
-
-
-function copyAd(id){
-
-    navigator.clipboard.writeText(
-        document.getElementById(
-            'ad_' + id
-        ).textContent
-    );
-
-    alert(
-        'Anúncio copiado!'
-    );
-}
-
-
-function brl(value){
-
-    return (
-        'R$ '
-        +
-        Number(
-            value || 0
-        ).toLocaleString(
-            'pt-BR',
-            {
-                minimumFractionDigits:2,
-                maximumFractionDigits:2
-            }
-        )
-    );
-}
-
-
-function esc(value){
-
-    return String(
-        value ?? ''
-    ).replace(
-        /[&<>"']/g,
-        char => ({
-
-            '&':'&amp;',
-            '<':'&lt;',
-            '>':'&gt;',
-            '"':'&quot;',
-            "'":'&#039;'
-
-        }[char])
-    );
-}
-
-</script>
-
 </head>
-
 
 <body>
 
 <div class="container">
 
+    <div class="header">
 
-    <div class="card">
-
-        <h1>
-            🛒 Caçador de Ofertas
-        </h1>
+        <h1>🤑 Caçador de Ofertas</h1>
 
         <p>
-            Produtos a partir de
-            R$ 69,90.
-            O sistema procura o cupom
-            que gera o maior desconto
-            real disponível.
+            Produtos + preço atual + cupons aplicáveis
         </p>
 
+        <div class="connection">
 
-        {% if conectado %}
+            {% if connected %}
 
-            <div class="status">
+                <span class="status">
+                    🟢 Mercado Livre conectado
+                    {% if user %}
+                        — {{ user.nickname or user.id }}
+                    {% endif %}
+                </span>
 
-                🟢 Mercado Livre conectado
-
-                {% if nickname %}
-
-                    <br>
-
-                    <b>
-                        {{nickname}}
-                    </b>
-
-                {% endif %}
-
-            </div>
-
-
-            <a
-                href="/mercadolivre/logout"
-            >
-
-                <button>
-                    Desconectar
-                </button>
-
-            </a>
-
-        {% else %}
-
-            <a
-                href="/mercadolivre/login"
-            >
-
-                <button class="login">
-                    🔗 Conectar Mercado Livre
-                </button>
-
-            </a>
-
-        {% endif %}
-
-    </div>
-
-
-    <div class="card">
-
-        <h2>
-            🔥 Caçar promoções
-        </h2>
-
-        <button
-            onclick="cacar('')"
-        >
-            🚀 CAÇAR TODAS AS CATEGORIAS
-        </button>
-
-
-        <div
-            class="grid"
-            style="margin-top:10px"
-        >
-
-            {% for category in categorias %}
-
-                <button
-                    class="cat"
-                    onclick="cacar(
-                        {{category|tojson}}
-                    )"
+                <a
+                    class="btn btn-dark"
+                    href="/mercadolivre/disconnect"
                 >
-                    {{category}}
-                </button>
+                    Desconectar
+                </a>
 
-            {% endfor %}
+            {% else %}
+
+                <a
+                    class="btn"
+                    href="/mercadolivre/connect"
+                >
+                    🔗 Conectar Mercado Livre
+                </a>
+
+            {% endif %}
 
         </div>
-
-
-        <p
-            id="status"
-            class="small"
-        >
-            Escolha uma categoria
-            ou cace tudo.
-        </p>
 
     </div>
 
 
-    <div class="card">
+    <div class="stats">
 
-        <h2>
-            🔎 Busca manual
-        </h2>
+        <div class="stat">
+            <small>Ofertas</small>
+            <strong id="statOffers">0</strong>
+        </div>
 
-        <input
-            id="q"
-            placeholder="Ex: celular, perfume, furadeira"
-        >
+        <div class="stat">
+            <small>Cupom aplicável</small>
+            <strong id="statCoupons">0</strong>
+        </div>
+
+        <div class="stat">
+            <small>Valor</small>
+            <strong id="statPrice">R$ 0,00</strong>
+        </div>
+
+        <div class="stat">
+            <small>Valor com desconto</small>
+            <strong id="statFinal">R$ 0,00</strong>
+        </div>
+
+    </div>
+
+
+    <div class="scan-box">
+
+        <h2>🔎 Caçar ofertas</h2>
 
         <button
-            onclick="buscar()"
+            id="scanBtn"
+            onclick="scan()"
         >
-            Procurar
+            🚀 CAÇAR OFERTAS
         </button>
 
-    </div>
-
-
-    <!-- ======================================================
-         RESULTADO — AGORA SÓ 4 CAMPOS
-         ====================================================== -->
-
-    <div class="card">
-
-        <h2>
-            📊 Resultado
-        </h2>
-
         <div
-            id="stats"
-            class="stats"
+            id="progress"
+            class="progress"
         >
-
-            <div class="stat">
-
-                <span class="stat-label">
-                    🛍️ Ofertas
-                </span>
-
-                <b class="stat-value">
-                    0
-                </b>
-
-            </div>
-
-
-            <div class="stat">
-
-                <span class="stat-label">
-                    🎟️ Cupom aplicável
-                </span>
-
-                <b class="stat-value">
-                    0
-                </b>
-
-            </div>
-
-
-            <div class="stat">
-
-                <span class="stat-label">
-                    💰 Valor
-                </span>
-
-                <b class="stat-value">
-                    R$ 0,00
-                </b>
-
-            </div>
-
-
-            <div class="stat">
-
-                <span class="stat-label">
-                    🔥 Valor com o desconto
-                </span>
-
-                <b class="stat-value">
-                    R$ 0,00
-                </b>
-
-            </div>
-
+            Pronto para começar.
         </div>
 
     </div>
 
 
-    <!-- ======================================================
-         OFERTAS
-         ====================================================== -->
+    <div
+        id="offers"
+        class="offers"
+    ></div>
 
-    <div class="card">
 
-        <h2>
-            🏆 Melhores oportunidades
-        </h2>
-
-        <p class="small">
-            O sistema mostra o cupom que
-            oferece o maior desconto real
-            disponível para cada produto.
-        </p>
-
-        <div id="results">
-
-            <p>
-                Faça uma busca
-                para começar.
-            </p>
-
-        </div>
-
+    <div class="note">
+        Os valores com cupom são estimativas.
+        A aplicação do cupom depende das regras do Mercado Livre,
+        elegibilidade do produto, conta do comprador e disponibilidade
+        do cupom no momento da compra.
     </div>
-
-
-    <div class="card">
-
-        <a
-            href="/api/cupons?atualizar=1"
-            target="_blank"
-        >
-            🎟️ Atualizar/consultar cupons
-        </a>
-
-        <br>
-        <br>
-
-        <a
-            href="/mercadolivre/diagnostico"
-            target="_blank"
-        >
-            🧪 Diagnóstico Mercado Livre
-        </a>
-
-    </div>
-
 
 </div>
+
+
+<script>
+
+function money(value) {
+
+    const number = Number(value || 0);
+
+    return number.toLocaleString(
+        'pt-BR',
+        {
+            style: 'currency',
+            currency: 'BRL'
+        }
+    );
+}
+
+
+function escapeHtml(text) {
+
+    return String(text || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+}
+
+
+function renderOffers(offers) {
+
+    const box =
+        document.getElementById('offers');
+
+    box.innerHTML = '';
+
+    if (!offers || !offers.length) {
+
+        box.innerHTML = `
+            <div class="empty">
+                Nenhuma oferta encontrada.
+            </div>
+        `;
+
+        updateStats([]);
+
+        return;
+    }
+
+
+    for (const offer of offers) {
+
+        const couponHtml =
+            offer.coupon_code
+            ? `
+                <div class="coupon">
+
+                    <div class="label">
+                        CUPOM APLICÁVEL
+                    </div>
+
+                    <div class="coupon-code">
+                        ${escapeHtml(
+                            offer.coupon_code
+                        )}
+                    </div>
+
+                </div>
+            `
+            : `
+                <div class="coupon"
+                     style="
+                        background:#201b14;
+                        border-color:#604b25;
+                     ">
+
+                    <div class="label">
+                        CUPOM
+                    </div>
+
+                    <div style="color:#e8bd67;font-weight:800;">
+                        Nenhum cupom encontrado
+                    </div>
+
+                </div>
+            `;
+
+
+        const card = document.createElement('div');
+
+        card.className = 'offer';
+
+        card.innerHTML = `
+
+            <h3>
+                ${escapeHtml(offer.title)}
+            </h3>
+
+            <div class="label">
+                VALOR ATUAL
+            </div>
+
+            <div class="value">
+                ${money(offer.price)}
+            </div>
+
+            ${couponHtml}
+
+            <div class="final">
+
+                <div class="label">
+                    VALOR COM DESCONTO
+                </div>
+
+                <div class="value">
+                    ${money(offer.final_price)}
+                </div>
+
+            </div>
+
+            <div class="actions">
+
+                <a
+                    class="btn"
+                    href="${escapeHtml(offer.url)}"
+                    target="_blank"
+                    rel="noopener"
+                >
+                    🛒 Abrir produto
+                </a>
+
+                <button
+                    class="btn-dark"
+                    onclick='generateAd(${JSON.stringify(offer)})'
+                >
+                    📢 Gerar anúncio
+                </button>
+
+            </div>
+
+        `;
+
+        box.appendChild(card);
+    }
+
+
+    updateStats(offers);
+}
+
+
+function updateStats(offers) {
+
+    const total =
+        offers.length;
+
+    const couponOffers =
+        offers.filter(
+            x => x.coupon_code
+        ).length;
+
+    const prices =
+        offers
+            .map(x => Number(x.price))
+            .filter(x => !isNaN(x));
+
+    const finals =
+        offers
+            .map(x => Number(x.final_price))
+            .filter(x => !isNaN(x));
+
+
+    const lowestPrice =
+        prices.length
+        ? Math.min(...prices)
+        : 0;
+
+    const lowestFinal =
+        finals.length
+        ? Math.min(...finals)
+        : 0;
+
+
+    document.getElementById(
+        'statOffers'
+    ).textContent = total;
+
+
+    document.getElementById(
+        'statCoupons'
+    ).textContent = couponOffers;
+
+
+    document.getElementById(
+        'statPrice'
+    ).textContent = money(
+        lowestPrice
+    );
+
+
+    document.getElementById(
+        'statFinal'
+    ).textContent = money(
+        lowestFinal
+    );
+}
+
+
+async function loadOffers() {
+
+    try {
+
+        const response =
+            await fetch('/api/offers');
+
+        const data =
+            await response.json();
+
+        if (data.ok) {
+            renderOffers(
+                data.offers
+            );
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+    }
+}
+
+
+async function scan() {
+
+    const button =
+        document.getElementById(
+            'scanBtn'
+        );
+
+    const progress =
+        document.getElementById(
+            'progress'
+        );
+
+
+    button.disabled = true;
+
+    button.textContent =
+        '⏳ CAÇANDO...';
+
+    progress.textContent =
+        'Atualizando cupons e procurando produtos...';
+
+
+    try {
+
+        const response =
+            await fetch(
+                '/api/scan',
+                {
+                    method: 'POST'
+                }
+            );
+
+        const data =
+            await response.json();
+
+
+        if (!data.ok) {
+
+            progress.textContent =
+                data.error ||
+                'Erro ao realizar a busca.';
+
+            return;
+        }
+
+
+        renderOffers(
+            data.offers || []
+        );
+
+
+        progress.textContent =
+            `Caça finalizada: ${
+                (data.offers || []).length
+            } produtos únicos encontrados.`;
+
+    } catch (error) {
+
+        console.error(error);
+
+        progress.textContent =
+            'Erro de comunicação com o servidor.';
+
+    } finally {
+
+        button.disabled = false;
+
+        button.textContent =
+            '🚀 CAÇAR OFERTAS';
+    }
+}
+
+
+async function generateAd(offer) {
+
+    try {
+
+        const response =
+            await fetch(
+                '/api/generate-ad',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
+                    body:
+                        JSON.stringify(offer)
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!data.ok) {
+            alert(
+                'Não foi possível gerar o anúncio.'
+            );
+            return;
+        }
+
+
+        await navigator.clipboard.writeText(
+            data.text
+        );
+
+
+        alert(
+            'Anúncio copiado para a área de transferência!'
+        );
+
+    } catch (error) {
+
+        console.error(error);
+
+        alert(
+            'Não foi possível copiar o anúncio.'
+        );
+    }
+}
+
+
+loadOffers();
+
+</script>
 
 </body>
 
 </html>
-"""
+'''
 
 
 # ============================================================
-# PÁGINA PRINCIPAL
+# HOME
 # ============================================================
 
 @app.route("/")
 def index():
 
-    data = tokens()
+    connected = bool(
+        get_access_token()
+    )
+
+    user = None
+
+    if connected:
+        user = get_ml_user()
+
+    offers = load_offers()
 
     return render_template_string(
-
         HTML,
-
-        conectado=bool(
-            access_token()
-        ),
-
-        nickname=(
-            data.get("nickname")
-            if data
-            else None
-        ),
-
-        categorias=list(
-            CATALOG.keys()
-        )
+        connected=connected,
+        user=user,
+        offers=offers,
     )
 
 
-@app.route("/buscar")
-def buscar_page():
+# ============================================================
+# ERRO GLOBAL
+# ============================================================
 
-    query = request.args.get(
-        "q",
-        ""
-    ).strip()
+@app.errorhandler(Exception)
+def handle_exception(error):
 
-    if not query:
-        return redirect("/")
-
-    sync_coupons()
-
-    result = scan_queries(
-        [query],
-        request.args.get(
-            "desconto",
-            0
-        )
+    print(
+        "[ERRO GLOBAL]",
+        repr(error),
     )
 
-    data = tokens()
-
-    return render_template_string(
-
-        HTML,
-
-        conectado=bool(
-            access_token()
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": str(error),
+            }
         ),
-
-        nickname=(
-            data.get("nickname")
-            if data
-            else None
-        ),
-
-        categorias=list(
-            CATALOG.keys()
-        ),
-
-        resultado=result
+        500,
     )
-
-
-@app.route("/cupons")
-def coupons_page():
-
-    sync_coupons()
-
-    return jsonify({
-
-        "cupons":
-            json_safe(
-                coupons()
-            ),
-
-        "fonte":
-            COUPONS_URL
-    })
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.route("/health")
-def health():
-
-    return jsonify({
-
-        "status":
-            "ok",
-
-        "app":
-            "Cacador de Ofertas",
-
-        "mercado_livre_conectado":
-            bool(
-                access_token()
-            ),
-
-        "produto_minimo":
-            MIN_PRODUCT_PRICE,
-
-        "fluxo":
-            "products/{product_id}/items",
-
-        "cupons":
-            "ativo",
-
-        "ranking":
-            "maior desconto real",
-
-        "painel":
-            [
-                "Ofertas",
-                "Cupom aplicável",
-                "Valor",
-                "Valor com o desconto"
-            ]
-    })
-
-
-# ============================================================
-# ERROS
-# ============================================================
-
-@app.errorhandler(404)
-def error_404(error):
-
-    return jsonify({
-
-        "erro":
-            "Rota não encontrada.",
-
-        "rota":
-            request.path
-    }), 404
-
-
-@app.errorhandler(500)
-def error_500(error):
-
-    return jsonify({
-
-        "erro":
-            "Erro interno no servidor.",
-
-        "detalhes":
-            str(error)
-    }), 500
 
 
 # ============================================================
@@ -3998,16 +2711,21 @@ def error_500(error):
 
 if __name__ == "__main__":
 
+    port = int(
+        os.getenv(
+            "PORT",
+            "8080"
+        )
+    )
+
+    print("")
+    print("=" * 60)
+    print("CAÇADOR DE OFERTAS")
+    print("PORTA:", port)
+    print("=" * 60)
+
     app.run(
-
         host="0.0.0.0",
-
-        port=int(
-            os.getenv(
-                "PORT",
-                "8080"
-            )
-        ),
-
-        debug=False
+        port=port,
+        debug=False,
     )
