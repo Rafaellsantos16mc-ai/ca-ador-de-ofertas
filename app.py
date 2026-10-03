@@ -812,22 +812,14 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None):
     O mesmo cupom pode continuar sendo usado em vários produtos quando cada
     produto tiver sua própria associação pública.
     """
-    # A página individual do produto é a fonte mais direta para o selo
-    # "Cupom ... OFF" e não depende do HTML dinâmico da landing page.
-    # O permalink é passado em public_cards quando disponível.
-    permalink = None
-    if isinstance(public_cards, dict):
-        permalink = public_cards.get("permalink")
-        cards = public_cards.get("cards") or []
-    else:
-        cards = public_cards or []
+    if not public_cards:
+        return None
 
-    page_coupon = best_product_page_coupon(title, price, permalink) if permalink else None
-    matched = page_coupon or match_public_coupon(title, price, cards, item_id)
+    matched = match_public_coupon(title, price, public_cards, item_id)
     if not matched:
         return None
 
-    d = float(matched.get("desconto_estimado") or calculate_public_coupon(matched, price))
+    d = calculate_public_coupon(matched, price)
     if d <= 0:
         return None
 
@@ -1066,85 +1058,6 @@ def public_coupon_product_cards():
 
 PUBLIC_PRODUCT_COUPON_CACHE = {}
 PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
-PRODUCT_PAGE_COUPON_CACHE = {}
-PRODUCT_PAGE_COUPON_LOCK = threading.Lock()
-
-
-def fetch_product_page_coupon(title, price, permalink=None):
-    """Confirma cupom diretamente na página pública do produto.
-
-    A página /l/descontaco-cupons é renderizada dinamicamente e o requests
-    simples pode receber apenas o esqueleto da página. A página individual
-    do produto costuma trazer o selo de cupom no conteúdo público. Fazemos
-    poucas consultas, em paralelo, somente para os produtos selecionados.
-    """
-    key = f"{norm(title)}|{round(float(price or 0),2)}|{permalink or ''}"
-    with PRODUCT_PAGE_COUPON_LOCK:
-        if key in PRODUCT_PAGE_COUPON_CACHE:
-            return PRODUCT_PAGE_COUPON_CACHE[key]
-
-    urls = []
-    if permalink:
-        urls.append(permalink)
-    if not urls:
-        result = None
-        with PRODUCT_PAGE_COUPON_LOCK:
-            PRODUCT_PAGE_COUPON_CACHE[key] = result
-        return result
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    result = None
-    try:
-        r = requests.get(urls[0], headers=headers, timeout=12, allow_redirects=True)
-        if r.status_code == 200:
-            text = normalize_coupon_html(r.text)
-            # Aceita apenas selo explícito de cupom; descontos normais/Pix
-            # não entram como cupom.
-            found = []
-            for m in re.finditer(r"Cupom\s+(?:R\$\s*[\d\.]+(?:,[\d]{2})?|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)", text, re.I):
-                c = detect_public_coupon(m.group(0))
-                if c:
-                    # Confirma que a ocorrência está próxima do nome/preço
-                    # do mesmo produto para evitar herdar cupom de outro card.
-                    around = text[max(0, m.start()-1200):m.start()+500]
-                    sim = title_similarity(title, around)
-                    if sim >= 0.35:
-                        c["source_url"] = r.url
-                        c["match_score"] = round(min(1.0, sim + 0.35), 3)
-                        found.append(c)
-            if found:
-                # Para o mesmo produto, o maior desconto em reais será
-                # calculado depois; aqui guardamos todos os candidatos.
-                result = found
-    except Exception as e:
-        print("[CUPOM PÁGINA PRODUTO]", repr(e))
-
-    with PRODUCT_PAGE_COUPON_LOCK:
-        PRODUCT_PAGE_COUPON_CACHE[key] = result
-    return result
-
-
-def best_product_page_coupon(title, price, permalink):
-    found = fetch_product_page_coupon(title, price, permalink)
-    if not found:
-        return None
-    best = None
-    best_discount = 0
-    for c in found:
-        d = calculate_public_coupon(c, price)
-        if d > best_discount:
-            best_discount = d
-            best = dict(c)
-            best["desconto_estimado"] = d
-    if not best:
-        return None
-    best["percentual_efetivo"] = round((best_discount / float(price))*100, 2) if price else 0
-    best["match_type"] = "pagina_produto"
-    return best
 
 
 def _search_public_listing_for_coupon(title, price, item_id=None):
@@ -1291,144 +1204,241 @@ def search_products_direct(q, limit=20):
     return data.get("results") or []
 
 
+
+def _build_item_from_buy_box(bb):
+    if not isinstance(bb, dict):
+        return None
+    item_id = bb.get("item_id") or bb.get("id")
+    if not item_id:
+        return None
+    shipping = bb.get("shipping") or {}
+    if isinstance(shipping, dict):
+        free = bool(shipping.get("free_shipping"))
+        cost = shipping.get("cost")
+    else:
+        free, cost = False, None
+    return {
+        "item_id": item_id,
+        "seller_id": bb.get("seller_id"),
+        "price": bb.get("price"),
+        "original_price": bb.get("original_price") or bb.get("regular_price"),
+        "condition": bb.get("condition") or bb.get("item_condition"),
+        "listing_type_id": bb.get("listing_type_id"),
+        "free_shipping": free,
+        "shipping_cost": 0 if free else cost,
+        "permalink": bb.get("permalink"),
+        "user_product_id": bb.get("user_product_id"),
+        "sold_quantity": bb.get("sold_quantity") or 0,
+    }
+
+
+def _fetch_product_fast(pid):
+    p = product(pid)
+    if not p:
+        return None
+    bb = p.get("buy_box_winner")
+    item = _build_item_from_buy_box(bb)
+    # Only fall back to /products/{id}/items when the product detail does not
+    # expose a usable buy-box winner. This removes a large number of API calls.
+    if item is None:
+        items = product_items(pid)
+        for raw in items:
+            item = normalize_item(raw)
+            if item:
+                item["sold_quantity"] = raw.get("sold_quantity") or 0
+                break
+    if item is None:
+        return None
+    return pid, p, item
+
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
+    """
+    Fast product scan.
+
+    IMPORTANT:
+    - Product discovery never scrapes Mercado Livre public pages.
+    - Coupon discovery is intentionally NOT part of this scan.
+    - Product details are fetched with a small controlled worker pool.
+    - /items/{id}/sale_price is used only for missing/suspicious prices.
+    This keeps the main hunt fast and avoids API request spikes.
+    """
+    # Keep the automatic hunt independent from coupon scraping.
+    # Coupon work is handled separately by /api/cupons?atualizar=1.
+    apply_coupons = False
     public_cards = []
 
     products = {}
     for q in queries:
-        # Busca direta: não depende de aparecer nos highlights.
         for item in search_products_direct(q, 10):
             pid = item.get("id") or item.get("product_id")
-            if pid:
-                products.setdefault(pid, {"category_id":None, "category_name":None, "query":q})
+            if pid and pid not in products:
+                products[pid] = {"category_id": None, "category_name": None, "query": q}
+            if len(products) >= 36:
+                break
+        if len(products) >= 36:
+            break
 
-        # Complementa com categorias/destaques.
-        for cat in discover_categories(q)[:2]:
-            for h in highlights(cat["category_id"]):
-                pid = h.get("id") or h.get("product_id")
-                if pid:
-                    products.setdefault(pid, {
-                        "category_id":cat["category_id"],
-                        "category_name":cat["category_name"],
-                        "query":q
-                    })
+    print("[PRODUTOS CANDIDATOS RÁPIDOS]", len(products))
 
-    print("[PRODUTOS CANDIDATOS]", len(products))
+    fetched = []
+    # Controlled concurrency: enough to reduce latency, but not enough to
+    # create a request spike against the ML API.
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_map = {executor.submit(_fetch_product_fast, pid): (pid, base)
+                      for pid, base in list(products.items())[:36]}
+        for fut in as_completed(future_map):
+            try:
+                result = fut.result()
+                if result:
+                    fetched.append((result, future_map[fut][1]))
+            except Exception as e:
+                print("[PRODUTO FAST ERRO]", repr(e))
 
     offers = []
     seen = set()
-    for pid, base in products.items():
-        p = product(pid)
-        if not p:
-            continue
+
+    for (pid, p, item), base in fetched:
         title = p.get("name") or p.get("title") or pid
         score = relevance(title, base["query"])
-        # Busca direta pode retornar bons produtos mesmo com score baixo.
         if score < 5:
             continue
-        pics = p.get("pictures") or []
-        image = pics[0].get("url") if pics and isinstance(pics[0],dict) else None
 
-        for raw in product_items(pid):
-            item = normalize_item(raw)
-            if not item or item["item_id"] in seen:
-                continue
-            seen.add(item["item_id"])
-            # Usa o preço de venda atual do Mercado Livre.
-            # Os campos price/base_price/original_price antigos estão sendo
-            # descontinuados para consulta; sale_price é a fonte correta.
-            sale_price, sale_original = get_current_sale_price(
-                item["item_id"]
-            )
+        item_id = item.get("item_id")
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
 
+        try:
+            price = float(item.get("price"))
+        except Exception:
+            price = None
+
+        # Only pay the cost of the current-sale endpoint when needed.
+        if price is None or price <= 0 or price > 100000:
+            sale_price, sale_original = get_current_sale_price(item_id)
+            if sale_price is not None:
+                price = sale_price
+            else:
+                sale_original = None
+        else:
+            sale_original = None
+
+        if not valid_catalog_price(price):
+            print("[PREÇO INVÁLIDO]", item_id, title, price)
+            continue
+
+        original = sale_original
+        if original is None:
             try:
-                price = float(sale_price) if sale_price is not None else float(item["price"])
+                op = item.get("original_price")
+                original = float(op) if op is not None else None
             except Exception:
-                continue
+                original = None
 
-            original = sale_original
-            if original is None:
+        # Some buy-box responses expose regular price under other names.
+        if original is None and isinstance(p.get("buy_box_winner"), dict):
+            bb = p["buy_box_winner"]
+            for key in ("regular_price", "original_price"):
                 try:
-                    original = float(item.get("original_price")) if item.get("original_price") is not None else None
+                    if bb.get(key) is not None:
+                        original = float(bb[key])
+                        break
                 except Exception:
-                    original = None
+                    pass
 
-            if not valid_catalog_price(price):
-                print("[PREÇO INVÁLIDO/POSSÍVEL CORRUPÇÃO]", item["item_id"], title, price)
-                continue
+        seller_disc = discount(price, original)
+        if seller_disc < float(min_discount or 0):
+            continue
 
-            seller_disc = discount(price, original)
-            if seller_disc < float(min_discount or 0):
-                continue
+        shipping = item.get("shipping_cost")
+        shipping_known = shipping is not None
+        total_price = total(price, shipping) if shipping_known else price
 
-            shipping = item.get("shipping_cost")
-            shipping_known = shipping is not None
-            total_price = total(price, shipping) if shipping_known else price
+        # Coupon intentionally stays out of the fast hunt.
+        cup = None
+        cup_disc = 0
+        coupon_final = None
 
-            # O ranking usa o custo total quando o frete foi informado.
-            # Se o Mercado Livre não informar o frete, o produto fica marcado
-            # como "frete não informado" e não pode ser tratado como uma oferta
-            # de menor custo real sem essa confirmação.
+        cash_disc, cash_label = 0, None
 
-            if apply_coupons:
-                product_permalink = item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}"
-                cup = choose_best_coupon(title, price, {"cards": public_cards, "permalink": product_permalink}, item["item_id"])
-            else:
-                cup = None
-            cup_disc = float(cup.get("desconto_estimado") or 0) if cup else 0
-            coupon_final = round(max(0, total_price - cup_disc), 2) if cup else None
+        best_final = None
+        best_mode = None
+        best_saving = 0
 
-            cash_disc, cash_label = detect_cash_discount(raw, price)
-            cash_final = round(max(0, total_price - cash_disc), 2) if cash_disc > 0 else None
+        sold_quantity = item.get("sold_quantity") or 0
+        try:
+            sold_quantity = float(sold_quantity)
+        except Exception:
+            sold_quantity = 0
 
-            if cash_final is not None and (coupon_final is None or cash_final < coupon_final):
-                best_final = cash_final
-                best_mode = "pix"
-                best_saving = cash_disc
-            else:
-                best_final = coupon_final
-                best_mode = "cupom" if cup else None
-                best_saving = cup_disc
+        # Relevance + sales are used only as ranking signals; no fake
+        # "most sold" claim is shown unless the API actually supplies it.
+        giro_score = min(80, sold_quantity / 10) if sold_quantity > 0 else 0
 
-            offers.append({
-                "product_id":pid,"item_id":item["item_id"],"title":title,
-                "modelo_nome":model_name(title),"especificacoes":specs(title),
-                "image":image,"category_name":base.get("category_name") or "Produto",
-                "permalink":item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
-                "price":price,"original_price":original,"discount":seller_disc,
-                "seller_id":item.get("seller_id"),"condition":item.get("condition"),
-                "free_shipping":item.get("free_shipping"),"shipping_cost":shipping,
-                "shipping_known":shipping_known,"total_price":total_price,
-                "relevance_score":score,"cupom":cup,
-                "desconto_cupom":cup_disc,
-                "percentual_cupom_efetivo":round((cup_disc/price)*100,2) if cup_disc else 0,
-                "cupom_match":cup.get("match_type") if cup else None,
-                "cupom_uso_limite":cup.get("usage_limit") if cup else None,
-                "cash_discount":cash_disc,"cash_label":cash_label,"cash_final":cash_final,
-                "melhor_forma":best_mode,"maior_desconto":best_saving,
-                "preco_com_cupom":coupon_final,"preco_final_melhor":best_final,
-                "affiliate_link":"","extra_earnings":0
-            })
+        offers.append({
+            "product_id": pid,
+            "item_id": item_id,
+            "title": title,
+            "modelo_nome": model_name(title),
+            "especificacoes": specs(title),
+            "image": (p.get("pictures") or [{}])[0].get("url") if (p.get("pictures") and isinstance((p.get("pictures") or [{}])[0], dict)) else None,
+            "category_name": base.get("category_name") or "Produto",
+            "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
+            "price": price,
+            "original_price": original,
+            "discount": seller_disc,
+            "seller_id": item.get("seller_id"),
+            "condition": item.get("condition"),
+            "free_shipping": item.get("free_shipping"),
+            "shipping_cost": shipping,
+            "shipping_known": shipping_known,
+            "total_price": total_price,
+            "relevance_score": score,
+            "sold_quantity": sold_quantity,
+            "giro_score": giro_score,
+            "cupom": cup,
+            "desconto_cupom": 0,
+            "percentual_cupom_efetivo": 0,
+            "cupom_match": None,
+            "cupom_uso_limite": None,
+            "cash_discount": cash_disc,
+            "cash_label": cash_label,
+            "cash_final": None,
+            "melhor_forma": best_mode,
+            "maior_desconto": best_saving,
+            "preco_com_cupom": coupon_final,
+            "preco_final_melhor": best_final,
+            "affiliate_link": "",
+            "extra_earnings": 0,
+        })
 
-    # Ranking desta etapa: custo TOTAL real quando o frete foi informado.
-    # Depois prioriza frete grátis, desconto do vendedor, relevância e preço.
-    # Produtos sem frete informado ficam depois dos que têm custo total conhecido.
+    # Product hunt ranking: real total cost first, then free shipping,
+    # seller discount, giro signal and relevance.
     def ranking_oferta(o):
-        total_real = o.get("total_price")
-        total_real = float(total_real) if total_real is not None else float(o.get("price") or 999999)
-        if apply_coupons:
-            final = float(o.get("preco_com_cupom")) if o.get("preco_com_cupom") is not None else total_real
-            return (0 if o.get("cupom") else 1, -(o.get("desconto_cupom") or 0), final, 0 if o.get("free_shipping") else 1, -(o.get("relevance_score") or 0), total_real)
-        return (0 if o.get("shipping_known") else 1, total_real, 0 if o.get("free_shipping") else 1, -(o.get("discount") or 0), -(o.get("relevance_score") or 0), o.get("price") or 999999)
+        total_real = float(o.get("total_price") or o.get("price") or 999999)
+        return (
+            0 if o.get("shipping_known") else 1,
+            total_real,
+            0 if o.get("free_shipping") else 1,
+            -(o.get("discount") or 0),
+            -(o.get("giro_score") or 0),
+            -(o.get("relevance_score") or 0),
+            o.get("price") or 999999,
+        )
 
     offers.sort(key=ranking_oferta)
 
     groups = {}
     for o in offers:
         groups.setdefault(o["product_id"], {
-            "product_id":o["product_id"],"title":o["title"],
-            "modelo_nome":o["modelo_nome"],"especificacoes":o["especificacoes"],
-            "image":o["image"],"category_name":o.get("category_name", ""),"ofertas":[]
+            "product_id": o["product_id"],
+            "title": o["title"],
+            "modelo_nome": o["modelo_nome"],
+            "especificacoes": o["especificacoes"],
+            "image": o["image"],
+            "category_name": o.get("category_name", ""),
+            "ofertas": []
         })["ofertas"].append(o)
 
     models = []
@@ -1440,30 +1450,40 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             models.append(g)
 
     models = sorted(models, key=lambda g: ranking_oferta(g["ofertas"][0]))[:30]
-
     flat = [o for g in models for o in g["ofertas"]]
     with_coupon = [o for o in flat if o.get("cupom")]
     valores = [o.get("price") for o in flat if o.get("price") is not None]
-    totais_conhecidos = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
-    finais = [o.get("preco_final_melhor") for o in with_coupon if o.get("preco_final_melhor") is not None]
+    totais_conhecidos = [o.get("total_price") for o in flat
+                         if o.get("shipping_known") and o.get("total_price") is not None]
+    finais = [o.get("preco_final_melhor") for o in with_coupon
+              if o.get("preco_final_melhor") is not None]
 
     stats = {
         "ofertas": len(flat),
         "cupom aplicável": len(with_coupon),
         "produtos sem cupom": len(flat) - len(with_coupon),
-        "maior desconto": brl(max([o.get("desconto_cupom",0) for o in with_coupon] or [0])),
+        "maior desconto": brl(max([o.get("desconto_cupom", 0) for o in with_coupon] or [0])),
         "menor preço final": brl(min(finais)) if finais else "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais_conhecidos or [0])),
-        "cupons com limite de uso": sum(1 for o in with_coupon if o.get("cupom_uso_limite")),
+        "cupons com limite de uso": 0,
+        "modo": "busca rápida — cupons separados",
     }
-    return {"stats":stats,"modelos":models,"ofertas":flat}
+    return {"stats": stats, "modelos": models, "ofertas": flat}
 
 def auto_scan(category=None, min_discount=0):
-    queries = CATALOG.get(category, []) if category else [q for qs in CATALOG.values() for q in qs]
-    # Limita a 3 buscas por categoria por ciclo para não sobrecarregar a API.
-    queries = queries[:8] if category else queries[:24]
-    return scan_queries(queries, min_discount)
+    if category:
+        queries = CATALOG.get(category, [])[:5]
+    else:
+        # 1 query forte por categoria + algumas segundas buscas das categorias
+        # com maior potencial de giro. Isso mantém cobertura sem explodir RPM.
+        queries = [qs[0] for qs in CATALOG.values() if qs]
+        extras = [
+            "smartphone", "fone bluetooth", "furadeira",
+            "air fryer", "tenis masculino"
+        ]
+        queries.extend(extras)
+    return scan_queries(queries[:14], min_discount, apply_coupons=False)
 
 # ============================================================
 # ANÚNCIO
@@ -1527,7 +1547,7 @@ def get_job(job_id):
 
 def run_caca_job(job_id, category=None):
     try:
-        update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro...")
+        update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro rapidamente...")
 
         if category:
             queries = CATALOG.get(category, [])[:5]
@@ -1535,12 +1555,9 @@ def run_caca_job(job_id, category=None):
             # Um ciclo inicial enxuto. Novos ciclos podem atualizar novamente.
             queries = [q for qs in CATALOG.values() for q in qs][:18]
 
-        update_job(job_id, progress=10, message="🎟️ Atualizando cupons disponíveis...")
-        coupon_sync = sync_coupons()
-        update_job(job_id, progress=22, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
-        update_job(job_id, progress=72, message="📦 Encontrando produtos e calculando o melhor cupom...")
-        result = scan_queries(queries, apply_coupons=True)
-        result["coupon_sync"] = coupon_sync
+        update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
+        update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
+        result = scan_queries(queries, apply_coupons=False)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
         update_job(job_id, status="done", progress=100, message=f"✅ Produtos + cupons atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas.", result=json_safe(result))
     except Exception as e:
@@ -1555,8 +1572,7 @@ def run_caca_job(job_id, category=None):
 def api_buscar():
     q=request.args.get("q","").strip()
     if not q: return jsonify({"erro":"Informe uma busca."}),400
-    sync_coupons()
-    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=True)))
+    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=False)))
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -1677,7 +1693,7 @@ let cacarTimer=null;
 async function cacar(cat){
  const status=document.getElementById('status');
  status.textContent='🔄 Iniciando atualização de produtos...';
- document.getElementById('results').innerHTML='<p>🔎 Procurando produtos de alto giro...</p>';
+ document.getElementById('results').innerHTML='<p>🔎 Procurando produtos de alto giro rapidamente...</p>';
  if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
  try{
   const url='/api/cacar'+(cat?'?categoria='+encodeURIComponent(cat):'');
@@ -1792,10 +1808,10 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
-<div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
+<div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS RÁPIDO</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema só marca um cupom como aplicável quando encontra uma associação pública entre o produto e o cupom. O mesmo cupom pode aparecer em vários produtos quando cada produto tiver essa associação. Se a página geral não entregar o card, o sistema também consulta a busca pública do próprio Mercado Livre. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando publicados pelo Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
@@ -1825,7 +1841,7 @@ def health():
         "mercado_livre_conectado":bool(access_token()),
         "catalogo_categorias":len(CATALOG),
         "fluxo":"products/{product_id}/items",
-        "cupons":"ativo","cupom_por_produto":"ativo","cupom_primeiro":"ativo","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
+        "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
 
