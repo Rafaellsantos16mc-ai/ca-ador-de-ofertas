@@ -872,104 +872,145 @@ def detect_cash_discount(item, price):
 # ============================================================
 
 def _extract_public_coupon_cards_from_text(text, source_url):
-    """Extrai cards que mostram explicitamente 'Cupom ... OFF'."""
-    cards = []
-    lines = [re.sub(r"\s+", " ", x).strip() for x in (text or "").splitlines()]
-    lines = [x for x in lines if x]
+    """Extrai associações produto -> cupom de páginas públicas.
 
+    O front do Mercado Livre muda bastante o HTML. Por isso o parser não
+    exige mais que o cupom esteja em uma linha isolada nem que exista código.
+    Ele aceita tanto ``Cupom R$15 OFF`` quanto ``Cupom 10% OFF`` e procura o
+    título/preço mais próximos dentro do mesmo card.
+    """
+    cards = []
+    raw = html_lib.unescape(text or "")
+    clean = normalize_coupon_html(raw)
+
+    def add_card(title, price, original, coupon):
+        if not title or not coupon or price is None:
+            return
+        try:
+            price = float(price)
+        except Exception:
+            return
+        if price < MIN_PRODUCT_PRICE:
+            return
+        cards.append({
+            "title": re.sub(r"\s+", " ", str(title)).strip(),
+            "price": round(price, 2),
+            "original_price": round(float(original), 2) if original and float(original) > price else None,
+            "coupon": coupon,
+            "source_url": source_url,
+        })
+
+    # 1) Primeiro tenta os blocos já normalizados por linhas.
+    lines = [re.sub(r"\s+", " ", x).strip() for x in clean.splitlines()]
+    lines = [x for x in lines if x]
     coupon_re = re.compile(
-        r"^Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)$",
-        re.I
+        r"\bCupom\s+(?:R\$\s*[\d\.]+(?:,[\d]{2})?|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)\b",
+        re.I,
     )
     money_re = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\.[0-9]{2})?)", re.I)
     percent_off_re = re.compile(r"(\d+(?:[.,]\d+)?)\s*%\s*OFF", re.I)
 
     for i, line in enumerate(lines):
-        if not coupon_re.search(line):
+        m_coupon = coupon_re.search(line)
+        if not m_coupon:
             continue
-
-        # Um card normalmente começa em 'Image: Título' e termina antes do
-        # próximo Image. Mantemos apenas o card que contém o cupom.
-        a = i
-        while a > 0 and not lines[a].lower().startswith("image:"):
-            a -= 1
-        b = i + 1
-        while b < len(lines) and not lines[b].lower().startswith("image:"):
-            b += 1
-
-        block_lines = lines[a:b]
-        block = "\n".join(block_lines)
-        coupon = detect_public_coupon(line)
+        coupon = detect_public_coupon(m_coupon.group(0))
         if not coupon:
             continue
 
-        # Título: ALT da imagem é a fonte mais limpa. Se houver outro título
-        # repetido, usamos a primeira linha Image: e depois removemos ruídos.
+        # Procura o título mais próximo acima. Não exige Image: exatamente na
+        # linha imediatamente anterior porque o HTML pode inserir etiquetas.
         title = ""
-        for bl in block_lines:
-            if bl.lower().startswith("image:"):
-                title = bl.split(":", 1)[1].strip()
-                break
+        title_idx = None
+        for j in range(i, max(-1, i - 35), -1):
+            if lines[j].lower().startswith("image:"):
+                candidate = lines[j].split(":", 1)[1].strip()
+                if len(candidate) >= 8 and not re.search(r"^(logo|mercado livre|cupom|oferta)", candidate, re.I):
+                    title = candidate
+                    title_idx = j
+                    break
+        if not title:
+            # Última tentativa: texto próximo que parece nome de produto.
+            for j in range(i - 1, max(-1, i - 12), -1):
+                candidate = lines[j].strip()
+                if len(candidate) >= 12 and not re.search(r"^(r\$|oferta|mais vendido|cupom|frete|chegará|10x|\d+% off)", candidate, re.I):
+                    title = candidate
+                    title_idx = j
+                    break
         if not title:
             continue
 
-        # Preço atual: prioriza a linha que contém 'OFF' imediatamente antes
-        # do cupom. Se não houver, pega o último preço antes do cupom.
-        current = None
-        current_idx = -1
-        for j, bl in enumerate(block_lines):
-            if percent_off_re.search(bl):
-                vals = [parse_public_money(m.group(0)) for m in money_re.finditer(bl)]
-                vals = [v for v in vals if v is not None]
-                if vals:
-                    current = vals[-1]
-                    current_idx = j
-                    break
-
-        if current is None:
-            for j in range(len(block_lines) - 1, -1, -1):
-                if block_lines[j].lower().startswith("cupom"):
-                    continue
-                vals = [parse_public_money(m.group(0)) for m in money_re.finditer(" ".join(block_lines[:j+1]))]
-                vals = [v for v in vals if v is not None]
-                if vals:
-                    current = vals[-1]
-                    break
-
-        if current is None or current < MIN_PRODUCT_PRICE:
-            continue
-
-        # Se a linha anterior ao preço atual tem outro valor maior, trata como
-        # preço original. Não usa o valor do frete/parcelamento como preço.
+        # Preço atual: prioriza a linha com percentual OFF do próprio card.
+        price = None
         original = None
-        before_vals = []
-        for bl in block_lines[:max(1, current_idx + 1)]:
-            before_vals.extend([parse_public_money(m.group(0)) for m in money_re.finditer(bl)])
-        before_vals = [v for v in before_vals if v is not None and v > current]
-        if before_vals:
-            original = min(before_vals)
+        search_start = title_idx if title_idx is not None else max(0, i - 20)
+        for j in range(search_start, i + 1):
+            vals = [parse_public_money(x.group(0)) for x in money_re.finditer(lines[j])]
+            vals = [v for v in vals if v is not None]
+            if percent_off_re.search(lines[j]) and vals:
+                price = vals[-1]
+                bigger = [v for v in vals[:-1] if v > price]
+                if bigger:
+                    original = min(bigger)
+                break
 
-        cards.append({
-            "title": title,
-            "price": round(float(current), 2),
-            "original_price": round(float(original), 2) if original else None,
-            "coupon": coupon,
-            "source_url": source_url,
-        })
+        if price is None:
+            # Procura os últimos preços antes do cupom, ignorando parcelamento.
+            vals = []
+            for j in range(search_start, i):
+                vals.extend(parse_public_money(x.group(0)) for x in money_re.finditer(lines[j]))
+            vals = [v for v in vals if v is not None and v >= MIN_PRODUCT_PRICE]
+            if vals:
+                price = vals[-1]
+                bigger = [v for v in vals if v > price]
+                if bigger:
+                    original = min(bigger)
 
-    # Fallback para HTML que não preservou Image: mas possui o padrão em texto.
-    if not cards:
-        flat = re.sub(r"\s+", " ", text or "")
-        pat = re.compile(r"([^\n]{8,180})\s+(R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?)\s+\d+(?:[.,]\d+)?\s*%\s*OFF\s+(Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF))", re.I)
+        add_card(title, price, original, coupon)
+
+    # 2) O servidor pode devolver o card em uma única linha ou dentro de JSON.
+    # Procura "título ... preço ... OFF ... Cupom" em janelas próximas.
+    flat = re.sub(r"\s+", " ", clean)
+    patterns = [
+        re.compile(r"(?:Image:\s*)?(.{8,220}?)\s+(R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?)\s+(\d+(?:[.,]\d+)?)\s*%\s*OFF\s+(Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF))", re.I),
+        re.compile(r"(?:Image:\s*)?(.{8,220}?)\s+(Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF))\s+(?:Chegará|Frete|Mais vendido|Oferta)", re.I),
+    ]
+    for pat in patterns:
         for m in pat.finditer(flat):
-            title = re.sub(r"^.*?(?:Image:\s*)", "", m.group(1), flags=re.I).strip()
-            current = parse_public_money(m.group(2))
-            coupon = detect_public_coupon(m.group(3))
-            if title and coupon and current and current >= MIN_PRODUCT_PRICE:
-                cards.append({"title":title,"price":round(current,2),"original_price":None,"coupon":coupon,"source_url":source_url})
+            title = m.group(1).strip()
+            # Remove rótulos que claramente não são produto.
+            title = re.sub(r"^(?:OFERTA DO DIA|OFERTA IMPERDÍVEL|OFERTA RELÂMPAGO)\s+", "", title, flags=re.I)
+            coupon_text = m.group(4) if m.lastindex and m.lastindex >= 4 else m.group(2)
+            coupon = detect_public_coupon(coupon_text)
+            if not coupon:
+                continue
+            price_text = m.group(2) if m.lastindex and m.lastindex >= 4 else None
+            price = parse_public_money(price_text) if price_text else None
+            add_card(title, price, None, coupon)
 
-    return cards
+    # 3) Último fallback: para cada ocorrência de Cupom, pega a janela de
+    # texto anterior e tenta identificar um título e um preço nela.
+    if not cards:
+        for m in re.finditer(r"Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)", flat, re.I):
+            coupon = detect_public_coupon(m.group(0))
+            if not coupon:
+                continue
+            before = flat[max(0, m.start() - 900):m.start()]
+            money = list(money_re.finditer(before))
+            if not money:
+                continue
+            price = parse_public_money(money[-1].group(0))
+            title_candidates = re.findall(r"(?:Image:\s*)?([A-Za-zÀ-ÿ0-9][^|]{12,180}?)\s+(?:R\$|\d+%\s*OFF)", before, re.I)
+            title = title_candidates[-1].strip() if title_candidates else ""
+            if title:
+                add_card(title, price, None, coupon)
 
+    # Deduplica cards muito semelhantes.
+    unique = {}
+    for c in cards:
+        key = (norm(c["title"]), round(c["price"], 2), c["coupon"].get("label"))
+        unique[key] = c
+    return list(unique.values())
 
 def public_coupon_product_cards():
     """Lê associações produto -> cupom da página pública.
@@ -1039,7 +1080,6 @@ def _search_public_listing_for_coupon(title, price, item_id=None):
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
         "Accept-Language": "pt-BR,pt;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
     result = None
