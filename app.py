@@ -42,11 +42,11 @@ SITE_ID = "MLB"
 REQUEST_TIMEOUT = 10
 
 # ============================================================
-# REGRAS PRINCIPAIS
+# REGRAS DA CAÇA
 # ============================================================
 
-# SOMENTE produtos a partir deste valor.
-MIN_PRODUCT_PRICE = 100.00
+# O PRODUTO pode começar em R$ 69,90.
+MIN_PRODUCT_PRICE = 69.90
 
 MAX_QUERIES_PER_CATEGORY = 3
 MAX_PRODUCTS_PER_QUERY = 10
@@ -54,7 +54,6 @@ MAX_ITEMS_PER_PRODUCT = 8
 
 MAX_OFFERS_PER_CATEGORY = 40
 MAX_TOTAL_PRODUCTS = 100
-
 MAX_DISPLAY_OFFERS = 120
 TOP_OFFERS_LIMIT = 30
 
@@ -274,12 +273,17 @@ init_db()
 def safe_float(value, default=0):
 
     try:
+
         if value is None:
             return default
+
+        if isinstance(value, bool):
+            return float(value)
 
         return float(value)
 
     except Exception:
+
         return default
 
 
@@ -667,13 +671,19 @@ def parse_coupon_text(text):
 
     coupons = {}
 
-    patterns = [
-        r"(?:cupom|codigo|código)\s*[:\-]?\s*([A-Z0-9_-]{5,30})",
+    # ========================================================
+    # Procura códigos que aparecem próximos da palavra cupom.
+    # ========================================================
+
+    context_patterns = [
+        r"(?:cupom|código|codigo)"
+        r"\s*[:\-]?\s*"
+        r"([A-Z0-9][A-Z0-9_-]{4,29})"
     ]
 
     candidates = []
 
-    for pattern in patterns:
+    for pattern in context_patterns:
 
         try:
 
@@ -720,7 +730,10 @@ def parse_coupon_text(text):
         if len(code) < 5 or len(code) > 30:
             continue
 
-        if not re.search(r"[0-9]", code):
+        if not re.search(
+            r"[0-9]",
+            code
+        ):
             continue
 
         coupons.setdefault(
@@ -735,82 +748,166 @@ def parse_coupon_text(text):
             }
         )
 
+    # ========================================================
+    # Para cada código, analisa o texto ao redor.
+    # ========================================================
+
     for code, coupon in coupons.items():
 
-        pos = text.upper().find(code)
+        positions = [
+            m.start()
+            for m in re.finditer(
+                re.escape(code),
+                text,
+                flags=re.I
+            )
+        ]
 
-        if pos < 0:
+        if not positions:
             continue
 
+        # Usa a primeira ocorrência.
+        pos = positions[0]
+
         block = text[
-            max(0, pos - 400):
-            min(len(text), pos + 900)
+            max(0, pos - 600):
+            min(len(text), pos + 1400)
         ]
 
         coupon["raw"] = block
 
-        percent_match = re.search(
+        # ----------------------------------------------------
+        # Percentual
+        # ----------------------------------------------------
+
+        percent_matches = re.findall(
             r"(?:até\s*)?(\d{1,2})\s*%",
             block,
             flags=re.I
         )
 
-        if percent_match:
+        if percent_matches:
 
-            coupon["percent"] = safe_float(
-                percent_match.group(1)
-            )
+            percentages = [
+                safe_float(x)
+                for x in percent_matches
+                if 0 < safe_float(x) <= 100
+            ]
+
+            if percentages:
+                coupon["percent"] = max(
+                    percentages
+                )
+
+        # ----------------------------------------------------
+        # Mínimo da compra
+        # ----------------------------------------------------
 
         minimum_patterns = [
-            r"(?:mínimo|minimo).{0,80}?R\$\s*([\d\.,]+)",
-            r"(?:compras|compra).{0,80}?R\$\s*([\d\.,]+)",
-            r"(?:a partir de|partir de)\s*R\$\s*([\d\.,]+)",
+
+            r"(?:mínimo|minimo)"
+            r".{0,100}?"
+            r"R\$\s*([\d\.,]+)",
+
+            r"(?:compras|compra)"
+            r".{0,100}?"
+            r"R\$\s*([\d\.,]+)",
+
+            r"(?:a partir de|partir de)"
+            r"\s*R\$\s*([\d\.,]+)",
         ]
 
         for pattern in minimum_patterns:
 
-            match = re.search(
+            matches = re.findall(
                 pattern,
                 block,
                 flags=re.I
             )
 
-            if match:
+            if matches:
 
-                value = (
-                    match.group(1)
-                    .replace(".", "")
-                    .replace(",", ".")
-                )
+                values = []
 
-                coupon["min_purchase"] = safe_float(value)
+                for value in matches:
 
-                break
+                    value = (
+                        value
+                        .replace(".", "")
+                        .replace(",", ".")
+                    )
+
+                    number = safe_float(
+                        value
+                    )
+
+                    if number > 0:
+                        values.append(
+                            number
+                        )
+
+                if values:
+
+                    # Para mínimo da compra,
+                    # normalmente o menor valor próximo
+                    # do cupom é o mais seguro.
+                    coupon["min_purchase"] = min(
+                        values
+                    )
+
+                    break
+
+        # ----------------------------------------------------
+        # Limite máximo do desconto
+        # ----------------------------------------------------
 
         maximum_patterns = [
-            r"(?:máximo|maximo).{0,100}?R\$\s*([\d\.,]+)",
-            r"(?:limite|limite de|limite máximo).{0,100}?R\$\s*([\d\.,]+)",
+
+            r"(?:máximo|maximo)"
+            r".{0,120}?"
+            r"R\$\s*([\d\.,]+)",
+
+            r"(?:limite)"
+            r".{0,120}?"
+            r"R\$\s*([\d\.,]+)",
         ]
 
         for pattern in maximum_patterns:
 
-            match = re.search(
+            matches = re.findall(
                 pattern,
                 block,
                 flags=re.I
             )
 
-            if match:
+            if matches:
 
-                value = (
-                    match.group(1)
-                    .replace(".", "")
-                    .replace(",", ".")
-                )
+                values = []
 
-                coupon["max_discount"] = safe_float(value)
+                for value in matches:
 
-                break
+                    value = (
+                        value
+                        .replace(".", "")
+                        .replace(",", ".")
+                    )
+
+                    number = safe_float(
+                        value
+                    )
+
+                    if number > 0:
+                        values.append(
+                            number
+                        )
+
+                if values:
+
+                    coupon["max_discount"] = min(
+                        values
+                    )
+
+                    break
 
     result = []
 
@@ -822,14 +919,20 @@ def parse_coupon_text(text):
         if coupon["percent"] > 100:
             continue
 
-        result.append(coupon)
+        result.append(
+            coupon
+        )
 
     unique = {}
 
     for coupon in result:
-        unique[coupon["code"]] = coupon
+        unique[
+            coupon["code"]
+        ] = coupon
 
-    return list(unique.values())
+    return list(
+        unique.values()
+    )
 
 
 def fetch_coupons():
@@ -855,6 +958,7 @@ def fetch_coupons():
             )
 
         except Exception:
+
             continue
 
         if response.status_code != 200:
@@ -876,37 +980,70 @@ def fetch_coupons():
 
                 old = all_coupons[code]
 
-                if coupon["percent"] > old["percent"]:
-                    old["percent"] = coupon["percent"]
+                if (
+                    coupon["percent"]
+                    >
+                    old["percent"]
+                ):
+                    old["percent"] = (
+                        coupon["percent"]
+                    )
 
-                if coupon["min_purchase"] > 0:
-                    old["min_purchase"] = coupon["min_purchase"]
+                if (
+                    coupon["min_purchase"]
+                    > 0
+                ):
+                    old["min_purchase"] = (
+                        coupon["min_purchase"]
+                    )
 
-                if coupon["max_discount"] > 0:
-                    old["max_discount"] = coupon["max_discount"]
+                if (
+                    coupon["max_discount"]
+                    > 0
+                ):
+                    old["max_discount"] = (
+                        coupon["max_discount"]
+                    )
 
-    return list(all_coupons.values())
+    return list(
+        all_coupons.values()
+    )
 
 
 # ============================================================
 # CÁLCULO DO CUPOM
 # ============================================================
 
-def calculate_coupon(price, coupon):
+def calculate_coupon(
+    price,
+    coupon
+):
 
-    price = safe_float(price)
+    price = safe_float(
+        price
+    )
 
     minimum = safe_float(
-        coupon.get("min_purchase")
+        coupon.get(
+            "min_purchase"
+        )
     )
 
     percent = safe_float(
-        coupon.get("percent")
+        coupon.get(
+            "percent"
+        )
     )
 
     maximum = safe_float(
-        coupon.get("max_discount")
+        coupon.get(
+            "max_discount"
+        )
     )
+
+    # ========================================================
+    # PRODUTO MÍNIMO R$69,90
+    # ========================================================
 
     if price < MIN_PRODUCT_PRICE:
 
@@ -914,14 +1051,28 @@ def calculate_coupon(price, coupon):
             "eligible_estimate": False,
             "discount": 0,
             "estimated_price": price,
+            "reason":
+                "Produto abaixo de R$ 69,90."
         }
 
-    if minimum > 0 and price < minimum:
+    # ========================================================
+    # AQUI ESTÁ A DIFERENÇA IMPORTANTE:
+    #
+    # O mínimo do cupom é uma condição do CUPOM.
+    # Não estamos exigindo R$100 no produto.
+    # ========================================================
+
+    if (
+        minimum > 0
+        and price < minimum
+    ):
 
         return {
             "eligible_estimate": False,
             "discount": 0,
             "estimated_price": price,
+            "reason":
+                "Produto não atinge o mínimo do cupom."
         }
 
     if percent <= 0:
@@ -930,13 +1081,24 @@ def calculate_coupon(price, coupon):
             "eligible_estimate": False,
             "discount": 0,
             "estimated_price": price,
+            "reason":
+                "Cupom sem percentual identificado."
         }
 
-    discount = price * (
-        percent / 100
+    # ========================================================
+    # DESCONTO
+    # ========================================================
+
+    discount = (
+        price
+        * (
+            percent / 100
+        )
     )
 
+    # Limite máximo do cupom.
     if maximum > 0:
+
         discount = min(
             discount,
             maximum
@@ -949,8 +1111,15 @@ def calculate_coupon(price, coupon):
 
     return {
         "eligible_estimate": True,
-        "discount": round(discount, 2),
-        "estimated_price": round(estimated, 2),
+        "discount": round(
+            discount,
+            2
+        ),
+        "estimated_price": round(
+            estimated,
+            2
+        ),
+        "reason": "",
     }
 
 
@@ -958,7 +1127,10 @@ def calculate_coupon(price, coupon):
 # BUSCA PRODUTOS
 # ============================================================
 
-def product_search(query, limit=10):
+def product_search(
+    query,
+    limit=10
+):
 
     params = {
         "site_id": SITE_ID,
@@ -989,13 +1161,19 @@ def product_search(query, limit=10):
         []
     )
 
-    if not isinstance(results, list):
+    if not isinstance(
+        results,
+        list
+    ):
         return []
 
     return results
 
 
-def product_items(product_id, limit=8):
+def product_items(
+    product_id,
+    limit=8
+):
 
     url = (
         f"{ML_API}/products/"
@@ -1028,7 +1206,10 @@ def product_items(product_id, limit=8):
         []
     )
 
-    if not isinstance(results, list):
+    if not isinstance(
+        results,
+        list
+    ):
         return []
 
     return results[:limit]
@@ -1043,20 +1224,28 @@ def allowed_for_category(
     category_key
 ):
 
-    title_norm = normalize_text(title)
+    title_norm = normalize_text(
+        title
+    )
 
     if category_key == "academia":
 
         for blocked in ACADEMIA_BLOCK:
 
-            if normalize_text(blocked) in title_norm:
+            if (
+                normalize_text(
+                    blocked
+                )
+                in title_norm
+            ):
+
                 return False
 
     return True
 
 
 # ============================================================
-# CRIA OFERTA
+# CRIAR OFERTA
 # ============================================================
 
 def build_offer(
@@ -1083,6 +1272,7 @@ def build_offer(
         title,
         category_key
     ):
+
         return None
 
     price = safe_float(
@@ -1090,13 +1280,18 @@ def build_offer(
     )
 
     if price <= 0:
+
         price = safe_float(
             product.get("price")
         )
 
-    # REGRA PRINCIPAL:
-    # produto precisa custar R$100 ou mais.
+    # ========================================================
+    # NOVA REGRA:
+    # produto >= R$69,90
+    # ========================================================
+
     if price < MIN_PRODUCT_PRICE:
+
         return None
 
     coupon_result = calculate_coupon(
@@ -1104,30 +1299,44 @@ def build_offer(
         coupon
     )
 
-    if not coupon_result["eligible_estimate"]:
+    if not coupon_result[
+        "eligible_estimate"
+    ]:
+
         return None
 
-    shipping = item.get(
-        "shipping"
-    ) or {}
+    shipping = (
+        item.get("shipping")
+        or {}
+    )
 
     shipping_cost = safe_float(
         shipping.get("cost")
     )
 
     free_shipping = bool(
-        shipping.get("free_shipping")
-        or shipping.get("free_shipping_flag")
+        shipping.get(
+            "free_shipping"
+        )
+        or shipping.get(
+            "free_shipping_flag"
+        )
     )
 
     if free_shipping:
         shipping_cost = 0
 
-    coupon_discount = coupon_result["discount"]
+    coupon_discount = (
+        coupon_result[
+            "discount"
+        ]
+    )
 
-    estimated_price = coupon_result[
-        "estimated_price"
-    ]
+    estimated_price = (
+        coupon_result[
+            "estimated_price"
+        ]
+    )
 
     estimated_total = (
         estimated_price
@@ -1135,7 +1344,9 @@ def build_offer(
     )
 
     original_price = safe_float(
-        item.get("original_price")
+        item.get(
+            "original_price"
+        )
     )
 
     seller_discount = 0
@@ -1147,25 +1358,34 @@ def build_offer(
 
         seller_discount = (
             (
-                original_price - price
+                original_price
+                - price
             )
             / original_price
             * 100
         )
 
     seller_id = str(
-        item.get("seller_id")
+        item.get(
+            "seller_id"
+        )
         or ""
     )
 
     item_id = str(
-        item.get("item_id")
-        or item.get("id")
+        item.get(
+            "item_id"
+        )
+        or item.get(
+            "id"
+        )
         or ""
     )
 
     url = (
-        item.get("permalink")
+        item.get(
+            "permalink"
+        )
         or (
             f"https://www.mercadolivre.com.br/"
             f"{item_id}"
@@ -1176,69 +1396,89 @@ def build_offer(
 
     return {
 
-        "product_id": product_id,
+        "product_id":
+            product_id,
 
-        "item_id": item_id,
+        "item_id":
+            item_id,
 
-        "title": title,
+        "title":
+            title,
 
-        "category": CATEGORIES.get(
+        "category":
+            CATEGORIES.get(
+                category_key,
+                {}
+            ).get(
+                "name",
+                category_key
+            ),
+
+        "category_key":
             category_key,
-            {}
-        ).get(
-            "name",
-            category_key
-        ),
 
-        "category_key": category_key,
+        "price":
+            round(
+                price,
+                2
+            ),
 
-        "price": round(
-            price,
-            2
-        ),
+        "seller_discount":
+            round(
+                seller_discount,
+                2
+            ),
 
-        "seller_discount": round(
-            seller_discount,
-            2
-        ),
+        "coupon_code":
+            coupon["code"],
 
-        "coupon_code": coupon["code"],
+        "coupon_percent":
+            coupon["percent"],
 
-        "coupon_percent": coupon["percent"],
+        "coupon_min":
+            coupon["min_purchase"],
 
-        "coupon_min": coupon["min_purchase"],
+        "coupon_max":
+            coupon["max_discount"],
 
-        "coupon_max": coupon["max_discount"],
+        "coupon_discount":
+            round(
+                coupon_discount,
+                2
+            ),
 
-        "coupon_discount": round(
-            coupon_discount,
-            2
-        ),
+        "estimated_price":
+            round(
+                estimated_price,
+                2
+            ),
 
-        "estimated_price": round(
-            estimated_price,
-            2
-        ),
+        "shipping":
+            round(
+                shipping_cost,
+                2
+            ),
 
-        "shipping": round(
-            shipping_cost,
-            2
-        ),
+        "estimated_total":
+            round(
+                estimated_total,
+                2
+            ),
 
-        "estimated_total": round(
-            estimated_total,
-            2
-        ),
+        "free_shipping":
+            free_shipping,
 
-        "free_shipping": free_shipping,
+        "seller_id":
+            seller_id,
 
-        "seller_id": seller_id,
+        "url":
+            url,
 
-        "url": url,
+        "affiliate_url":
+            "",
 
-        "affiliate_url": "",
-
-        "estimated": True,
+        "estimated":
+            True,
     }
 
 
@@ -1250,53 +1490,91 @@ def coupon_better(
     new,
     old
 ):
-    """
-    Decide qual cupom é melhor para o mesmo produto.
-
-    Prioridade:
-    1. maior desconto em R$
-    2. maior percentual
-    3. menor preço final
-    4. frete grátis
-    """
 
     new_discount = safe_float(
-        new.get("coupon_discount")
+        new.get(
+            "coupon_discount"
+        )
     )
 
     old_discount = safe_float(
-        old.get("coupon_discount")
+        old.get(
+            "coupon_discount"
+        )
     )
 
-    if new_discount != old_discount:
-        return new_discount > old_discount
+    # 1. MAIOR ECONOMIA EM REAIS
+    if (
+        new_discount
+        != old_discount
+    ):
+
+        return (
+            new_discount
+            >
+            old_discount
+        )
 
     new_percent = safe_float(
-        new.get("coupon_percent")
+        new.get(
+            "coupon_percent"
+        )
     )
 
     old_percent = safe_float(
-        old.get("coupon_percent")
+        old.get(
+            "coupon_percent"
+        )
     )
 
-    if new_percent != old_percent:
-        return new_percent > old_percent
+    # 2. MAIOR PERCENTUAL
+    if (
+        new_percent
+        != old_percent
+    ):
+
+        return (
+            new_percent
+            >
+            old_percent
+        )
 
     new_total = safe_float(
-        new.get("estimated_total")
+        new.get(
+            "estimated_total"
+        )
     )
 
     old_total = safe_float(
-        old.get("estimated_total")
+        old.get(
+            "estimated_total"
+        )
     )
 
-    if new_total != old_total:
-        return new_total < old_total
+    # 3. MENOR TOTAL
+    if (
+        new_total
+        != old_total
+    ):
 
-    return bool(
-        new.get("free_shipping")
-    ) and not bool(
-        old.get("free_shipping")
+        return (
+            new_total
+            <
+            old_total
+        )
+
+    # 4. FRETE GRÁTIS
+    return (
+        bool(
+            new.get(
+                "free_shipping"
+            )
+        )
+        and not bool(
+            old.get(
+                "free_shipping"
+            )
+        )
     )
 
 
@@ -1309,9 +1587,8 @@ def deduplicate_offers(
 ):
 
     # ========================================================
-    # 1 — MESMO ITEM + MESMO VENDEDOR
-    #
-    # Escolhe o MELHOR CUPOM.
+    # PRIMEIRO:
+    # mesmo item/vendedor = melhor cupom.
     # ========================================================
 
     best_by_item = {}
@@ -1319,12 +1596,16 @@ def deduplicate_offers(
     for offer in offers:
 
         item_id = str(
-            offer.get("item_id")
+            offer.get(
+                "item_id"
+            )
             or ""
         )
 
         seller_id = str(
-            offer.get("seller_id")
+            offer.get(
+                "seller_id"
+            )
             or ""
         )
 
@@ -1351,10 +1632,8 @@ def deduplicate_offers(
     )
 
     # ========================================================
-    # 2 — MESMO PRODUTO + VÁRIOS VENDEDORES
-    #
-    # Mantemos os melhores vendedores,
-    # mas eliminamos repetições idênticas.
+    # SEGUNDO:
+    # elimina duplicatas exatas.
     # ========================================================
 
     unique = {}
@@ -1362,23 +1641,29 @@ def deduplicate_offers(
     for offer in offers:
 
         product_id = str(
-            offer.get("product_id")
+            offer.get(
+                "product_id"
+            )
             or ""
         )
 
         title_key = normalize_text(
-            offer.get("title")
+            offer.get(
+                "title"
+            )
+        )
+
+        seller_id = str(
+            offer.get(
+                "seller_id"
+            )
+            or ""
         )
 
         key = (
             product_id,
             title_key,
-            str(
-                offer.get(
-                    "seller_id"
-                )
-                or ""
-            )
+            seller_id
         )
 
         if key not in unique:
@@ -1410,33 +1695,34 @@ def sort_offers(
     return sorted(
         offers,
         key=lambda x: (
-            # Maior desconto primeiro
+
+            # Maior desconto em R$
             -safe_float(
                 x.get(
                     "coupon_discount"
                 )
             ),
 
-            # Depois maior percentual
+            # Maior percentual
             -safe_float(
                 x.get(
                     "coupon_percent"
                 )
             ),
 
-            # Depois menor total
+            # Menor preço final
             safe_float(
                 x.get(
                     "estimated_total"
                 )
             ),
 
-            # Frete grátis
+            # Frete grátis primeiro
             0 if x.get(
                 "free_shipping"
             ) else 1,
 
-            # Preço original
+            # Menor preço do produto
             safe_float(
                 x.get(
                     "price"
@@ -1447,7 +1733,7 @@ def sort_offers(
 
 
 # ============================================================
-# TOP OFERTAS
+# CLASSIFICAÇÃO
 # ============================================================
 
 def classify_offers(
@@ -1477,14 +1763,6 @@ def classify_offers(
             )
         )
 
-        price = safe_float(
-            offer.get(
-                "price"
-            )
-        )
-
-        # Como todos já precisam ser >= R$100,
-        # TOP exige pelo menos uma vantagem relevante.
         if (
             discount >= 20
             or percent >= 15
@@ -1494,11 +1772,15 @@ def classify_offers(
                 offer
             )
 
-        if len(top) >= TOP_OFFERS_LIMIT:
+        if (
+            len(top)
+            >= TOP_OFFERS_LIMIT
+        ):
+
             break
 
     # Se houver poucos resultados,
-    # completa com os melhores cupons disponíveis.
+    # completa com os melhores.
     if len(top) < 10:
 
         for offer in ordered:
@@ -1516,11 +1798,15 @@ def classify_offers(
     top_keys = {
         (
             str(
-                x.get("item_id")
+                x.get(
+                    "item_id"
+                )
                 or ""
             ),
             str(
-                x.get("seller_id")
+                x.get(
+                    "seller_id"
+                )
                 or ""
             )
         )
@@ -1533,16 +1819,21 @@ def classify_offers(
 
         key = (
             str(
-                offer.get("item_id")
+                offer.get(
+                    "item_id"
+                )
                 or ""
             ),
             str(
-                offer.get("seller_id")
+                offer.get(
+                    "seller_id"
+                )
                 or ""
             )
         )
 
         if key not in top_keys:
+
             others.append(
                 offer
             )
@@ -1554,7 +1845,7 @@ def classify_offers(
 
 
 # ============================================================
-# SCAN CATEGORIA
+# SCAN DE CATEGORIA
 # ============================================================
 
 def scan_category(
@@ -1571,11 +1862,11 @@ def scan_category(
 
     products_seen = set()
 
-    queries = category[
-        "queries"
-    ][
-        :MAX_QUERIES_PER_CATEGORY
-    ]
+    queries = (
+        category[
+            "queries"
+        ][:MAX_QUERIES_PER_CATEGORY]
+    )
 
     for query in queries:
 
@@ -1596,11 +1887,14 @@ def scan_category(
                 len(products_seen)
                 >= MAX_TOTAL_PRODUCTS
             ):
+
                 break
 
             product_id = (
                 product.get("id")
-                or product.get("product_id")
+                or product.get(
+                    "product_id"
+                )
             )
 
             if not product_id:
@@ -1614,8 +1908,12 @@ def scan_category(
             )
 
             title = (
-                product.get("name")
-                or product.get("title")
+                product.get(
+                    "name"
+                )
+                or product.get(
+                    "title"
+                )
                 or ""
             )
 
@@ -1623,6 +1921,7 @@ def scan_category(
                 title,
                 category_key
             ):
+
                 continue
 
             items = product_items(
@@ -1636,19 +1935,25 @@ def scan_category(
             for item in items:
 
                 # ====================================================
-                # PRIMEIRO FILTRO:
-                # preço >= R$100
+                # PRODUTO >= R$69,90
                 # ====================================================
 
                 item_price = safe_float(
-                    item.get("price")
+                    item.get(
+                        "price"
+                    )
                 )
 
-                if item_price < MIN_PRODUCT_PRICE:
+                if (
+                    item_price
+                    <
+                    MIN_PRODUCT_PRICE
+                ):
+
                     continue
 
                 # ====================================================
-                # TESTA TODOS OS CUPONS
+                # TESTA TODOS OS CUPONS DISPONÍVEIS
                 # ====================================================
 
                 for coupon in coupons:
@@ -1661,6 +1966,7 @@ def scan_category(
                     )
 
                     if offer:
+
                         offers.append(
                             offer
                         )
@@ -1669,16 +1975,21 @@ def scan_category(
                 len(offers)
                 >= MAX_OFFERS_PER_CATEGORY
             ):
+
                 break
 
         if (
             len(offers)
             >= MAX_OFFERS_PER_CATEGORY
         ):
+
             break
 
-    # Escolhe somente o melhor cupom
-    # para cada produto/vendedor.
+    # ========================================================
+    # UM ÚNICO RESULTADO POR ITEM:
+    # MELHOR CUPOM
+    # ========================================================
+
     offers = deduplicate_offers(
         offers
     )
@@ -1706,7 +2017,7 @@ def run_full_scan():
             "running": True,
             "finished": False,
             "progress": 0,
-            "message": "Buscando cupons...",
+            "message": "Buscando cupons disponíveis...",
             "offers": [],
             "top_offers": [],
             "coupons": [],
@@ -1723,15 +2034,18 @@ def run_full_scan():
 
         coupons = fetch_coupons()
 
-        # Mostra os cupons do maior percentual
-        # para o menor.
+        # Maior percentual primeiro.
         coupons.sort(
             key=lambda x: (
                 -safe_float(
-                    x.get("percent")
+                    x.get(
+                        "percent"
+                    )
                 ),
                 -safe_float(
-                    x.get("max_discount")
+                    x.get(
+                        "max_discount"
+                    )
                 ),
             )
         )
@@ -1749,7 +2063,8 @@ def run_full_scan():
             SCAN_STATE[
                 "message"
             ] = (
-                f"{len(coupons)} cupons encontrados"
+                f"{len(coupons)} "
+                "cupons encontrados"
             )
 
         if not coupons:
@@ -1834,7 +2149,7 @@ def run_full_scan():
                     "message"
                 ] = (
                     f"{CATEGORIES[category_key]['name']} "
-                    f"concluída"
+                    "concluída"
                 )
 
         # ====================================================
@@ -1901,10 +2216,9 @@ def run_full_scan():
             SCAN_STATE[
                 "message"
             ] = (
-                "Caça finalizada — "
+                "CAÇA FINALIZADA — "
                 f"{len(final_offers)} "
-                "ofertas com cupom "
-                f"a partir de R$ {MIN_PRODUCT_PRICE:.2f}"
+                "ofertas com cupom"
             )
 
             SCAN_STATE[
@@ -1945,10 +2259,12 @@ def run_full_scan():
 
 
 # ============================================================
-# SALVAR
+# SALVAR OFERTAS
 # ============================================================
 
-def save_offers(offers):
+def save_offers(
+    offers
+):
 
     conn = db()
 
@@ -1984,24 +2300,79 @@ def save_offers(offers):
                 )
                 """,
                 (
-                    offer.get("product_id"),
-                    offer.get("item_id"),
-                    offer.get("title"),
-                    offer.get("category"),
-                    offer.get("price"),
-                    offer.get("seller_discount"),
-                    offer.get("coupon_code"),
-                    offer.get("coupon_percent"),
-                    offer.get("coupon_min"),
-                    offer.get("coupon_max"),
-                    offer.get("coupon_discount"),
-                    offer.get("estimated_price"),
-                    offer.get("shipping"),
-                    offer.get("estimated_total"),
-                    1 if offer.get("free_shipping") else 0,
-                    offer.get("url"),
-                    offer.get("seller_id"),
-                    offer.get("affiliate_url"),
+                    offer.get(
+                        "product_id"
+                    ),
+
+                    offer.get(
+                        "item_id"
+                    ),
+
+                    offer.get(
+                        "title"
+                    ),
+
+                    offer.get(
+                        "category"
+                    ),
+
+                    offer.get(
+                        "price"
+                    ),
+
+                    offer.get(
+                        "seller_discount"
+                    ),
+
+                    offer.get(
+                        "coupon_code"
+                    ),
+
+                    offer.get(
+                        "coupon_percent"
+                    ),
+
+                    offer.get(
+                        "coupon_min"
+                    ),
+
+                    offer.get(
+                        "coupon_max"
+                    ),
+
+                    offer.get(
+                        "coupon_discount"
+                    ),
+
+                    offer.get(
+                        "estimated_price"
+                    ),
+
+                    offer.get(
+                        "shipping"
+                    ),
+
+                    offer.get(
+                        "estimated_total"
+                    ),
+
+                    1
+                    if offer.get(
+                        "free_shipping"
+                    )
+                    else 0,
+
+                    offer.get(
+                        "url"
+                    ),
+
+                    offer.get(
+                        "seller_id"
+                    ),
+
+                    offer.get(
+                        "affiliate_url"
+                    ),
                 )
             )
 
@@ -2020,10 +2391,14 @@ def save_offers(offers):
 def index():
 
     connected = bool(
-        STATE.get("access_token")
+        STATE.get(
+            "access_token"
+        )
     )
 
-    user = STATE.get("user")
+    user = STATE.get(
+        "user"
+    )
 
     return render_template_string(
         HTML,
@@ -2038,10 +2413,14 @@ def health():
     return jsonify({
         "status": "ok",
         "app": APP_NAME,
-        "mercadolivre": bool(
-            STATE.get("access_token")
-        ),
-        "min_product_price": MIN_PRODUCT_PRICE,
+        "mercadolivre":
+            bool(
+                STATE.get(
+                    "access_token"
+                )
+            ),
+        "min_product_price":
+            MIN_PRODUCT_PRICE,
     })
 
 
@@ -2049,11 +2428,13 @@ def health():
 def api_status():
 
     with STATE_LOCK:
+
         state = dict(
             SCAN_STATE
         )
 
     return jsonify({
+
         "running":
             state["running"],
 
@@ -2088,17 +2469,24 @@ def api_coupons():
     coupons.sort(
         key=lambda x: (
             -safe_float(
-                x.get("percent")
+                x.get(
+                    "percent"
+                )
             ),
             -safe_float(
-                x.get("max_discount")
+                x.get(
+                    "max_discount"
+                )
             ),
         )
     )
 
     return jsonify({
-        "count": len(coupons),
-        "coupons": coupons,
+        "count":
+            len(coupons),
+
+        "coupons":
+            coupons,
     })
 
 
@@ -2107,7 +2495,9 @@ def api_cacar():
 
     with STATE_LOCK:
 
-        if SCAN_STATE["running"]:
+        if SCAN_STATE[
+            "running"
+        ]:
 
             return jsonify({
                 "ok": False,
@@ -2161,8 +2551,12 @@ def api_search():
     for product in products:
 
         product_id = (
-            product.get("id")
-            or product.get("product_id")
+            product.get(
+                "id"
+            )
+            or product.get(
+                "product_id"
+            )
         )
 
         if not product_id:
@@ -2175,13 +2569,20 @@ def api_search():
 
         for item in items:
 
-            # Produto precisa >= R$100
-            if safe_float(
-                item.get("price")
-            ) < MIN_PRODUCT_PRICE:
+            # Produto >= R$69,90
+            if (
+                safe_float(
+                    item.get(
+                        "price"
+                    )
+                )
+                <
+                MIN_PRODUCT_PRICE
+            ):
 
                 continue
 
+            # Testa TODOS os cupons.
             for coupon in coupons:
 
                 offer = build_offer(
@@ -2192,10 +2593,12 @@ def api_search():
                 )
 
                 if offer:
+
                     offers.append(
                         offer
                     )
 
+    # Melhor cupom por produto/vendedor.
     offers = deduplicate_offers(
         offers
     )
@@ -2218,6 +2621,7 @@ def api_search():
     ]
 
     return jsonify({
+
         "offers":
             final_offers,
 
@@ -2826,10 +3230,7 @@ body {
 .price-old {
 
     color:
-        #64748b;
-
-    text-decoration:
-        line-through;
+        #94a3b8;
 
     font-size:
         14px;
@@ -3155,7 +3556,7 @@ body {
             </div>
 
             <div class="subtitle">
-                Cupom primeiro • produtos a partir de R$ 100
+                Cupons primeiro • produtos a partir de R$ 69,90
             </div>
 
         </div>
@@ -3190,9 +3591,9 @@ body {
         </h1>
 
         <p>
-            Encontre produtos de
-            <strong>R$ 100 ou mais</strong>
-            e aplique o melhor cupom encontrado
+            Encontre produtos a partir de
+            <strong>R$ 69,90</strong>
+            e aplique o melhor cupom disponível
             para cada produto.
         </p>
 
@@ -3217,22 +3618,28 @@ body {
         </h1>
 
         <p>
-            O sistema procura os cupons primeiro,
-            depois procura produtos de
-            <strong>R$ 100+</strong>
-            e escolhe o
-            <strong>maior desconto possível</strong>
-            para cada produto.
+            Primeiro o sistema encontra os
+            <strong>cupons disponíveis</strong>.
+            Depois procura produtos de
+            <strong>R$ 69,90 ou mais</strong>
+            e calcula qual cupom gera
+            <strong>o maior desconto em reais</strong>.
         </p>
 
         <div class="filter-info">
 
-            💰 Mínimo:
-            <strong>R$ 100,00</strong>
+            🛒 Produto mínimo:
+            <strong>R$ 69,90</strong>
 
             &nbsp; • &nbsp;
 
-            🏷️ Melhor cupom disponível
+            🏷️ Cupom:
+            <strong>qualquer disponível e compatível</strong>
+
+            &nbsp; • &nbsp;
+
+            🔥 Escolha:
+            <strong>maior economia</strong>
 
         </div>
 
@@ -3284,8 +3691,8 @@ body {
                 </div>
 
                 <div class="section-description">
-                    A busca também aceita somente
-                    produtos a partir de R$ 100.
+                    Busca produtos a partir de
+                    R$ 69,90 e testa todos os cupons.
                 </div>
 
             </div>
@@ -3329,7 +3736,8 @@ body {
                 </div>
 
                 <div class="section-description">
-                    Ordenados pelo maior percentual.
+                    Cupons disponíveis encontrados
+                    nas páginas públicas do Mercado Livre.
                 </div>
 
             </div>
@@ -3374,8 +3782,9 @@ body {
                 <div
                     class="section-description"
                 >
-                    Produtos de R$ 100+ com o melhor
-                    cupom disponível para cada produto.
+                    Um resultado por produto/vendedor:
+                    sempre o cupom que gerar
+                    maior economia.
                 </div>
 
             </div>
@@ -3419,7 +3828,8 @@ body {
                     margin-top:5px;
                 "
             >
-                Maior economia de cupom primeiro.
+                Ordenadas pela maior economia
+                gerada pelo cupom.
             </div>
 
             <div
@@ -3476,18 +3886,18 @@ body {
 
             <br><br>
 
-            O preço mostrado como
+            O valor mostrado como
             <strong>
-                “estimado com cupom”
+                “preço estimado com cupom”
             </strong>
-            é uma estimativa baseada nas condições
-            encontradas para o cupom.
+            é uma estimativa.
 
             <br><br>
 
-            A aplicação definitiva depende da
-            elegibilidade do produto, conta,
-            estoque, limite e regras do cupom.
+            A aplicação do cupom pode depender
+            do produto, vendedor, conta, estoque,
+            limite de uso e demais condições.
+            A confirmação acontece no checkout.
 
         </div>
 
@@ -3828,7 +4238,7 @@ async function verificarStatus() {
 
 
 // ==========================================================
-// BUSCA
+// BUSCA MANUAL
 // ==========================================================
 
 async function buscar() {
@@ -3858,8 +4268,8 @@ async function buscar() {
     results.innerHTML =
         `
         <div class="empty">
-            🔎 Procurando produtos de R$ 100+
-            e calculando o melhor cupom...
+            🔎 Procurando produtos a partir
+            de R$ 69,90 e calculando o melhor cupom...
         </div>
         `;
 
@@ -3973,10 +4383,12 @@ function renderOffers(
 
                 <br><br>
 
-                O sistema está aceitando
-                somente produtos de
-                <strong>R$ 100 ou mais</strong>
-                com cupom elegível estimado.
+                O sistema procura produtos
+                a partir de
+                <strong>R$ 69,90</strong>
+                e somente mostra aqueles
+                para os quais encontrou um
+                cupom compatível.
 
             </div>
             `;
@@ -3989,6 +4401,7 @@ function renderOffers(
 
         return;
     }
+
 
     // ======================================================
     // ORDENAÇÃO
@@ -4091,6 +4504,7 @@ function renderOffers(
         }
     }
 
+
     if (
         top.length < 10
     ) {
@@ -4104,6 +4518,7 @@ function renderOffers(
                     offer
                 )
             ) {
+
                 continue;
             }
 
@@ -4114,6 +4529,7 @@ function renderOffers(
             if (
                 top.length >= 10
             ) {
+
                 break;
             }
         }
@@ -4158,6 +4574,7 @@ function renderOffers(
         offers.length +
         " ofertas encontradas";
 
+
     const highestDiscount =
         Math.max(
             ...offers.map(
@@ -4167,6 +4584,7 @@ function renderOffers(
                     )
             )
         );
+
 
     const lowestTotal =
         Math.min(
@@ -4178,11 +4596,13 @@ function renderOffers(
             )
         );
 
+
     const freeShipping =
         offers.filter(
             offer =>
                 offer.free_shipping
         ).length;
+
 
     const highestPercent =
         Math.max(
@@ -4204,7 +4624,7 @@ function renderOffers(
             </div>
 
             <div class="stat-label">
-                ofertas R$ 100+
+                ofertas R$ 69,90+
             </div>
 
         </div>
@@ -4438,10 +4858,12 @@ function createOfferCard(
 
         <div class="price-old">
 
-            Preço no anúncio:
-            ${money(
-                offer.price
-            )}
+            Preço do produto:
+            <strong>
+                ${money(
+                    offer.price
+                )}
+            </strong>
 
         </div>
 
@@ -4466,7 +4888,7 @@ function createOfferCard(
                 "
             >
 
-                ↳ O anúncio já possui
+                ℹ️ O anúncio também possui
                 ${sellerDiscount.toFixed(1)}%
                 de desconto do vendedor.
 
@@ -4504,7 +4926,7 @@ function createOfferCard(
 
             <div class="savings">
 
-                💰 Você economizaria:
+                💰 Desconto estimado:
                 ${money(
                     couponDiscount
                 )}
@@ -4560,6 +4982,58 @@ function createOfferCard(
                 )}
 
             </div>
+
+
+            ${
+                Number(
+                    offer.coupon_min || 0
+                ) > 0
+                ?
+                `
+                <div
+                    class="small"
+                    style="
+                        margin-top:8px;
+                        color:#bbf7d0;
+                    "
+                >
+
+                    Compra mínima do cupom:
+                    ${money(
+                        offer.coupon_min
+                    )}
+
+                </div>
+                `
+                :
+                ""
+            }
+
+
+            ${
+                Number(
+                    offer.coupon_max || 0
+                ) > 0
+                ?
+                `
+                <div
+                    class="small"
+                    style="
+                        margin-top:4px;
+                        color:#94a3b8;
+                    "
+                >
+
+                    Limite do desconto:
+                    ${money(
+                        offer.coupon_max
+                    )}
+
+                </div>
+                `
+                :
+                ""
+            }
 
         </div>
 
