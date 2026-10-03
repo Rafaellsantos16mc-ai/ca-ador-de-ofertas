@@ -1,4 +1,4 @@
-import os
+limport os
 import sqlite3
 import secrets
 import hashlib
@@ -8,7 +8,7 @@ import re
 import html as html_lib
 import threading
 import uuid
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import requests
 from flask import Flask, request, redirect, session, jsonify, render_template_string
@@ -506,17 +506,32 @@ def number(s):
 
 
 def normalize_coupon_html(raw_html):
-    """Converte a página em texto com quebras úteis sem misturar blocos."""
+    """Converte HTML do Mercado Livre em texto preservando ALT das imagens.
+
+    As páginas públicas de ofertas frequentemente repetem o título no ALT da
+    imagem e no conteúdo do card. Preservar o ALT deixa o parser capaz de
+    separar corretamente produto + preço + cupom sem misturar cards vizinhos.
+    """
     text = html_lib.unescape(raw_html or "")
+
+    # Remove scripts/styles que não são conteúdo visual do card, mas preserva
+    # texto útil de imagens antes de remover as demais tags.
+    def img_alt(m):
+        tag = m.group(0)
+        alt = re.search(r'\balt\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+        if alt and alt.group(1).strip():
+            return "\nImage: " + alt.group(1).strip() + "\n"
+        return " "
+
+    text = re.sub(r"<img\b[^>]*>", img_alt, text, flags=re.I)
     text = re.sub(r"<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>", " ", text, flags=re.I | re.S)
-    # Mantém uma quebra em elementos de bloco/lista/título.
-    text = re.sub(r"</(?:div|p|li|h1|h2|h3|h4|h5|h6|section|article|br|tr)>", "\n", text, flags=re.I)
+    text = re.sub(r"</(?:div|p|li|h1|h2|h3|h4|h5|h6|section|article|br|tr|header|footer)>", "\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = text.replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
 
 def looks_like_coupon_code(code):
     code = (code or "").strip().upper()
@@ -784,7 +799,7 @@ def best_coupon(price):
             choices.append(x)
     return max(choices, key=lambda x:(x["desconto_estimado"],x["percentual_efetivo"],-(float(x.get("min_purchase") or 0))), default=None)
 
-def choose_best_coupon(title, price, public_cards=None):
+def choose_best_coupon(title, price, public_cards=None, item_id=None):
     """Escolhe somente cupons com associação pública ao produto.
 
     IMPORTANTE: não aplicamos mais um cupom genérico só porque o preço
@@ -799,7 +814,7 @@ def choose_best_coupon(title, price, public_cards=None):
     if not public_cards:
         return None
 
-    matched = match_public_coupon(title, price, public_cards)
+    matched = match_public_coupon(title, price, public_cards, item_id)
     if not matched:
         return None
 
@@ -856,103 +871,206 @@ def detect_cash_discount(item, price):
 # CAÇADOR
 # ============================================================
 
-def public_coupon_product_cards():
-    """Extrai associações produto -> cupom da página pública de cupons.
-
-    O Mercado Livre pode alterar o HTML e nem sempre expõe MLB no HTML.
-    Por isso o cruzamento usa título + preço e só confirma quando há
-    correspondência suficientemente forte. Nunca aplica um cupom genérico
-    a todos os produtos.
-    """
-    url = "https://www.mercadolivre.com.br/l/descontaco-cupons"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=30)
-        if r.status_code != 200:
-            print("[CUPOM PRODUTO] HTTP", r.status_code)
-            return []
-        text = normalize_coupon_html(r.text)
-    except Exception as e:
-        print("[CUPOM PRODUTO] ERRO", repr(e))
-        return []
-
-    # Formas públicas observadas: "Cupom R$ 15 OFF" e "Cupom 10% OFF".
-    pat = re.compile(r"\bCupom\s+(?:R\$\s*[\d\.]+,[\d]{2}\s*OFF|\d+(?:[.,]\d+)?\s*%\s*OFF)\b", re.I)
+def _extract_public_coupon_cards_from_text(text, source_url):
+    """Extrai cards que mostram explicitamente 'Cupom ... OFF'."""
     cards = []
-    matches = list(pat.finditer(text))
+    lines = [re.sub(r"\s+", " ", x).strip() for x in (text or "").splitlines()]
+    lines = [x for x in lines if x]
 
-    for m in matches:
-        a = max(0, m.start() - 900)
-        b = min(len(text), m.end() + 120)
-        block = text[a:b]
-        coupon = detect_public_coupon(m.group(0))
+    coupon_re = re.compile(
+        r"^Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)$",
+        re.I
+    )
+    money_re = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\.[0-9]{2})?)", re.I)
+    percent_off_re = re.compile(r"(\d+(?:[.,]\d+)?)\s*%\s*OFF", re.I)
+
+    for i, line in enumerate(lines):
+        if not coupon_re.search(line):
+            continue
+
+        # Um card normalmente começa em 'Image: Título' e termina antes do
+        # próximo Image. Mantemos apenas o card que contém o cupom.
+        a = i
+        while a > 0 and not lines[a].lower().startswith("image:"):
+            a -= 1
+        b = i + 1
+        while b < len(lines) and not lines[b].lower().startswith("image:"):
+            b += 1
+
+        block_lines = lines[a:b]
+        block = "\n".join(block_lines)
+        coupon = detect_public_coupon(line)
         if not coupon:
             continue
 
-        # Preços imediatamente antes do desconto/cupom.
-        money = []
-        for mm in re.finditer(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\.[0-9]{2})?)", block, re.I):
-            val = parse_public_money(mm.group(0))
-            if val is not None:
-                money.append((val, mm.start(), mm.end()))
-
-        if not money:
+        # Título: ALT da imagem é a fonte mais limpa. Se houver outro título
+        # repetido, usamos a primeira linha Image: e depois removemos ruídos.
+        title = ""
+        for bl in block_lines:
+            if bl.lower().startswith("image:"):
+                title = bl.split(":", 1)[1].strip()
+                break
+        if not title:
             continue
 
-        # Quando há "R$ 169,99 R$ 69,34 59% OFF ... Cupom R$ 15 OFF",
-        # o preço atual é o imediatamente anterior ao percentual do vendedor.
+        # Preço atual: prioriza a linha que contém 'OFF' imediatamente antes
+        # do cupom. Se não houver, pega o último preço antes do cupom.
         current = None
-        sm = re.search(r"(R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?)\s+\d+(?:[.,]\d+)?\s*%\s*OFF", block, re.I)
-        if sm:
-            current = parse_public_money(sm.group(1))
+        current_idx = -1
+        for j, bl in enumerate(block_lines):
+            if percent_off_re.search(bl):
+                vals = [parse_public_money(m.group(0)) for m in money_re.finditer(bl)]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    current = vals[-1]
+                    current_idx = j
+                    break
 
         if current is None:
-            before = block[:max(0, block.lower().rfind("cupom"))]
-            vals = [parse_public_money(x.group(0)) for x in re.finditer(r"R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?", before, re.I)]
-            vals = [x for x in vals if x is not None]
-            if vals:
-                current = vals[-1]
+            for j in range(len(block_lines) - 1, -1, -1):
+                if block_lines[j].lower().startswith("cupom"):
+                    continue
+                vals = [parse_public_money(m.group(0)) for m in money_re.finditer(" ".join(block_lines[:j+1]))]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    current = vals[-1]
+                    break
 
         if current is None or current < MIN_PRODUCT_PRICE:
             continue
 
+        # Se a linha anterior ao preço atual tem outro valor maior, trata como
+        # preço original. Não usa o valor do frete/parcelamento como preço.
         original = None
-        larger = [x[0] for x in money if x[0] > current]
-        if larger:
-            original = min(larger)
-
-        # O título normalmente fica antes do primeiro preço do card.
-        first = re.search(r"R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?", block, re.I)
-        title = block[:first.start()] if first else block
-        title = re.sub(r"\b(?:no Pix|em outros meios|chegará|chega|cupom|off)\b.*$", "", title, flags=re.I)
-        title = re.sub(r"\b(?:domingo|segunda-feira|terça-feira|quarta-feira|quinta-feira|sexta-feira|sábado)\b.*$", "", title, flags=re.I)
-        title = re.sub(r"\s+", " ", title).strip(" -|•")
-
-        if len(title) < 8:
-            continue
+        before_vals = []
+        for bl in block_lines[:max(1, current_idx + 1)]:
+            before_vals.extend([parse_public_money(m.group(0)) for m in money_re.finditer(bl)])
+        before_vals = [v for v in before_vals if v is not None and v > current]
+        if before_vals:
+            original = min(before_vals)
 
         cards.append({
             "title": title,
-            "price": round(current, 2),
-            "original_price": round(original, 2) if original else None,
+            "price": round(float(current), 2),
+            "original_price": round(float(original), 2) if original else None,
             "coupon": coupon,
-            "source_url": url,
+            "source_url": source_url,
         })
+
+    # Fallback para HTML que não preservou Image: mas possui o padrão em texto.
+    if not cards:
+        flat = re.sub(r"\s+", " ", text or "")
+        pat = re.compile(r"([^\n]{8,180})\s+(R\$\s*[\d\.]+,[\d]{2}|R\$\s*\d+(?:[.,]\d+)?)\s+\d+(?:[.,]\d+)?\s*%\s*OFF\s+(Cupom\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF))", re.I)
+        for m in pat.finditer(flat):
+            title = re.sub(r"^.*?(?:Image:\s*)", "", m.group(1), flags=re.I).strip()
+            current = parse_public_money(m.group(2))
+            coupon = detect_public_coupon(m.group(3))
+            if title and coupon and current and current >= MIN_PRODUCT_PRICE:
+                cards.append({"title":title,"price":round(current,2),"original_price":None,"coupon":coupon,"source_url":source_url})
+
+    return cards
+
+
+def public_coupon_product_cards():
+    """Lê associações produto -> cupom da página pública.
+
+    A página pública pode ser renderizada de formas diferentes. Tentamos
+    primeiro a página principal e depois páginas públicas de busca do Mercado
+    Livre quando a página de cupons não entregar cards no HTML recebido.
+    """
+    urls = [
+        "https://www.mercadolivre.com.br/l/descontaco-cupons",
+        "https://www.mercadolivre.com.br/l/promocoes",
+        "https://www.mercadolivre.com.br/ofertas/cupons",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    cards = []
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=25, allow_redirects=True)
+            if r.status_code != 200:
+                print("[CUPOM PRODUTO]", url, "HTTP", r.status_code)
+                continue
+            text = normalize_coupon_html(r.text)
+            found = _extract_public_coupon_cards_from_text(text, r.url or url)
+            print("[CUPOM PRODUTO]", url, "cards=", len(found))
+            cards.extend(found)
+        except Exception as e:
+            print("[CUPOM PRODUTO] ERRO", url, repr(e))
 
     unique = {}
     for c in cards:
-        key = (norm(c["title"]), c["price"], c["coupon"]["label"])
+        key = (norm(c["title"]), round(float(c["price"]), 2), c["coupon"]["label"])
         unique[key] = c
 
-    print("[CARDS DE CUPOM]", len(unique))
-    for c in list(unique.values())[:15]:
-        print("[CARD]", c["title"][:80], "|", brl(c["price"]), "|", c["coupon"]["label"])
-    return list(unique.values())
+    out = list(unique.values())
+    print("[CARDS DE CUPOM]", len(out))
+    for c in out[:25]:
+        print("[CARD]", c["title"][:90], "|", brl(c["price"]), "|", c["coupon"]["label"])
+    return out
 
+
+PUBLIC_PRODUCT_COUPON_CACHE = {}
+PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
+
+
+def _search_public_listing_for_coupon(title, price, item_id=None):
+    """Fallback por busca pública do Mercado Livre.
+
+    É usado quando a página geral de cupons não entregou o card. A busca é
+    pública e o cupom só é aceito se o resultado tiver forte semelhança com o
+    produto e preço compatível. Assim evitamos transformar cupom genérico em
+    cupom aplicável.
+    """
+    key = f"{norm(title)}|{round(float(price or 0),2)}"
+    with PUBLIC_PRODUCT_COUPON_LOCK:
+        if key in PUBLIC_PRODUCT_COUPON_CACHE:
+            return PUBLIC_PRODUCT_COUPON_CACHE[key]
+
+    slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", norm(title))).strip("-")[:180]
+    if not slug:
+        return None
+
+    url = "https://lista.mercadolivre.com.br/" + quote(slug)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    result = None
+    try:
+        r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+        if r.status_code == 200:
+            text = normalize_coupon_html(r.text)
+            cards = _extract_public_coupon_cards_from_text(text, r.url or url)
+            best = None
+            best_score = 0
+            for card in cards:
+                sim = title_similarity(title, card["title"])
+                diff = abs(float(price) - float(card["price"]))
+                tolerance = max(15.0, float(price) * 0.18)
+                if diff <= tolerance:
+                    sim += 0.18
+                if sim > best_score:
+                    best_score = sim
+                    best = card
+            if best is not None and best_score >= 0.82:
+                result = dict(best["coupon"])
+                result["match_score"] = round(best_score, 3)
+                result["public_title"] = best["title"]
+                result["public_price"] = best["price"]
+                result["source_url"] = best["source_url"]
+    except Exception as e:
+        print("[CUPOM BUSCA PÚBLICA]", repr(e))
+
+    with PUBLIC_PRODUCT_COUPON_LOCK:
+        PUBLIC_PRODUCT_COUPON_CACHE[key] = result
+    return result
 
 def detect_public_coupon(text):
     m = re.search(r"Cupom\s+R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*OFF", text, re.I)
@@ -996,28 +1114,30 @@ def title_similarity(a, b):
 STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","um","uma","original","novo","oficial"}
 
 
-def match_public_coupon(title, price, cards):
+def match_public_coupon(title, price, cards, item_id=None):
     best = None
     best_score = 0
-    for card in cards:
+    for card in cards or []:
         score = title_similarity(title, card["title"])
         diff = abs(float(price) - float(card["price"]))
-        if diff <= 5:
+        tolerance = max(10.0, float(price) * 0.12)
+        if diff <= tolerance:
             score += 0.25
-        elif diff <= 15:
-            score += 0.12
+        elif diff <= max(20.0, float(price) * 0.20):
+            score += 0.08
         if score > best_score:
             best_score = score
             best = card
-    if best is None or best_score < 0.65:
-        return None
+    if best is None or best_score < 0.78:
+        # Segunda fonte: busca pública do próprio Mercado Livre.
+        fallback = _search_public_listing_for_coupon(title, price, item_id)
+        return fallback
     c = dict(best["coupon"])
     c["match_score"] = round(best_score, 3)
     c["public_title"] = best["title"]
     c["public_price"] = best["price"]
     c["source_url"] = best["source_url"]
     return c
-
 
 def calculate_public_coupon(coupon, price):
     if not coupon:
@@ -1122,7 +1242,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             # como "frete não informado" e não pode ser tratado como uma oferta
             # de menor custo real sem essa confirmação.
 
-            cup = choose_best_coupon(title, price, public_cards) if apply_coupons else None
+            cup = choose_best_coupon(title, price, public_cards, item["item_id"]) if apply_coupons else None
             cup_disc = float(cup.get("desconto_estimado") or 0) if cup else 0
             coupon_final = round(max(0, total_price - cup_disc), 2) if cup else None
 
@@ -1496,7 +1616,7 @@ function seller(o,mi,oi){
  ${cup.usage_limit?`<div class="small">👥 Limite informado: ${Number(cup.usage_limit).toLocaleString('pt-BR')} usos</div>`:''}
  <div>💵 Desconto estimado: <b>${brl(o.desconto_cupom)}</b> (${Number(o.percentual_cupom_efetivo||0).toFixed(2)}%)</div>
  <div class="final">💥 Estimado com cupom: ${brl(o.preco_com_cupom)}</div>
- <div class="small">⚠️ ${o.cupom_match==='produto_publico'?'Cupom associado a produto na fonte pública.':'Cupom geral compatível pelas regras de preço detectadas.'} Confirme no checkout.</div></div>`:''}
+ <div class="small">⚠️ ${o.cupom_match==='produto_publico'?'Cupom encontrado associado ao produto em fonte pública do Mercado Livre.':'Cupom encontrado em fonte pública para este produto.'} Confirme no checkout.</div></div>`:''}
  ${o.cash_discount>0?`<div class="coupon" style="background:#eefaf2;border-color:#78c995"><b>💳 ${esc(o.cash_label||'Pagamento à vista')}</b><div>Desconto informado: ${brl(o.cash_discount)}</div><div class="final">💥 Final estimado: ${brl(o.cash_final)}</div><div class="small">⚠️ Não somado ao cupom automaticamente.</div></div>`:''}
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
@@ -1543,7 +1663,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema só marca um cupom como aplicável quando encontra uma associação pública entre o produto e o cupom. O mesmo cupom pode aparecer em vários produtos quando cada produto tiver essa associação. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando publicados pelo Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema só marca um cupom como aplicável quando encontra uma associação pública entre o produto e o cupom. O mesmo cupom pode aparecer em vários produtos quando cada produto tiver essa associação. Se a página geral não entregar o card, o sistema também consulta a busca pública do próprio Mercado Livre. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando publicados pelo Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
