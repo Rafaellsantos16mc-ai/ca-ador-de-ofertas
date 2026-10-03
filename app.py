@@ -6,6 +6,7 @@ import base64
 import time
 import re
 from urllib.parse import urlencode
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from flask import Flask, request, redirect, session, jsonify, render_template_string
@@ -22,8 +23,15 @@ app.secret_key = os.getenv(
     "chave-cacador-ofertas"
 )
 
-ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
-ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+ML_CLIENT_ID = os.getenv(
+    "ML_CLIENT_ID",
+    ""
+).strip()
+
+ML_CLIENT_SECRET = os.getenv(
+    "ML_CLIENT_SECRET",
+    ""
+).strip()
 
 ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
@@ -31,13 +39,29 @@ ML_REDIRECT_URI = os.getenv(
 ).strip()
 
 ML_API = "https://api.mercadolibre.com"
-ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
-ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
+
+ML_AUTH = (
+    "https://auth.mercadolivre.com.br/authorization"
+)
+
+ML_TOKEN = (
+    "https://api.mercadolibre.com/oauth/token"
+)
 
 SITE_ID = "MLB"
+
 DB_FILE = "ofertas.db"
 
 MIN_PRODUCT_PRICE = 69.90
+
+# Quantidade máxima exibida.
+MAX_PRODUCTS = 60
+
+# Quantidade de resultados por consulta.
+PRODUCTS_PER_QUERY = 15
+
+# Consultas simultâneas para buscar detalhes.
+MAX_WORKERS = 8
 
 
 # ============================================================
@@ -138,12 +162,84 @@ CATALOG = {
 
 
 # ============================================================
-# BANCO DE DADOS
+# QUERIES DESTAQUE PARA BUSCA GERAL
+# ============================================================
+
+# Quando o usuário clicar em "todas as categorias",
+# não vamos mais pegar apenas as primeiras 8 queries.
+#
+# Vamos distribuir a busca entre TODAS as categorias.
+
+GENERAL_QUERIES = {
+
+    "📱 Celulares": [
+        "smartphone",
+        "iphone",
+        "samsung galaxy"
+    ],
+
+    "🌸 Perfumes": [
+        "perfume masculino",
+        "perfume feminino",
+        "perfume importado"
+    ],
+
+    "🏋️ Academia": [
+        "tenis corrida",
+        "whey protein",
+        "creatina"
+    ],
+
+    "🔧 Ferramentas": [
+        "furadeira",
+        "parafusadeira",
+        "kit ferramentas"
+    ],
+
+    "🎧 Eletrônicos": [
+        "fone bluetooth",
+        "smartwatch",
+        "tablet"
+    ],
+
+    "🏠 Casa": [
+        "aspirador de pó",
+        "ventilador",
+        "ferro de passar"
+    ],
+
+    "🍳 Cozinha": [
+        "air fryer",
+        "panela elétrica",
+        "cafeteira"
+    ],
+
+    "🚗 Automotivo": [
+        "compressor automotivo",
+        "aspirador automotivo",
+        "suporte celular carro"
+    ],
+
+    "👕 Moda": [
+        "tenis masculino",
+        "mochila",
+        "bolsa feminina"
+    ],
+}
+
+
+# ============================================================
+# BANCO
 # ============================================================
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
+
+    conn = sqlite3.connect(
+        DB_FILE
+    )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
@@ -206,13 +302,17 @@ def init_db():
     """)
 
     try:
+
         conn.execute(
             "ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0"
         )
+
     except sqlite3.OperationalError:
+
         pass
 
     conn.commit()
+
     conn.close()
 
 
@@ -228,16 +328,33 @@ def json_safe(value):
     if value is None:
         return None
 
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool
+        )
+    ):
         return value
 
-    if isinstance(value, dict):
+    if isinstance(
+        value,
+        dict
+    ):
+
         return {
-            str(k): json_safe(v)
+            str(k):
+                json_safe(v)
             for k, v in value.items()
         }
 
-    if isinstance(value, list):
+    if isinstance(
+        value,
+        list
+    ):
+
         return [
             json_safe(v)
             for v in value
@@ -249,6 +366,7 @@ def json_safe(value):
 def brl(value):
 
     try:
+
         value = float(value)
 
         return (
@@ -259,6 +377,7 @@ def brl(value):
         )
 
     except Exception:
+
         return "R$ 0,00"
 
 
@@ -267,14 +386,18 @@ def norm(text):
     if not text:
         return ""
 
-    text = str(text).lower()
+    text = str(
+        text
+    ).lower()
 
     trans = str.maketrans(
         "áàãâäéèêëíìîïóòõôöúùûüç",
         "aaaaaeeeeiiiiooooouuuuc"
     )
 
-    text = text.translate(trans)
+    text = text.translate(
+        trans
+    )
 
     text = re.sub(
         r"[^a-z0-9\s]+",
@@ -291,46 +414,73 @@ def norm(text):
     return text.strip()
 
 
-def calc_discount(price, original):
+def calc_discount(
+    price,
+    original
+):
 
     try:
 
-        price = float(price)
-        original = float(original)
+        price = float(
+            price
+        )
+
+        original = float(
+            original
+        )
 
         if original > price > 0:
+
             return round(
-                (1 - price / original) * 100,
+                (
+                    1
+                    -
+                    price / original
+                ) * 100,
                 2
             )
 
     except Exception:
+
         pass
 
     return 0
 
 
-def calc_total(price, shipping):
+def calc_total(
+    price,
+    shipping
+):
 
     try:
 
-        price = float(price)
+        price = float(
+            price
+        )
 
         if shipping is None:
+
             return price
 
         return round(
-            price + float(shipping),
+            price
+            +
+            float(shipping),
             2
         )
 
     except Exception:
-        return float(price or 0)
+
+        try:
+            return float(price)
+        except Exception:
+            return 0
 
 
 def model_name(title):
 
     if not title:
+
         return "Produto"
 
     title = re.sub(
@@ -350,16 +500,28 @@ def model_name(title):
 def extract_specs(title):
 
     if not title:
+
         return []
 
-    title = str(title)
+    title = str(
+        title
+    )
 
     result = []
 
     patterns = [
+
         r"\b\d+(?:GB|TB)\b",
+
         r"\b\d+\s*GB\s*(?:RAM|MEMORIA)\b",
-        r"\b(?:2G|3G|4G|5G)\b"
+
+        r"\b(?:2G|3G|4G|5G)\b",
+
+        r"\b\d+(?:ml|ML)\b",
+
+        r"\b\d+(?:kg|KG)\b",
+
+        r"\b\d+(?:L|l)\b"
     ]
 
     for pattern in patterns:
@@ -377,23 +539,32 @@ def extract_specs(title):
             ).strip()
 
             if value not in result:
-                result.append(value)
+
+                result.append(
+                    value
+                )
 
     if re.search(
         r"dual\s*sim",
         title,
         flags=re.I
     ):
-        result.append("Dual SIM")
+
+        result.append(
+            "Dual SIM"
+        )
 
     if re.search(
         r"\bnfc\b",
         title,
         flags=re.I
     ):
-        result.append("NFC")
 
-    return result
+        result.append(
+            "NFC"
+        )
+
+    return result[:8]
 
 
 # ============================================================
@@ -413,7 +584,8 @@ PROFILES = {
             "xiaomi",
             "redmi",
             "poco",
-            "realme"
+            "realme",
+            "celular"
         ],
 
         "bad": [
@@ -488,7 +660,8 @@ PROFILES = {
             "esmerilhadeira",
             "ferramenta",
             "serra",
-            "impacto"
+            "impacto",
+            "maleta"
         ],
 
         "bad": [
@@ -498,13 +671,120 @@ PROFILES = {
             "bateria avulsa",
             "capa"
         ]
+    },
+
+    "eletronico": {
+
+        "strong": [
+            "fone",
+            "bluetooth",
+            "headset",
+            "smartwatch",
+            "tablet",
+            "caixa de som",
+            "camera",
+            "power bank",
+            "eletronico"
+        ],
+
+        "bad": [
+            "capa",
+            "case",
+            "pelicula",
+            "cabo",
+            "suporte",
+            "peca"
+        ]
+    },
+
+    "casa": {
+
+        "strong": [
+            "aspirador",
+            "liquidificador",
+            "cafeteira",
+            "air fryer",
+            "ventilador",
+            "ferro de passar"
+        ],
+
+        "bad": [
+            "peca",
+            "refil",
+            "filtro",
+            "acessorio",
+            "capa"
+        ]
+    },
+
+    "cozinha": {
+
+        "strong": [
+            "air fryer",
+            "panela",
+            "cafeteira",
+            "liquidificador",
+            "sandwichera",
+            "cozinha"
+        ],
+
+        "bad": [
+            "peca",
+            "tampa avulsa",
+            "borracha",
+            "refil",
+            "acessorio"
+        ]
+    },
+
+    "automotivo": {
+
+        "strong": [
+            "automotivo",
+            "carro",
+            "compressor",
+            "aspirador automotivo",
+            "suporte celular carro",
+            "carregador automotivo",
+            "tapete automotivo"
+        ],
+
+        "bad": [
+            "miniatura",
+            "brinquedo",
+            "capa banco",
+            "adesivo",
+            "chaveiro"
+        ]
+    },
+
+    "moda": {
+
+        "strong": [
+            "tenis",
+            "mochila",
+            "relogio",
+            "bolsa",
+            "oculos",
+            "masculino",
+            "feminino"
+        ],
+
+        "bad": [
+            "peca reposicao",
+            "acessorio para relogio",
+            "pelicula",
+            "capa"
+        ]
     }
 }
 
 
 def profile_for(query):
 
-    q = norm(query)
+    q = norm(
+        query
+    )
 
     if any(
         x in q
@@ -520,9 +800,11 @@ def profile_for(query):
             "celular"
         ]
     ):
+
         return "celular"
 
     if "perfume" in q:
+
         return "perfume"
 
     if any(
@@ -542,6 +824,7 @@ def profile_for(query):
             "suplemento"
         ]
     ):
+
         return "academia"
 
     if any(
@@ -551,52 +834,141 @@ def profile_for(query):
             "parafusadeira",
             "ferramenta",
             "esmerilhadeira",
-            "serra"
+            "serra",
+            "kit ferramentas",
+            "maleta ferramentas"
         ]
     ):
+
         return "ferramenta"
+
+    if any(
+        x in q
+        for x in [
+            "fone",
+            "headset",
+            "smartwatch",
+            "tablet",
+            "caixa de som",
+            "camera digital",
+            "power bank"
+        ]
+    ):
+
+        return "eletronico"
+
+    if any(
+        x in q
+        for x in [
+            "aspirador de po",
+            "liquidificador",
+            "cafeteira",
+            "ventilador",
+            "ferro de passar"
+        ]
+    ):
+
+        return "casa"
+
+    if any(
+        x in q
+        for x in [
+            "air fryer",
+            "panela eletrica",
+            "jogo de panelas",
+            "sandwichera"
+        ]
+    ):
+
+        return "cozinha"
+
+    if any(
+        x in q
+        for x in [
+            "compressor automotivo",
+            "aspirador automotivo",
+            "suporte celular carro",
+            "carregador automotivo",
+            "ferramentas automotivas",
+            "tapete automotivo"
+        ]
+    ):
+
+        return "automotivo"
+
+    if any(
+        x in q
+        for x in [
+            "tenis masculino",
+            "tenis feminino",
+            "mochila",
+            "relogio masculino",
+            "bolsa feminina",
+            "oculos de sol"
+        ]
+    ):
+
+        return "moda"
 
     return None
 
 
-def relevance(title, query):
+def relevance(
+    title,
+    query
+):
 
-    title = norm(title)
-    query = norm(query)
+    title_norm = norm(
+        title
+    )
 
-    profile = profile_for(query)
+    query_norm = norm(
+        query
+    )
+
+    profile = profile_for(
+        query
+    )
 
     score = 0
 
-    strong = PROFILES.get(
+    profile_data = PROFILES.get(
         profile,
         {}
-    ).get(
+    )
+
+    strong = profile_data.get(
         "strong",
         []
     )
 
-    bad = PROFILES.get(
-        profile,
-        {}
-    ).get(
+    bad = profile_data.get(
         "bad",
         []
     )
 
+    # Palavras principais do perfil.
     for word in strong:
 
-        if word in title:
-            score += 30
+        if word in title_norm:
 
-    for word in query.split():
+            score += 20
 
-        if len(word) >= 3 and word in title:
-            score += 8
+    # Palavras da própria pesquisa.
+    for word in query_norm.split():
 
+        if (
+            len(word) >= 3
+            and word in title_norm
+        ):
+
+            score += 12
+
+    # Penaliza acessórios e produtos errados.
     for word in bad:
 
-        if word in title:
+        if word in title_norm:
+
             score -= 80
 
     return score
@@ -608,7 +980,9 @@ def relevance(title, query):
 
 def create_pkce():
 
-    verifier = secrets.token_urlsafe(64)
+    verifier = secrets.token_urlsafe(
+        64
+    )
 
     digest = hashlib.sha256(
         verifier.encode()
@@ -631,10 +1005,17 @@ def get_tokens():
 
     conn.close()
 
-    return dict(row) if row else None
+    return (
+        dict(row)
+        if row
+        else None
+    )
 
 
-def save_tokens(data, user=None):
+def save_tokens(
+    data,
+    user=None
+):
 
     old = get_tokens() or {}
 
@@ -647,9 +1028,6 @@ def save_tokens(data, user=None):
 
     conn = get_db()
 
-    # CORREÇÃO:
-    # O id é fixo como 1, então só existem 5
-    # valores para os outros campos.
     conn.execute("""
         INSERT INTO oauth_tokens(
             id,
@@ -664,7 +1042,8 @@ def save_tokens(data, user=None):
         ON CONFLICT(id)
         DO UPDATE SET
 
-            access_token=excluded.access_token,
+            access_token=
+                excluded.access_token,
 
             refresh_token=
                 COALESCE(
@@ -672,7 +1051,8 @@ def save_tokens(data, user=None):
                     oauth_tokens.refresh_token
                 ),
 
-            expires_at=excluded.expires_at,
+            expires_at=
+                excluded.expires_at,
 
             user_id=
                 COALESCE(
@@ -695,20 +1075,30 @@ def save_tokens(data, user=None):
             "refresh_token"
         ),
 
-        int(time.time()) + expires_in,
+        int(
+            time.time()
+        ) + expires_in,
 
         str(
             user.get("id")
         )
-        if user and user.get("id")
-        else old.get("user_id"),
-
-        user.get("nickname")
         if user
-        else old.get("nickname")
+        and user.get("id")
+        else old.get(
+            "user_id"
+        ),
+
+        user.get(
+            "nickname"
+        )
+        if user
+        else old.get(
+            "nickname"
+        )
     ))
 
     conn.commit()
+
     conn.close()
 
 
@@ -717,6 +1107,7 @@ def refresh_access_token():
     token = get_tokens()
 
     if not token:
+
         return None
 
     refresh_token = token.get(
@@ -724,11 +1115,13 @@ def refresh_access_token():
     )
 
     if not refresh_token:
+
         return None
 
     try:
 
         response = requests.post(
+
             ML_TOKEN,
 
             data={
@@ -796,6 +1189,7 @@ def access_token():
     token = get_tokens()
 
     if not token:
+
         return None
 
     expires_at = int(
@@ -806,8 +1200,12 @@ def access_token():
     )
 
     if (
-        token.get("access_token")
-        and time.time() <
+        token.get(
+            "access_token"
+        )
+        and
+        time.time()
+        <
         expires_at - 120
     ):
 
@@ -817,7 +1215,8 @@ def access_token():
 
     return (
         refresh_access_token()
-        or token.get(
+        or
+        token.get(
             "access_token"
         )
     )
@@ -843,7 +1242,9 @@ def ml_get(
 
     url = (
         path
-        if path.startswith("http")
+        if path.startswith(
+            "http"
+        )
         else ML_API + path
     )
 
@@ -914,7 +1315,9 @@ def ml_login():
                 "ML_CLIENT_ID não configurado."
         }), 500
 
-    verifier, challenge = create_pkce()
+    verifier, challenge = (
+        create_pkce()
+    )
 
     state = secrets.token_urlsafe(
         32
@@ -989,8 +1392,8 @@ def ml_callback():
 
     if (
         not code
-        or state !=
-        session.get(
+        or
+        state != session.get(
             "ml_state"
         )
     ):
@@ -1057,13 +1460,16 @@ def ml_callback():
 
             me = requests.get(
 
-                ML_API + "/users/me",
+                ML_API
+                +
+                "/users/me",
 
                 headers={
 
                     "Authorization":
                         "Bearer "
-                        + data[
+                        +
+                        data[
                             "access_token"
                         ]
                 },
@@ -1072,6 +1478,7 @@ def ml_callback():
             )
 
             if me.status_code == 200:
+
                 user = me.json()
 
         save_tokens(
@@ -1113,6 +1520,7 @@ def ml_logout():
     )
 
     conn.commit()
+
     conn.close()
 
     session.clear()
@@ -1126,11 +1534,13 @@ def ml_logout():
 
 def search_products(
     query,
-    limit=20
+    limit=PRODUCTS_PER_QUERY,
+    offset=0
 ):
 
     print(
-        f"[BUSCA PRODUTOS] {query}"
+        f"[BUSCA PRODUTOS] {query} "
+        f"offset={offset}"
     )
 
     data, status, _ = ml_get(
@@ -1138,6 +1548,7 @@ def search_products(
         "/products/search",
 
         {
+
             "site_id":
                 SITE_ID,
 
@@ -1151,7 +1562,7 @@ def search_products(
                 limit,
 
             "offset":
-                0
+                offset
         }
     )
 
@@ -1179,6 +1590,7 @@ def search_products(
 
     print(
         "[PRODUTOS ENCONTRADOS]",
+        query,
         len(results)
     )
 
@@ -1194,12 +1606,14 @@ def get_product(
     )
 
     if status != 200:
+
         return None
 
     if not isinstance(
         data,
         dict
     ):
+
         return None
 
     return data
@@ -1259,6 +1673,7 @@ def normalize_item(
     )
 
     if not item_id:
+
         return None
 
     shipping = (
@@ -1279,6 +1694,7 @@ def normalize_item(
     )
 
     if free_shipping:
+
         shipping_cost = 0
 
     return {
@@ -1334,94 +1750,106 @@ def collect_products(
 
     products = {}
 
-    for query in queries:
+    for category_name, query_list in queries.items():
 
-        results = search_products(
-            query,
-            limit=20
-        )
+        for query in query_list:
 
-        for item in results:
-
-            if not isinstance(
-                item,
-                dict
-            ):
-                continue
-
-            product_id = (
-                item.get("id")
-                or
-                item.get("product_id")
+            results = search_products(
+                query,
+                limit=PRODUCTS_PER_QUERY
             )
 
-            if not product_id:
-                continue
+            for item in results:
 
-            title = (
-                item.get("name")
-                or
-                item.get("title")
-                or
-                product_id
-            )
+                if not isinstance(
+                    item,
+                    dict
+                ):
 
-            score = relevance(
-                title,
-                query
-            )
+                    continue
 
-            if score < 5:
-                continue
+                product_id = (
+                    item.get("id")
+                    or
+                    item.get("product_id")
+                )
 
-            if product_id not in products:
+                if not product_id:
 
-                products[
+                    continue
+
+                title = (
+                    item.get("name")
+                    or
+                    item.get("title")
+                    or
                     product_id
-                ] = {
+                )
 
-                    "product_id":
-                        product_id,
+                score = relevance(
+                    title,
+                    query
+                )
 
-                    "title":
-                        title,
+                # Produtos muito incompatíveis
+                # são descartados.
+                if score < 5:
 
-                    "query":
-                        query,
+                    continue
 
-                    "category_id":
-                        item.get(
-                            "category_id"
-                        ),
-
-                    "category_name":
-                        item.get(
-                            "category_name"
-                        ),
-
-                    "score":
-                        score
-                }
-
-            else:
-
-                if score > products[
-                    product_id
-                ][
-                    "score"
-                ]:
+                if product_id not in products:
 
                     products[
                         product_id
-                    ][
+                    ] = {
+
+                        "product_id":
+                            product_id,
+
+                        "title":
+                            title,
+
+                        "query":
+                            query,
+
+                        "category":
+                            category_name,
+
+                        "category_id":
+                            item.get(
+                                "category_id"
+                            ),
+
+                        "category_name":
+                            item.get(
+                                "category_name"
+                            ),
+
+                        "score":
+                            score
+                    }
+
+                else:
+
+                    existing = products[
+                        product_id
+                    ]
+
+                    if score > existing[
                         "score"
-                    ] = score
+                    ]:
 
-                    products[
-                        product_id
-                    ][
-                        "query"
-                    ] = query
+                        existing[
+                            "score"
+                        ] = score
+
+                        existing[
+                            "query"
+                        ] = query
+
+                        existing[
+                            "category"
+                        ] = category_name
 
     print(
         "[PRODUTOS ÚNICOS]",
@@ -1432,266 +1860,148 @@ def collect_products(
 
 
 # ============================================================
-# MONTAR RESULTADOS
+# DETALHAR UM PRODUTO
 # ============================================================
 
-def build_offers(
-    queries
+def process_product(
+    product
 ):
 
-    products = collect_products(
-        queries
+    product_id = product[
+        "product_id"
+    ]
+
+    product_data = get_product(
+        product_id
     )
 
-    groups = {}
+    if not product_data:
 
-    for product_id, base in products.items():
+        return None
 
-        product_data = get_product(
-            product_id
+    title = (
+        product_data.get(
+            "name"
+        )
+        or
+        product_data.get(
+            "title"
+        )
+        or
+        product[
+            "title"
+        ]
+    )
+
+    pictures = (
+        product_data.get(
+            "pictures"
+        )
+        or []
+    )
+
+    image = None
+
+    if pictures:
+
+        first = pictures[0]
+
+        if isinstance(
+            first,
+            dict
+        ):
+
+            image = (
+                first.get(
+                    "url"
+                )
+                or
+                first.get(
+                    "secure_url"
+                )
+            )
+
+    permalink = (
+        product_data.get(
+            "permalink"
+        )
+        or
+        f"https://www.mercadolivre.com.br/p/{product_id}"
+    )
+
+    items = get_product_items(
+        product_id
+    )
+
+    if not items:
+
+        return None
+
+    valid_offers = []
+
+    for raw_item in items:
+
+        item = normalize_item(
+            raw_item
         )
 
-        if not product_data:
+        if not item:
+
             continue
 
-        title = (
-            product_data.get("name")
-            or
-            product_data.get("title")
-            or
-            base["title"]
-        )
+        try:
 
-        pictures = (
-            product_data.get(
-                "pictures"
+            price = float(
+                item["price"]
             )
-            or []
+
+        except Exception:
+
+            continue
+
+        if price < MIN_PRODUCT_PRICE:
+
+            continue
+
+        original_price = item.get(
+            "original_price"
         )
 
-        image = None
+        try:
 
-        if pictures:
+            if original_price is not None:
 
-            first = pictures[0]
-
-            if isinstance(
-                first,
-                dict
-            ):
-
-                image = (
-                    first.get(
-                        "url"
-                    )
-                    or
-                    first.get(
-                        "secure_url"
-                    )
+                original_price = float(
+                    original_price
                 )
 
-        permalink = (
-            product_data.get(
-                "permalink"
-            )
-            or
-            f"https://www.mercadolivre.com.br/p/{product_id}"
+        except Exception:
+
+            original_price = None
+
+        seller_discount = calc_discount(
+            price,
+            original_price
         )
 
-        items = get_product_items(
-            product_id
+        shipping_cost = item.get(
+            "shipping_cost"
         )
 
-        if not items:
-            continue
-
-        valid_offers = []
-
-        for raw_item in items:
-
-            item = normalize_item(
-                raw_item
-            )
-
-            if not item:
-                continue
-
-            try:
-
-                price = float(
-                    item["price"]
-                )
-
-            except Exception:
-
-                continue
-
-            if price < MIN_PRODUCT_PRICE:
-                continue
-
-            original_price = item.get(
-                "original_price"
-            )
-
-            try:
-
-                if original_price is not None:
-
-                    original_price = float(
-                        original_price
-                    )
-
-            except Exception:
-
-                original_price = None
-
-            seller_discount = calc_discount(
-                price,
-                original_price
-            )
-
-            shipping_cost = item.get(
-                "shipping_cost"
-            )
-
-            total_price = calc_total(
-                price,
-                shipping_cost
-            )
-
-            offer = {
-
-                "product_id":
-                    product_id,
-
-                "item_id":
-                    item["item_id"],
-
-                "title":
-                    title,
-
-                "modelo_nome":
-                    model_name(
-                        title
-                    ),
-
-                "especificacoes":
-                    extract_specs(
-                        title
-                    ),
-
-                "image":
-                    image,
-
-                "category_id":
-                    base.get(
-                        "category_id"
-                    ),
-
-                "category_name":
-                    base.get(
-                        "category_name"
-                    ) or "",
-
-                "query":
-                    base.get(
-                        "query"
-                    ),
-
-                "permalink":
-                    item.get(
-                        "permalink"
-                    )
-                    or
-                    permalink,
-
-                "price":
-                    price,
-
-                "original_price":
-                    original_price,
-
-                "discount":
-                    seller_discount,
-
-                "seller_id":
-                    item.get(
-                        "seller_id"
-                    ),
-
-                "condition":
-                    item.get(
-                        "condition"
-                    ),
-
-                "listing_type_id":
-                    item.get(
-                        "listing_type_id"
-                    ),
-
-                "free_shipping":
-                    item.get(
-                        "free_shipping",
-                        False
-                    ),
-
-                "shipping_cost":
-                    shipping_cost,
-
-                "shipping_known":
-                    shipping_cost is not None,
-
-                "total_price":
-                    total_price,
-
-                "relevance_score":
-                    base.get(
-                        "score",
-                        0
-                    ),
-
-                "affiliate_link":
-                    "",
-
-                "extra_earnings":
-                    0
-            }
-
-            valid_offers.append(
-                offer
-            )
-
-        if not valid_offers:
-            continue
-
-        valid_offers.sort(
-            key=lambda x: (
-
-                x["price"],
-
-                0
-                if x["free_shipping"]
-                else 1,
-
-                x["shipping_cost"]
-                if x["shipping_cost"]
-                is not None
-                else 999999
-            )
+        total_price = calc_total(
+            price,
+            shipping_cost
         )
 
-        best_offer = valid_offers[0]
-
-        best_offer[
-            "menor_preco_modelo"
-        ] = True
-
-        groups[
-            product_id
-        ] = {
+        offer = {
 
             "product_id":
                 product_id,
+
+            "item_id":
+                item[
+                    "item_id"
+                ],
 
             "title":
                 title,
@@ -1709,41 +2019,342 @@ def build_offers(
             "image":
                 image,
 
-            "category_name":
-                base.get(
-                    "category_name"
-                ) or "",
+            "category":
+                product.get(
+                    "category"
+                ),
 
-            "ofertas":
-                [
-                    best_offer
-                ]
+            "category_id":
+                product.get(
+                    "category_id"
+                ),
+
+            "category_name":
+                product.get(
+                    "category_name"
+                )
+                or "",
+
+            "query":
+                product.get(
+                    "query"
+                ),
+
+            "permalink":
+                item.get(
+                    "permalink"
+                )
+                or
+                permalink,
+
+            "price":
+                price,
+
+            "original_price":
+                original_price,
+
+            "discount":
+                seller_discount,
+
+            "seller_id":
+                item.get(
+                    "seller_id"
+                ),
+
+            "condition":
+                item.get(
+                    "condition"
+                ),
+
+            "listing_type_id":
+                item.get(
+                    "listing_type_id"
+                ),
+
+            "free_shipping":
+                item.get(
+                    "free_shipping",
+                    False
+                ),
+
+            "shipping_cost":
+                shipping_cost,
+
+            "shipping_known":
+                shipping_cost is not None,
+
+            "total_price":
+                total_price,
+
+            "relevance_score":
+                product.get(
+                    "score",
+                    0
+                ),
+
+            "affiliate_link":
+                "",
+
+            "extra_earnings":
+                0
         }
 
-    models = list(
-        groups.values()
-    )
+        valid_offers.append(
+            offer
+        )
 
-    models.sort(
-        key=lambda group: (
+    if not valid_offers:
 
-            -group[
-                "ofertas"
-            ][0].get(
-                "relevance_score",
-                0
-            ),
+        return None
 
-            group[
-                "ofertas"
-            ][0].get(
-                "price",
-                999999
-            )
+    # Melhor anúncio daquele produto.
+    valid_offers.sort(
+
+        key=lambda x: (
+
+            x["price"],
+
+            0
+            if x["free_shipping"]
+            else 1,
+
+            x["shipping_cost"]
+            if x["shipping_cost"]
+            is not None
+            else 999999
         )
     )
 
-    models = models[:30]
+    best_offer = valid_offers[0]
+
+    best_offer[
+        "menor_preco_modelo"
+    ] = True
+
+    return {
+
+        "product_id":
+            product_id,
+
+        "title":
+            title,
+
+        "modelo_nome":
+            model_name(
+                title
+            ),
+
+        "especificacoes":
+            extract_specs(
+                title
+            ),
+
+        "image":
+            image,
+
+        "category":
+            product.get(
+                "category"
+            ),
+
+        "category_name":
+            product.get(
+                "category_name"
+            )
+            or "",
+
+        "ofertas":
+            [
+                best_offer
+            ]
+    }
+
+
+# ============================================================
+# MONTAR OFERTAS
+# ============================================================
+
+def build_offers(
+    queries
+):
+
+    products = collect_products(
+        queries
+    )
+
+    # ========================================================
+    # IMPORTANTE:
+    # Não vamos buscar detalhes de milhares de produtos.
+    #
+    # Primeiro pegamos os candidatos mais relevantes
+    # de cada categoria.
+    # ========================================================
+
+    candidates = list(
+        products.values()
+    )
+
+    candidates.sort(
+        key=lambda x: -x.get(
+            "score",
+            0
+        )
+    )
+
+    # Mantém uma quantidade razoável
+    # antes de consultar detalhes.
+    candidates = candidates[:120]
+
+    print(
+        "[CANDIDATOS PARA DETALHAMENTO]",
+        len(candidates)
+    )
+
+    groups = []
+
+    # ========================================================
+    # BUSCA PARALELA
+    # ========================================================
+
+    with ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
+
+        future_map = {
+
+            executor.submit(
+                process_product,
+                product
+            ):
+                product
+
+            for product in candidates
+        }
+
+        for future in as_completed(
+            future_map
+        ):
+
+            product = future_map[
+                future
+            ]
+
+            try:
+
+                result = future.result()
+
+                if result:
+
+                    groups.append(
+                        result
+                    )
+
+            except Exception as e:
+
+                print(
+                    "[ERRO PRODUTO]",
+                    product.get(
+                        "product_id"
+                    ),
+                    repr(e)
+                )
+
+    # ========================================================
+    # GARANTE DIVERSIDADE POR CATEGORIA
+    # ========================================================
+
+    category_groups = {}
+
+    for group in groups:
+
+        category = (
+            group.get(
+                "category"
+            )
+            or
+            group.get(
+                "category_name"
+            )
+            or
+            "Outros"
+        )
+
+        category_groups.setdefault(
+            category,
+            []
+        ).append(
+            group
+        )
+
+    for category in category_groups:
+
+        category_groups[
+            category
+        ].sort(
+
+            key=lambda g: (
+
+                -g[
+                    "ofertas"
+                ][0].get(
+                    "relevance_score",
+                    0
+                ),
+
+                g[
+                    "ofertas"
+                ][0].get(
+                    "price",
+                    999999
+                )
+            )
+        )
+
+    # ========================================================
+    # DISTRIBUI OS PRODUTOS
+    # ========================================================
+
+    models = []
+
+    # Primeiro coloca produtos de cada
+    # categoria de forma intercalada.
+    max_per_round = max(
+        [
+            len(v)
+            for v in category_groups.values()
+        ],
+        default=0
+    )
+
+    for index in range(
+        max_per_round
+    ):
+
+        for category in sorted(
+            category_groups.keys()
+        ):
+
+            items = category_groups[
+                category
+            ]
+
+            if index < len(items):
+
+                models.append(
+                    items[index]
+                )
+
+                if len(models) >= MAX_PRODUCTS:
+
+                    break
+
+        if len(models) >= MAX_PRODUCTS:
+
+            break
+
+    # ========================================================
+    # OFERTAS
+    # ========================================================
 
     offers = [
         group[
@@ -1753,7 +2364,9 @@ def build_offers(
     ]
 
     prices = [
-        offer["price"]
+        offer[
+            "price"
+        ]
         for offer in offers
         if offer.get(
             "price"
@@ -1761,26 +2374,59 @@ def build_offers(
     ]
 
     free_shipping_count = sum(
+
         1
+
         for offer in offers
+
         if offer.get(
             "free_shipping"
         )
     )
 
     discounted_count = sum(
+
         1
+
         for offer in offers
+
         if offer.get(
             "discount",
             0
         ) > 0
     )
 
+    categories_found = {}
+
+    for model in models:
+
+        category = (
+            model.get(
+                "category"
+            )
+            or
+            "Outros"
+        )
+
+        categories_found[
+            category
+        ] = (
+            categories_found.get(
+                category,
+                0
+            )
+            + 1
+        )
+
     stats = {
 
         "produtos":
             len(offers),
+
+        "categorias":
+            len(
+                categories_found
+            ),
 
         "com desconto":
             discounted_count,
@@ -1806,8 +2452,45 @@ def build_offers(
             models,
 
         "ofertas":
-            offers
+            offers,
+
+        "categorias_encontradas":
+            categories_found
     }
+
+
+# ============================================================
+# PREPARAR QUERIES
+# ============================================================
+
+def prepare_queries(
+    category=None
+):
+
+    # ========================================================
+    # UMA CATEGORIA
+    # ========================================================
+
+    if category:
+
+        queries = {
+
+            category:
+                CATALOG.get(
+                    category,
+                    []
+                )
+        }
+
+        return queries
+
+    # ========================================================
+    # TODAS AS CATEGORIAS
+    # ========================================================
+
+    # Agora cada categoria recebe suas próprias
+    # consultas. Não existe mais [:8] global.
+    return GENERAL_QUERIES.copy()
 
 
 # ============================================================
@@ -1819,38 +2502,41 @@ def run_search(
     manual_query=None
 ):
 
+    # ========================================================
+    # BUSCA MANUAL
+    # ========================================================
+
     if manual_query:
 
-        queries = [
-            manual_query
-        ]
+        queries = {
 
-    elif category:
-
-        queries = CATALOG.get(
-            category,
-            []
-        )
+            "🔎 Busca manual": [
+                manual_query
+            ]
+        }
 
     else:
 
-        queries = []
-
-        for category_queries in CATALOG.values():
-
-            queries.extend(
-                category_queries
-            )
-
-    # Mantém a busca controlada.
-    queries = queries[:8]
+        queries = prepare_queries(
+            category
+        )
 
     print(
-        "======================================"
+        "\n======================================"
     )
 
     print(
         "[INICIANDO BUSCA DE PRODUTOS]"
+    )
+
+    print(
+        "[CATEGORIA]",
+        category or "TODAS"
+    )
+
+    print(
+        "[QUANTIDADE DE CATEGORIAS]",
+        len(queries)
     )
 
     print(
@@ -1859,11 +2545,15 @@ def run_search(
     )
 
     print(
-        "======================================"
+        "======================================\n"
     )
 
     result = build_offers(
         queries
+    )
+
+    print(
+        "\n======================================"
     )
 
     print(
@@ -1878,6 +2568,18 @@ def run_search(
                 []
             )
         )
+    )
+
+    print(
+        "[CATEGORIAS]",
+        result.get(
+            "categorias_encontradas",
+            {}
+        )
+    )
+
+    print(
+        "======================================\n"
     )
 
     return result
@@ -1896,7 +2598,11 @@ def generate_ad(
 
         "🔥 OFERTA ENCONTRADA!",
         "",
-        f"🛍️ {offer.get('title', 'Produto')}"
+
+        f"🛍️ {offer.get(
+            'title',
+            'Produto'
+        )}"
     ]
 
     if offer.get(
@@ -1904,11 +2610,20 @@ def generate_ad(
     ):
 
         lines.append(
-            f"💸 De: {brl(offer['original_price'])}"
+            f"💸 De: "
+            f"{brl(
+                offer['original_price']
+            )}"
         )
 
     lines.append(
-        f"🔥 Por: {brl(offer.get('price', 0))}"
+        f"🔥 Por: "
+        f"{brl(
+            offer.get(
+                'price',
+                0
+            )
+        )}"
     )
 
     if offer.get(
@@ -1917,7 +2632,8 @@ def generate_ad(
     ) > 0:
 
         lines.append(
-            f"🏷️ {offer['discount']}% OFF"
+            f"🏷️ "
+            f"{offer['discount']}% OFF"
         )
 
     if offer.get(
@@ -2011,7 +2727,7 @@ def api_cacar():
 
 
 # ============================================================
-# API ANÚNCIO
+# API GERAR ANÚNCIO
 # ============================================================
 
 @app.route(
@@ -2250,11 +2966,17 @@ def health():
                 CATALOG
             ),
 
-        "fluxo":
-            "products/search -> products/{id} -> products/{id}/items",
+        "max_produtos":
+            MAX_PRODUCTS,
+
+        "produtos_por_query":
+            PRODUCTS_PER_QUERY,
 
         "produto_minimo":
             MIN_PRODUCT_PRICE,
+
+        "fluxo":
+            "busca equilibrada por categorias -> produtos -> itens",
 
         "cupons":
             "fora do fluxo de busca"
@@ -2325,6 +3047,10 @@ button{
     color:#fff;
     cursor:pointer;
     margin-top:7px;
+}
+
+button:hover{
+    opacity:.92;
 }
 
 .login{
@@ -2405,6 +3131,11 @@ button{
     margin:3px;
 }
 
+.category-tag{
+    background:#eaf8ee;
+    color:#16833b;
+}
+
 .seller{
     background:#fafafa;
     border:1px solid #eee;
@@ -2459,6 +3190,20 @@ button{
     color:#666;
 }
 
+.progress{
+    background:#eee;
+    border-radius:20px;
+    overflow:hidden;
+    margin-top:10px;
+}
+
+.progress-bar{
+    height:8px;
+    width:0%;
+    background:#3483fa;
+    transition:.3s;
+}
+
 a{
     color:#3483fa;
     font-weight:bold;
@@ -2466,6 +3211,7 @@ a{
 }
 
 </style>
+
 
 <script>
 
@@ -2477,16 +3223,33 @@ async function cacar(categoria){
         );
 
     status.textContent =
-        '🔄 Procurando produtos no Mercado Livre...';
+        '🔄 Procurando produtos em várias categorias...';
 
     document.getElementById(
         'results'
-    ).innerHTML =
-        '<div class="loading">🔎 Buscando produtos...</div>';
+    ).innerHTML = `
+
+        <div class="loading">
+
+            🔎 Buscando produtos...
+
+            <div class="progress">
+
+                <div
+                    id="progressBar"
+                    class="progress-bar"
+                ></div>
+
+            </div>
+
+        </div>
+
+    `;
 
     try{
 
-        let url = '/api/cacar';
+        let url =
+            '/api/cacar';
 
         if(categoria){
 
@@ -2514,7 +3277,7 @@ async function cacar(categoria){
         render(data);
 
         status.textContent =
-            '✅ Produtos encontrados.';
+            '✅ Busca finalizada.';
 
     }catch(error){
 
@@ -2677,7 +3440,9 @@ function render(data){
                             ?
                             `
                             <img
-                                src="${esc(model.image)}"
+                                src="${esc(
+                                    model.image
+                                )}"
                                 onerror="
                                     this.style.display='none'
                                 "
@@ -2696,6 +3461,27 @@ function render(data){
 
                             </span>
 
+                            ${
+                                model.category
+                                ?
+                                `
+                                <span
+                                    class="
+                                        tag
+                                        category-tag
+                                    "
+                                >
+
+                                    ${esc(
+                                        model.category
+                                    )}
+
+                                </span>
+                                `
+                                :
+                                ''
+                            }
+
                             <div class="title">
 
                                 ${esc(
@@ -2712,7 +3498,9 @@ function render(data){
                                 .map(
                                     spec => `
                                         <span class="tag">
+
                                             ${esc(spec)}
+
                                         </span>
                                     `
                                 )
@@ -2790,7 +3578,9 @@ function renderOffer(
 
             <div class="price">
 
-                ${brl(offer.price)}
+                ${brl(
+                    offer.price
+                )}
 
             </div>
 
@@ -3187,8 +3977,7 @@ function esc(value){
 
             Primeiro vamos encontrar
             produtos reais no Mercado Livre.
-            Os cupons serão adicionados
-            depois.
+            Depois vamos aplicar os cupons.
 
         </p>
 
@@ -3250,6 +4039,11 @@ function esc(value){
         </h2>
 
         <p class="small">
+
+            Agora a busca é distribuída
+            entre várias categorias.
+
+            <br>
 
             Produtos a partir de
             R$ 69,90.
@@ -3356,13 +4150,19 @@ function esc(value){
 
         <div class="search-info">
 
-            💡 Nesta etapa mostramos
-            somente os produtos.
+            💡 A busca agora é distribuída
+            entre as categorias.
 
             <br>
 
-            🎟️ A parte dos cupons
-            será feita depois.
+            📦 Até
+            <b>60 produtos</b>
+            podem aparecer.
+
+            <br>
+
+            🎟️ Os cupons continuam
+            fora desta etapa.
 
         </div>
 
@@ -3461,6 +4261,7 @@ def buscar_page():
     ).strip()
 
     if not query:
+
         return redirect("/")
 
     result = run_search(
@@ -3518,7 +4319,7 @@ def api_cupons():
 
 
 # ============================================================
-# ERROS
+# ERRO 404
 # ============================================================
 
 @app.errorhandler(404)
@@ -3534,6 +4335,10 @@ def error_404(error):
 
     }), 404
 
+
+# ============================================================
+# ERRO 500
+# ============================================================
 
 @app.errorhandler(500)
 def error_500(error):
@@ -3563,7 +4368,10 @@ if __name__ == "__main__":
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port,
+
         debug=False
     )
