@@ -131,6 +131,10 @@ def init_db():
         conn.execute("ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE cupons ADD COLUMN usage_limit INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -572,6 +576,18 @@ def parse_coupon_block(code, block, source_url=COUPONS_URL):
         if m:
             mx = number(m.group(1))
 
+    usage_limit = None
+    for pat in [
+        r"(?:limite de|limite:|até)\s*([0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes))",
+        r"([0-9]{2,7})\s*(?:usos|utiliza(?:ções|coes))",
+        r"(?:disponível|disponiveis)\s*para\s*(?:os )?([0-9]{2,7})\s*(?:primeiros )?(?:usos|clientes)",
+    ]:
+        m = re.search(pat, block, re.I)
+        if m:
+            try: usage_limit = int(m.group(1))
+            except Exception: usage_limit = None
+            break
+
     return {
         "code": code,
         "description": block[:2500],
@@ -579,6 +595,7 @@ def parse_coupon_block(code, block, source_url=COUPONS_URL):
         "fixed_discount": fixed or 0,
         "min_purchase": mn,
         "max_discount": mx,
+        "usage_limit": usage_limit,
         "source_url": source_url,
         "conditions": block[:2500],
     }
@@ -639,22 +656,23 @@ def sync_coupons():
         conn.execute("""
             INSERT INTO cupons(
                 code,description,discount_percent,fixed_discount,
-                min_purchase,max_discount,source_url,conditions,active,updated_at
+                min_purchase,max_discount,usage_limit,source_url,conditions,active,updated_at
             )
-            VALUES(?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
             ON CONFLICT(code) DO UPDATE SET
                 description=excluded.description,
                 discount_percent=excluded.discount_percent,
                 fixed_discount=excluded.fixed_discount,
                 min_purchase=excluded.min_purchase,
                 max_discount=excluded.max_discount,
+                usage_limit=excluded.usage_limit,
                 source_url=excluded.source_url,
                 conditions=excluded.conditions,
                 active=1,
                 updated_at=CURRENT_TIMESTAMP
         """,(
             c["code"],c["description"],c["discount_percent"],c["fixed_discount"],
-            c["min_purchase"],c["max_discount"],c["source_url"],c["conditions"]
+            c["min_purchase"],c["max_discount"],c.get("usage_limit"),c["source_url"],c["conditions"]
         ))
 
     conn.commit()
@@ -666,7 +684,8 @@ def sync_coupons():
             f"[CUPOM OK] {c['code']} | {c.get('discount_percent') or 0}% | "
             f"fixo R$ {c.get('fixed_discount') or 0:.2f} | "
             f"mín R$ {c.get('min_purchase') or 0:.2f} | "
-            f"máx R$ {c.get('max_discount') or 0:.2f} | {c.get('source_url')}"
+            f"máx R$ {c.get('max_discount') or 0:.2f} | "
+            f"limite usos {c.get('usage_limit') or 'não informado'} | {c.get('source_url')}"
         )
 
     return {
@@ -719,21 +738,31 @@ def best_coupon(price):
     for c in coupons():
         d = coupon_discount(c, price)
         if d > 0:
-            x = dict(c)
-            x["desconto_estimado"] = d
-            # O desempate prioriza percentual efetivo e depois menor compra mínima.
+            x = dict(c); x["desconto_estimado"] = d
             x["percentual_efetivo"] = round((d / float(price)) * 100, 2) if float(price) > 0 else 0
+            x["match_type"] = "regras_de_preco"
             choices.append(x)
-    return max(
-        choices,
-        key=lambda x:(
-            x["desconto_estimado"],
-            x["percentual_efetivo"],
-            -(float(x.get("min_purchase") or 0))
-        ),
-        default=None
-    )
+    return max(choices, key=lambda x:(x["desconto_estimado"],x["percentual_efetivo"],-(float(x.get("min_purchase") or 0))), default=None)
 
+def choose_best_coupon(title, price, public_cards=None):
+    candidates = []
+    if public_cards:
+        matched = match_public_coupon(title, price, public_cards)
+        if matched:
+            d = calculate_public_coupon(matched, price)
+            if d > 0:
+                x = dict(matched); x["desconto_estimado"] = d
+                x["percentual_efetivo"] = round((d / float(price)) * 100, 2)
+                x["match_type"] = "produto_publico"
+                candidates.append(x)
+    for c in coupons():
+        d = coupon_discount(c, price)
+        if d <= 0: continue
+        x = dict(c); x["desconto_estimado"] = d
+        x["percentual_efetivo"] = round((d / float(price)) * 100, 2) if float(price) > 0 else 0
+        x["match_type"] = "regras_de_preco"
+        candidates.append(x)
+    return max(candidates, key=lambda x:(x.get("desconto_estimado") or 0,x.get("percentual_efetivo") or 0,1 if x.get("match_type")=="produto_publico" else 0,-(float(x.get("min_purchase") or 0))), default=None)
 
 def detect_cash_discount(item, price):
     """Só aceita desconto à vista/Pix quando o próprio dado da API o informa.
@@ -965,11 +994,8 @@ def search_products_direct(q, limit=20):
     return data.get("results") or []
 
 
-def scan_queries(queries, min_discount=0):
-    # Nesta etapa o foco é SOMENTE descobrir produtos.
-    # O cruzamento de cupons ficará para a próxima etapa, depois que
-    # tivermos uma lista estável de produtos. Isso evita travar a busca.
-    public_cards = []
+def scan_queries(queries, min_discount=0, apply_coupons=False):
+    public_cards = public_coupon_product_cards() if apply_coupons else []
 
     products = {}
     for q in queries:
@@ -1037,12 +1063,9 @@ def scan_queries(queries, min_discount=0):
             # como "frete não informado" e não pode ser tratado como uma oferta
             # de menor custo real sem essa confirmação.
 
-            # CUPONS NÃO SÃO CONSULTADOS NESTA ETAPA.
-            # Primeiro entregamos os melhores produtos; depois cruzamos
-            # cada produto com o cupom realmente aplicável.
-            cup = None
-            cup_disc = 0
-            coupon_final = None
+            cup = choose_best_coupon(title, price, public_cards) if apply_coupons else None
+            cup_disc = float(cup.get("desconto_estimado") or 0) if cup else 0
+            coupon_final = round(max(0, total_price - cup_disc), 2) if cup else None
 
             cash_disc, cash_label = detect_cash_discount(raw, price)
             cash_final = round(max(0, total_price - cash_disc), 2) if cash_disc > 0 else None
@@ -1068,6 +1091,8 @@ def scan_queries(queries, min_discount=0):
                 "relevance_score":score,"cupom":cup,
                 "desconto_cupom":cup_disc,
                 "percentual_cupom_efetivo":round((cup_disc/price)*100,2) if cup_disc else 0,
+                "cupom_match":cup.get("match_type") if cup else None,
+                "cupom_uso_limite":cup.get("usage_limit") if cup else None,
                 "cash_discount":cash_disc,"cash_label":cash_label,"cash_final":cash_final,
                 "melhor_forma":best_mode,"maior_desconto":best_saving,
                 "preco_com_cupom":coupon_final,"preco_final_melhor":best_final,
@@ -1080,14 +1105,10 @@ def scan_queries(queries, min_discount=0):
     def ranking_oferta(o):
         total_real = o.get("total_price")
         total_real = float(total_real) if total_real is not None else float(o.get("price") or 999999)
-        return (
-            0 if o.get("shipping_known") else 1,
-            total_real,
-            0 if o.get("free_shipping") else 1,
-            -(o.get("discount") or 0),
-            -(o.get("relevance_score") or 0),
-            o.get("price") or 999999,
-        )
+        if apply_coupons:
+            final = float(o.get("preco_com_cupom")) if o.get("preco_com_cupom") is not None else total_real
+            return (0 if o.get("cupom") else 1, -(o.get("desconto_cupom") or 0), final, 0 if o.get("free_shipping") else 1, -(o.get("relevance_score") or 0), total_real)
+        return (0 if o.get("shipping_known") else 1, total_real, 0 if o.get("free_shipping") else 1, -(o.get("discount") or 0), -(o.get("relevance_score") or 0), o.get("price") or 999999)
 
     offers.sort(key=ranking_oferta)
 
@@ -1123,6 +1144,7 @@ def scan_queries(queries, min_discount=0):
         "menor preço final": brl(min(finais)) if finais else "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais_conhecidos or [0])),
+        "cupons com limite de uso": sum(1 for o in with_coupon if o.get("cupom_uso_limite")),
     }
     return {"stats":stats,"modelos":models,"ofertas":flat}
 
@@ -1202,17 +1224,14 @@ def run_caca_job(job_id, category=None):
             # Um ciclo inicial enxuto. Novos ciclos podem atualizar novamente.
             queries = [q for qs in CATALOG.values() for q in qs][:18]
 
-        update_job(job_id, progress=20, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
-        result = scan_queries(queries)
-        update_job(job_id, progress=90, message="📊 Organizando os melhores produtos...")
-
-        update_job(
-            job_id,
-            status="done",
-            progress=100,
-            message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} encontrados.",
-            result=json_safe(result),
-        )
+        update_job(job_id, progress=10, message="🎟️ Atualizando cupons disponíveis...")
+        coupon_sync = sync_coupons()
+        update_job(job_id, progress=22, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
+        update_job(job_id, progress=72, message="📦 Encontrando produtos e calculando o melhor cupom...")
+        result = scan_queries(queries, apply_coupons=True)
+        result["coupon_sync"] = coupon_sync
+        update_job(job_id, progress=96, message="📊 Finalizando ranking...")
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos + cupons atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas.", result=json_safe(result))
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
@@ -1225,7 +1244,8 @@ def run_caca_job(job_id, category=None):
 def api_buscar():
     q=request.args.get("q","").strip()
     if not q: return jsonify({"erro":"Informe uma busca."}),400
-    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0))))
+    sync_coupons()
+    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=True)))
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -1409,14 +1429,15 @@ function seller(o,mi,oi){
  ${o.discount>0?`<div class="green">🔥 ${o.discount}% OFF</div>`:''}
  ${o.free_shipping?'<div class="green">🚚 Frete grátis</div>':''}
  ${o.shipping_known ? (Number(o.shipping_cost||0)>0 ? `<div>🚚 Frete: ${brl(o.shipping_cost)}</div><div class="green"><b>💰 Total pago estimado: ${brl(o.total_price)}</b></div>` : `<div class="green"><b>💰 Total pago: ${brl(o.total_price)}</b></div>`) : '<div class="small">🚚 Frete não informado pelo Mercado Livre</div>'}
- ${cup?`<div class="coupon"><b>🎟️ CUPOM: ${esc(cup.code)}</b>
+ ${cup?`<div class="coupon"><b>🎟️ CUPOM: ${esc(cup.code || cup.label || 'Cupom disponível')}</b>
  ${cup.discount_percent?`<div>🔥 Até ${cup.discount_percent}% OFF</div>`:''}
  ${cup.fixed_discount?`<div>💰 ${brl(cup.fixed_discount)} OFF</div>`:''}
  ${cup.min_purchase?`<div class="small">Compra mínima: ${brl(cup.min_purchase)}</div>`:''}
  ${cup.max_discount?`<div class="small">Desconto máximo: ${brl(cup.max_discount)}</div>`:''}
+ ${cup.usage_limit?`<div class="small">👥 Limite informado: ${Number(cup.usage_limit).toLocaleString('pt-BR')} usos</div>`:''}
  <div>💵 Desconto estimado: <b>${brl(o.desconto_cupom)}</b> (${Number(o.percentual_cupom_efetivo||0).toFixed(2)}%)</div>
  <div class="final">💥 Estimado com cupom: ${brl(o.preco_com_cupom)}</div>
- <div class="small">⚠️ Estimativa. Confirme no checkout.</div></div>`:''}
+ <div class="small">⚠️ ${o.cupom_match==='produto_publico'?'Cupom associado a produto na fonte pública.':'Cupom geral compatível pelas regras de preço detectadas.'} Confirme no checkout.</div></div>`:''}
  ${o.cash_discount>0?`<div class="coupon" style="background:#eefaf2;border-color:#78c995"><b>💳 ${esc(o.cash_label||'Pagamento à vista')}</b><div>Desconto informado: ${brl(o.cash_discount)}</div><div class="final">💥 Final estimado: ${brl(o.cash_final)}</div><div class="small">⚠️ Não somado ao cupom automaticamente.</div></div>`:''}
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
@@ -1463,7 +1484,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">Nesta etapa o ranking considera primeiro o <b>custo total</b> (produto + frete) quando o frete foi informado pelo Mercado Livre. Depois prioriza frete grátis, desconto e relevância. Cupons entram na próxima etapa.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">O sistema cruza os produtos com os cupons encontrados. O mesmo cupom pode aparecer em vários produtos quando as regras numéricas permitem o preço. O ranking prioriza a maior economia estimada em R$ e o menor preço final. Limites de uso são exibidos quando encontrados, mas a quantidade restante só pode ser confirmada no Mercado Livre.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
@@ -1493,7 +1514,7 @@ def health():
         "mercado_livre_conectado":bool(access_token()),
         "catalogo_categorias":len(CATALOG),
         "fluxo":"products/{product_id}/items",
-        "cupons":"ativo","cupom_primeiro":"ativo","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
+        "cupons":"ativo","cupom_por_produto":"ativo","cupom_primeiro":"ativo","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
 
