@@ -1,16 +1,25 @@
-# app.py
 import os
 import re
+import json
 import time
+import math
+import uuid
 import sqlite3
 import secrets
 import hashlib
 import base64
-from urllib.parse import urlencode
+import threading
+from urllib.parse import urlencode, quote
 
 import requests
-from flask import Flask, request, redirect, session, jsonify, render_template_string
-
+from flask import (
+    Flask,
+    request,
+    redirect,
+    render_template_string,
+    jsonify,
+    send_file,
+)
 
 # ============================================================
 # CONFIG
@@ -18,392 +27,215 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 
 app = Flask(__name__)
 
-app.secret_key = os.getenv(
-    "FLASK_SECRET_KEY",
-    "cacador-ofertas-chave-2026"
-)
+APP_NAME = "Caçador de Ofertas"
 
-app.config.update(
-    SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30
-)
-
-DB_FILE = "ofertas.db"
+DB_FILE = os.getenv("DB_FILE", "ofertas.db")
 
 ML_API = "https://api.mercadolibre.com"
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 
-SITE_ID = "MLB"
-
-CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
-CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
-
-REDIRECT_URI = os.getenv(
+ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
+ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
-    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
+    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback",
 ).strip()
 
-# ============================================================
-# LIMITES
-# ============================================================
-#
-# A versão anterior estava encontrando poucos produtos.
-# Agora aumentamos a quantidade, mas sem voltar ao problema
-# de milhares de chamadas.
-#
+SITE_ID = "MLB"
+
+REQUEST_TIMEOUT = 10
+
+# Quantidade de buscas.
 MAX_QUERIES_PER_CATEGORY = 3
-MAX_PRODUCTS_PER_QUERY = 8
-MAX_ITEMS_PER_PRODUCT = 6
-MAX_OFFERS_PER_CATEGORY = 35
-CATEGORY_TIME_LIMIT = 24
-REQUEST_TIMEOUT = 8
+MAX_PRODUCTS_PER_QUERY = 10
+MAX_ITEMS_PER_PRODUCT = 8
 
-HTTP = requests.Session()
+# Limites para não sobrecarregar a API.
+MAX_OFFERS_PER_CATEGORY = 40
+MAX_TOTAL_PRODUCTS = 100
 
-HTTP.headers.update({
-    "User-Agent": "Mozilla/5.0 CacadorDeOfertas/2026",
-    "Accept": "application/json"
-})
+session = requests.Session()
 
+session.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; CacadorDeOfertas/1.0; "
+            "+https://www.mercadolivre.com.br)"
+        ),
+        "Accept": "application/json",
+    }
+)
 
 # ============================================================
 # CATEGORIAS
 # ============================================================
 
-CATALOG = {
-    "📱 Celulares": [
-        "smartphone",
-        "iphone",
-        "samsung galaxy",
-        "motorola"
-    ],
-
-    "🌸 Perfumes": [
-        "perfume masculino",
-        "perfume feminino",
-        "perfume importado"
-    ],
-
-    "🏋️ Academia": [
-        "roupa academia",
-        "tenis corrida",
-        "whey protein",
-        "creatina"
-    ],
-
-    "🔧 Ferramentas": [
-        "furadeira",
-        "parafusadeira",
-        "chave de impacto",
-        "kit ferramentas"
-    ],
-
-    "🎧 Eletrônicos": [
-        "fone bluetooth",
-        "smartwatch",
-        "caixa de som bluetooth",
-        "mouse gamer"
-    ],
-
-    "🏠 Casa": [
-        "aspirador",
-        "ventilador",
-        "liquidificador",
-        "organizador"
-    ],
-
-    "🚗 Automotivo": [
-        "som automotivo",
-        "acessorios automotivos",
-        "tapete carro",
-        "camera de re"
-    ],
-
-    "🍳 Cozinha": [
-        "air fryer",
-        "liquidificador",
-        "panela",
-        "eletrodomestico cozinha"
-    ],
-
-    "👕 Moda": [
-        "tenis masculino",
-        "tenis feminino",
-        "camiseta masculina",
-        "vestido feminino"
-    ]
-}
-
-
-# ============================================================
-# BUSCA AUTOMÁTICA
-# ============================================================
-
-SCAN_QUERIES = {
-    "📱 Celulares": [
-        "smartphone",
-        "iphone",
-        "samsung galaxy"
-    ],
-
-    "🌸 Perfumes": [
-        "perfume masculino",
-        "perfume feminino",
-        "perfume importado"
-    ],
-
-    "🏋️ Academia": [
-        "roupa academia",
-        "tenis corrida",
-        "whey protein"
-    ],
-
-    "🔧 Ferramentas": [
-        "furadeira",
-        "parafusadeira",
-        "chave de impacto"
-    ],
-
-    "🎧 Eletrônicos": [
-        "fone bluetooth",
-        "smartwatch",
-        "caixa de som bluetooth"
-    ],
-
-    "🏠 Casa": [
-        "aspirador",
-        "ventilador",
-        "liquidificador"
-    ],
-
-    "🚗 Automotivo": [
-        "som automotivo",
-        "acessorios automotivos",
-        "camera de re"
-    ],
-
-    "🍳 Cozinha": [
-        "air fryer",
-        "liquidificador",
-        "panela"
-    ],
-
-    "👕 Moda": [
-        "tenis masculino",
-        "tenis feminino",
-        "camiseta masculina"
-    ]
-}
-
-
-# ============================================================
-# PERFIS
-# ============================================================
-
-PROFILES = {
-
-    "celular": {
-        "positive": [
-            "smartphone",
-            "celular",
-            "iphone",
-            "galaxy",
-            "samsung",
-            "motorola",
-            "xiaomi",
-            "redmi",
-            "poco",
-            "realme",
-            "infinix",
-            "tecno",
-            "oneplus",
-            "pixel"
+CATEGORIES = {
+    "celulares": {
+        "name": "📱 Celulares",
+        "queries": [
+            "celular smartphone",
+            "smartphone 5g",
+            "celular android",
         ],
-        "negative": [
-            "capa",
-            "capinha",
-            "pelicula",
-            "película",
-            "suporte",
-            "ventosa",
-            "carregador",
-            "cabo",
-            "adaptador",
-            "case",
-            "pelicula 3d",
-            "película 3d"
-        ]
     },
-
-    "perfume": {
-        "positive": [
-            "perfume",
-            "eau de parfum",
-            "eau de toilette",
-            "colonia",
-            "colônia"
+    "perfumes": {
+        "name": "🌸 Perfumes",
+        "queries": [
+            "perfume feminino",
+            "perfume masculino",
+            "perfume importado",
         ],
-        "negative": [
-            "frasco vazio",
-            "amostra",
-            "sache",
-            "sachê"
-        ]
     },
-
     "academia": {
-        "positive": [
-            "roupa",
-            "academia",
-            "fitness",
-            "legging",
-            "short",
-            "camiseta",
-            "top",
-            "tenis",
-            "tênis",
-            "corrida",
-            "whey",
-            "proteina",
-            "proteína",
-            "creatina",
-            "suplemento",
-            "bcaa",
-            "pre treino",
-            "pré treino"
+        "name": "🏋️ Academia",
+        "queries": [
+            "tenis academia",
+            "roupa academia",
+            "suplemento academia",
         ],
-        "negative": [
-            "halter",
-            "halteres",
-            "anilha",
-            "barra",
-            "banco",
-            "estacao",
-            "estação",
-            "esteira",
-            "bicicleta ergometrica",
-            "bicicleta ergométrica",
-            "aparelho musculacao",
-            "aparelho musculação"
-        ]
     },
-
-    "ferramenta": {
-        "positive": [
-            "furadeira",
-            "parafusadeira",
-            "chave",
-            "ferramenta",
+    "ferramentas": {
+        "name": "🔧 Ferramentas",
+        "queries": [
+            "furadeira parafusadeira",
             "kit ferramentas",
-            "serra",
-            "esmerilhadeira",
-            "martelete",
-            "impacto"
+            "ferramentas eletricas",
         ],
-        "negative": [
-            "brinquedo",
-            "miniatura",
-            "chaveiro"
-        ]
     },
-
-    "eletronico": {
-        "positive": [
-            "fone",
-            "headset",
+    "eletronicos": {
+        "name": "🎧 Eletrônicos",
+        "queries": [
+            "fone bluetooth",
+            "caixa de som bluetooth",
             "smartwatch",
-            "relogio inteligente",
-            "relógio inteligente",
-            "caixa de som",
-            "mouse",
-            "teclado",
-            "bluetooth"
         ],
-        "negative": []
     },
-
     "casa": {
-        "positive": [
-            "aspirador",
-            "liquidificador",
-            "ventilador",
-            "organizador",
+        "name": "🏠 Casa",
+        "queries": [
+            "organizador casa",
             "utilidades domesticas",
-            "utilidades domésticas"
+            "produto casa",
         ],
-        "negative": []
     },
-
     "automotivo": {
-        "positive": [
-            "automotivo",
-            "carro",
-            "veicular",
-            "automovel",
-            "automóvel",
-            "som automotivo",
-            "camera de re",
-            "câmera de ré",
-            "tapete carro"
+        "name": "🚗 Automotivo",
+        "queries": [
+            "acessorios automotivos",
+            "produto automotivo",
+            "acessorio carro",
         ],
-        "negative": []
     },
-
     "cozinha": {
-        "positive": [
+        "name": "🍳 Cozinha",
+        "queries": [
+            "utensilios cozinha",
             "air fryer",
-            "fritadeira",
-            "liquidificador",
-            "panela",
-            "cozinha",
-            "eletrodomestico",
-            "eletrodoméstico"
+            "produto cozinha",
         ],
-        "negative": []
     },
-
     "moda": {
-        "positive": [
-            "tenis",
-            "tênis",
-            "camiseta",
-            "camisa",
-            "calca",
-            "calça",
-            "vestido",
-            "roupa",
-            "moda",
-            "jaqueta"
+        "name": "👕 Moda",
+        "queries": [
+            "tenis masculino",
+            "tenis feminino",
+            "roupa masculina",
         ],
-        "negative": []
-    }
+    },
 }
 
+# ============================================================
+# FILTROS ACADEMIA
+# ============================================================
+
+ACADEMIA_BLOCK = [
+    "halter",
+    "halteres",
+    "anilha",
+    "anilhas",
+    "barra olimpica",
+    "barra reta",
+    "barra musculacao",
+    "banco supino",
+    "estacao de musculacao",
+    "torre de musculacao",
+    "rack",
+    "smith",
+    "kettlebell",
+    "peso academia",
+    "kit peso",
+    "estacao fitness",
+]
 
 # ============================================================
-# BANCO
+# ESTADO
 # ============================================================
+
+STATE = {
+    "access_token": None,
+    "refresh_token": None,
+    "expires_at": 0,
+    "user": None,
+}
+
+OAUTH_PENDING = {}
+
+SCAN_STATE = {
+    "running": False,
+    "finished": False,
+    "progress": 0,
+    "message": "",
+    "offers": [],
+    "coupons": [],
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+}
+
+STATE_LOCK = threading.Lock()
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+
+def db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = db()
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS salvos (
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ofertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            titulo TEXT,
-            preco REAL,
-            desconto REAL,
-            frete REAL,
-            total REAL,
-            link TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            product_id TEXT,
+            item_id TEXT,
+            title TEXT,
+            category TEXT,
+            price REAL,
+            seller_discount REAL,
+            coupon_code TEXT,
+            coupon_percent REAL,
+            coupon_min REAL,
+            coupon_max REAL,
+            coupon_discount REAL,
+            estimated_price REAL,
+            shipping REAL,
+            estimated_total REAL,
+            free_shipping INTEGER,
+            url TEXT,
             seller_id TEXT,
-            produto_id TEXT,
-            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            affiliate_url TEXT
         )
-    """)
+        """
+    )
 
     conn.commit()
     conn.close()
@@ -411,1818 +243,1517 @@ def init_db():
 
 init_db()
 
-
 # ============================================================
-# UTILIDADES
+# HELPERS
 # ============================================================
-
-def normalizar(texto):
-    if texto is None:
-        return ""
-
-    texto = str(texto).lower()
-
-    mapa = {
-        "á": "a",
-        "à": "a",
-        "ã": "a",
-        "â": "a",
-        "é": "e",
-        "ê": "e",
-        "í": "i",
-        "ó": "o",
-        "ô": "o",
-        "õ": "o",
-        "ú": "u",
-        "ç": "c"
-    }
-
-    for a, b in mapa.items():
-        texto = texto.replace(a, b)
-
-    return texto
 
 
 def money(value):
     try:
-        return float(value or 0)
+        value = float(value or 0)
     except Exception:
-        return 0.0
+        value = 0
+
+    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def get_token():
-    return session.get("ml_access_token")
+def safe_float(value, default=0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
 
 
-def api_headers():
-    headers = {
-        "Accept": "application/json"
+def normalize_text(text):
+    if not text:
+        return ""
+
+    text = str(text).lower()
+
+    replacements = {
+        "á": "a",
+        "à": "a",
+        "ã": "a",
+        "â": "a",
+        "ä": "a",
+        "é": "e",
+        "è": "e",
+        "ê": "e",
+        "ë": "e",
+        "í": "i",
+        "ì": "i",
+        "î": "i",
+        "ï": "i",
+        "ó": "o",
+        "ò": "o",
+        "õ": "o",
+        "ô": "o",
+        "ö": "o",
+        "ú": "u",
+        "ù": "u",
+        "û": "u",
+        "ü": "u",
+        "ç": "c",
     }
 
-    token = get_token()
+    for a, b in replacements.items():
+        text = text.replace(a, b)
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
+def ml_request(method, url, **kwargs):
+    """
+    Request helper.
+    Tenta token atual.
+    Se receber 401, tenta refresh.
+    """
+
+    token = STATE.get("access_token")
+
+    headers = kwargs.pop("headers", {}) or {}
+    headers = dict(headers)
 
     if token:
-        headers["Authorization"] = (
-            f"Bearer {token}"
-        )
-
-    return headers
-
-
-def ml_get(path, params=None):
+        headers["Authorization"] = f"Bearer {token}"
 
     try:
-        return HTTP.get(
-            ML_API + path,
-            headers=api_headers(),
-            params=params or {},
-            timeout=REQUEST_TIMEOUT
+        response = session.request(
+            method,
+            url,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+            **kwargs,
         )
-
-    except requests.RequestException:
+    except Exception:
         return None
 
+    if response.status_code == 401 and STATE.get("refresh_token"):
+        if refresh_access_token():
+            headers["Authorization"] = f"Bearer {STATE['access_token']}"
 
-# ============================================================
-# PERFIL
-# ============================================================
+            try:
+                response = session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT,
+                    **kwargs,
+                )
+            except Exception:
+                return None
 
-def detectar_perfil_busca(query):
-
-    q = normalizar(query)
-
-    if any(x in q for x in [
-        "celular",
-        "smartphone",
-        "iphone",
-        "galaxy",
-        "motorola",
-        "xiaomi",
-        "redmi",
-        "poco"
-    ]):
-        return "celular"
-
-    if any(x in q for x in [
-        "perfume",
-        "colonia"
-    ]):
-        return "perfume"
-
-    if any(x in q for x in [
-        "academia",
-        "whey",
-        "creatina",
-        "fitness",
-        "suplemento"
-    ]):
-        return "academia"
-
-    if any(x in q for x in [
-        "furadeira",
-        "parafusadeira",
-        "ferramenta",
-        "esmerilhadeira",
-        "martelete"
-    ]):
-        return "ferramenta"
-
-    if any(x in q for x in [
-        "fone",
-        "headset",
-        "airpods",
-        "earbuds",
-        "smartwatch",
-        "mouse",
-        "teclado",
-        "caixa de som"
-    ]):
-        return "eletronico"
-
-    if any(x in q for x in [
-        "aspirador",
-        "ventilador",
-        "liquidificador",
-        "organizador",
-        "casa"
-    ]):
-        return "casa"
-
-    if any(x in q for x in [
-        "automotivo",
-        "som automotivo",
-        "camera de re",
-        "tapete carro"
-    ]):
-        return "automotivo"
-
-    if any(x in q for x in [
-        "air fryer",
-        "fritadeira",
-        "panela",
-        "cozinha"
-    ]):
-        return "cozinha"
-
-    if any(x in q for x in [
-        "tenis",
-        "tênis",
-        "camiseta",
-        "vestido",
-        "roupa"
-    ]):
-        return "moda"
-
-    return None
-
-
-def calcular_relevancia(
-    titulo,
-    query=None,
-    perfil=None
-):
-
-    texto = normalizar(titulo)
-
-    if not perfil and query:
-        perfil = detectar_perfil_busca(
-            query
-        )
-
-    if not perfil:
-        return 100
-
-    dados = PROFILES.get(
-        perfil
-    )
-
-    if not dados:
-        return 100
-
-    score = 0
-
-    for termo in dados["positive"]:
-
-        if normalizar(termo) in texto:
-            score += 25
-
-    for termo in dados["negative"]:
-
-        if normalizar(termo) in texto:
-            score -= 60
-
-    if query and normalizar(query) in texto:
-        score += 30
-
-    return score
-
-
-def produto_relevante(
-    titulo,
-    query=None,
-    perfil=None
-):
-
-    score = calcular_relevancia(
-        titulo,
-        query,
-        perfil
-    )
-
-    if perfil in PROFILES:
-        return score > 0
-
-    return True
+    return response
 
 
 # ============================================================
-# OAUTH
+# OAUTH / PKCE
 # ============================================================
 
-def gerar_pkce():
 
-    verifier = secrets.token_urlsafe(
-        64
-    )
+def pkce_pair():
+    verifier = secrets.token_urlsafe(64)
 
-    digest = hashlib.sha256(
-        verifier.encode("utf-8")
-    ).digest()
+    digest = hashlib.sha256(verifier.encode()).digest()
 
     challenge = (
-        base64.urlsafe_b64encode(
-            digest
-        )
-        .decode("utf-8")
+        base64.urlsafe_b64encode(digest)
+        .decode()
         .rstrip("=")
     )
 
     return verifier, challenge
 
 
-@app.route("/mercadolivre/login")
-def ml_login():
+@app.route("/mercadolivre/conectar")
+def mercadolivre_conectar():
 
-    if not CLIENT_ID:
-        return (
-            "ML_CLIENT_ID não configurado.",
-            500
-        )
+    if not ML_CLIENT_ID:
+        return "ML_CLIENT_ID não configurado.", 500
 
-    if not CLIENT_SECRET:
-        return (
-            "ML_CLIENT_SECRET não configurado.",
-            500
-        )
+    state = secrets.token_urlsafe(32)
+    verifier, challenge = pkce_pair()
 
-    verifier, challenge = gerar_pkce()
-
-    state = secrets.token_urlsafe(
-        32
-    )
-
-    session.permanent = True
-
-    session["oauth_state"] = state
-    session["pkce_verifier"] = verifier
+    OAUTH_PENDING[state] = {
+        "verifier": verifier,
+        "created": time.time(),
+    }
 
     params = {
         "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "client_id": ML_CLIENT_ID,
+        "redirect_uri": ML_REDIRECT_URI,
         "state": state,
         "code_challenge": challenge,
-        "code_challenge_method": "S256"
+        "code_challenge_method": "S256",
     }
 
     return redirect(
-        ML_AUTH
-        + "?"
-        + urlencode(params)
+        ML_AUTH + "?" + urlencode(params)
     )
 
 
 @app.route("/mercadolivre/callback")
-def ml_callback():
+def mercadolivre_callback():
 
-    error = request.args.get(
-        "error"
-    )
+    error = request.args.get("error")
 
     if error:
+        return (
+            f"""
+            <h2>Erro no Mercado Livre</h2>
+            <p>{error}</p>
+            <a href="/">Voltar</a>
+            """,
+            400,
+        )
 
-        return jsonify({
-            "ok": False,
-            "erro": error,
-            "descricao":
-                request.args.get(
-                    "error_description"
-                )
-        }), 400
+    code = request.args.get("code")
+    state = request.args.get("state")
 
-    code = request.args.get(
-        "code"
-    )
+    if not code or not state:
+        return (
+            "Código ou state ausente.",
+            400,
+        )
 
-    state = request.args.get(
-        "state"
-    )
+    pending = OAUTH_PENDING.pop(state, None)
 
-    if not code:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Código de autorização não recebido."
-        }), 400
-
-    if state != session.get(
-        "oauth_state"
-    ):
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "State OAuth inválido."
-        }), 400
-
-    verifier = session.get(
-        "pkce_verifier"
-    )
-
-    if not verifier:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "PKCE não encontrado."
-        }), 400
+    if not pending:
+        return (
+            "Sessão OAuth expirada ou inválida.",
+            400,
+        )
 
     data = {
-        "grant_type":
-            "authorization_code",
-        "client_id":
-            CLIENT_ID,
-        "client_secret":
-            CLIENT_SECRET,
-        "code":
-            code,
-        "redirect_uri":
-            REDIRECT_URI,
-        "code_verifier":
-            verifier
+        "grant_type": "authorization_code",
+        "client_id": ML_CLIENT_ID,
+        "client_secret": ML_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": ML_REDIRECT_URI,
+        "code_verifier": pending["verifier"],
     }
 
     try:
-
-        response = HTTP.post(
+        response = session.post(
             ML_TOKEN,
             data=data,
-            timeout=REQUEST_TIMEOUT
+            timeout=REQUEST_TIMEOUT,
         )
-
-        result = response.json()
-
     except Exception as e:
+        return f"Erro ao solicitar token: {e}", 500
 
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Falha ao obter token.",
-            "detalhes":
-                str(e)
-        }), 500
-
-    if response.status_code >= 400:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Mercado Livre recusou o token.",
-            "status":
-                response.status_code,
-            "resposta":
-                result
-        }), response.status_code
-
-    access_token = result.get(
-        "access_token"
-    )
-
-    if not access_token:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Access token não retornado."
-        }), 500
-
-    session.permanent = True
-
-    session["ml_access_token"] = (
-        access_token
-    )
-
-    session["ml_refresh_token"] = (
-        result.get(
-            "refresh_token"
+    if response.status_code != 200:
+        return (
+            f"""
+            <h2>Erro ao conectar Mercado Livre</h2>
+            <pre>{response.text}</pre>
+            <a href="/">Voltar</a>
+            """,
+            400,
         )
-    )
 
-    session["ml_user_id"] = (
-        result.get(
-            "user_id"
-        )
-    )
+    token_data = response.json()
 
-    session.pop(
-        "oauth_state",
-        None
-    )
+    STATE["access_token"] = token_data.get("access_token")
+    STATE["refresh_token"] = token_data.get("refresh_token")
 
-    session.pop(
-        "pkce_verifier",
-        None
-    )
+    expires = int(token_data.get("expires_in", 21600))
+
+    STATE["expires_at"] = time.time() + expires - 120
+
+    get_me()
 
     return redirect("/")
 
 
-@app.route("/mercadolivre/logout")
-def ml_logout():
-
-    session.clear()
-
-    return redirect("/")
-
-
-# ============================================================
-# STATUS
-# ============================================================
-
-@app.route("/api/mercadolivre/status")
-def ml_status():
-
-    token = get_token()
-
-    if not token:
-
-        return jsonify({
-            "conectado": False,
-            "usuario": None
-        })
-
-    response = ml_get(
-        "/users/me"
-    )
-
-    if response is None:
-
-        return jsonify({
-            "conectado": False,
-            "usuario": None
-        })
-
-    if response.status_code != 200:
-
-        session.pop(
-            "ml_access_token",
-            None
-        )
-
-        return jsonify({
-            "conectado": False,
-            "usuario": None
-        })
-
-    try:
-        user = response.json()
-    except Exception:
-        user = {}
-
-    return jsonify({
-        "conectado": True,
-        "usuario": {
-            "id": user.get("id"),
-            "nickname": user.get("nickname"),
-            "country_id":
-                user.get("country_id")
-        }
-    })
-
-
-@app.route("/health")
-def health():
-
-    return jsonify({
-        "status": "ok",
-        "app": "Cacador de Ofertas",
-        "mercadolivre":
-            bool(get_token())
-    })
-
-
-@app.route("/mercadolivre/diagnostico")
-def diagnostico():
-
-    response = ml_get(
-        "/users/me"
-    )
-
-    if response is None:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Falha de conexão."
-        }), 500
-
-    try:
-        data = response.json()
-    except Exception:
-        data = response.text
-
-    return jsonify({
-        "ok": True,
-        "status":
-            response.status_code,
-        "usuario":
-            data
-    })
-
-
-# ============================================================
-# BUSCADOR DE PRODUTOS
-# ============================================================
-
-def search_products(query):
-
-    response = ml_get(
-        "/products/search",
-        {
-            "site_id":
-                SITE_ID,
-            "q":
-                query,
-            "limit":
-                MAX_PRODUCTS_PER_QUERY,
-            "offset":
-                0
-        }
-    )
-
-    if response is None:
-        return []
-
-    if response.status_code != 200:
-        return []
-
-    try:
-        data = response.json()
-    except Exception:
-        return []
-
-    results = data.get(
-        "results",
-        []
-    )
-
-    if not isinstance(
-        results,
-        list
-    ):
-        return []
-
-    produtos = []
-
-    for item in results:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        product_id = (
-            item.get("id")
-            or item.get("product_id")
-        )
-
-        if not product_id:
-            continue
-
-        titulo = (
-            item.get("name")
-            or item.get("title")
-            or ""
-        )
-
-        produtos.append({
-            "id":
-                product_id,
-            "titulo":
-                titulo,
-            "domain_id":
-                item.get("domain_id"),
-            "permalink":
-                item.get("permalink")
-        })
-
-    return produtos
-
-
-# ============================================================
-# PRODUTO
-# ============================================================
-
-def get_product(product_id):
-
-    response = ml_get(
-        f"/products/{product_id}"
-    )
-
-    if response is None:
-        return None
-
-    if response.status_code != 200:
-        return None
-
-    try:
-        return response.json()
-    except Exception:
-        return None
-
-
-# ============================================================
-# VENDEDORES DO PRODUTO
-# ============================================================
-
-def get_product_items(product_id):
-
-    response = ml_get(
-        f"/products/{product_id}/items"
-    )
-
-    if response is None:
-        return []
-
-    if response.status_code != 200:
-        return []
-
-    try:
-        data = response.json()
-    except Exception:
-        return []
-
-    results = data.get(
-        "results",
-        []
-    )
-
-    if not isinstance(
-        results,
-        list
-    ):
-        return []
-
-    return results[
-        :MAX_ITEMS_PER_PRODUCT
-    ]
-
-
-# ============================================================
-# OFERTA
-# ============================================================
-
-def montar_oferta(
-    item,
-    product=None,
-    product_title="",
-    query="",
-    categoria=""
-):
-
-    if not isinstance(
-        item,
-        dict
-    ):
-        return None
-
-    titulo = (
-        item.get("title")
-        or product_title
-        or ""
-    )
-
-    if not titulo and product:
-
-        titulo = (
-            product.get("name")
-            or product.get("title")
-            or ""
-        )
-
-    if not titulo:
-
-        titulo = (
-            "Produto Mercado Livre"
-        )
-
-    preco = money(
-        item.get("price")
-    )
-
-    if preco <= 0 and product:
-
-        buy_box = product.get(
-            "buy_box_winner"
-        )
-
-        if isinstance(
-            buy_box,
-            dict
-        ):
-
-            preco = money(
-                buy_box.get(
-                    "price"
-                )
-            )
-
-    if preco <= 0:
-        return None
-
-    preco_original = money(
-        item.get(
-            "original_price"
-        )
-    )
-
-    if (
-        preco_original <= 0
-        and product
-    ):
-
-        preco_original = money(
-            product.get(
-                "original_price"
-            )
-        )
-
-    desconto = 0
-
-    if preco_original > preco:
-
-        desconto = round(
-            (
-                (
-                    preco_original
-                    - preco
-                )
-                /
-                preco_original
-            )
-            * 100,
-            2
-        )
-
-    shipping = item.get(
-        "shipping"
-    ) or {}
-
-    if not isinstance(
-        shipping,
-        dict
-    ):
-        shipping = {}
-
-    frete_gratis = bool(
-        shipping.get(
-            "free_shipping"
-        )
-    )
-
-    frete = money(
-        shipping.get(
-            "cost"
-        )
-    )
-
-    if frete_gratis:
-        frete = 0
-
-    total = round(
-        preco + frete,
-        2
-    )
-
-    seller_id = (
-        item.get(
-            "seller_id"
-        )
-        or ""
-    )
-
-    item_id = (
-        item.get(
-            "item_id"
-        )
-        or item.get(
-            "id"
-        )
-        or ""
-    )
-
-    user_product_id = (
-        item.get(
-            "user_product_id"
-        )
-        or ""
-    )
-
-    product_id = ""
-
-    if product:
-
-        product_id = (
-            product.get(
-                "id"
-            )
-            or ""
-        )
-
-    link = (
-        item.get(
-            "permalink"
-        )
-        or item.get(
-            "link"
-        )
-        or ""
-    )
-
-    if not link and item_id:
-
-        link = (
-            "https://www.mercadolivre.com.br/p/"
-            + str(item_id)
-        )
-
-    perfil = detectar_perfil_busca(
-        query
-    )
-
-    relevancia = calcular_relevancia(
-        titulo,
-        query,
-        perfil
-    )
-
-    if (
-        perfil
-        and not produto_relevante(
-            titulo,
-            query,
-            perfil
-        )
-    ):
-        return None
-
-    oferta = {
-        "titulo":
-            titulo,
-        "preco":
-            preco,
-        "preco_original":
-            preco_original,
-        "desconto":
-            desconto,
-        "frete":
-            frete,
-        "frete_gratis":
-            frete_gratis,
-        "total":
-            total,
-        "seller_id":
-            str(seller_id),
-        "item_id":
-            item_id,
-        "product_id":
-            product_id,
-        "user_product_id":
-            user_product_id,
-        "link":
-            link,
-        "query":
-            query,
-        "categoria":
-            categoria,
-        "relevancia":
-            relevancia,
-        "condicao":
-            item.get(
-                "condition",
-                "new"
-            )
+def refresh_access_token():
+    refresh = STATE.get("refresh_token")
+
+    if not refresh:
+        return False
+
+    data = {
+        "grant_type": "refresh_token",
+        "client_id": ML_CLIENT_ID,
+        "client_secret": ML_CLIENT_SECRET,
+        "refresh_token": refresh,
     }
 
-    oferta[
-        "score_oferta"
-    ] = score_oferta(
-        oferta
+    try:
+        response = session.post(
+            ML_TOKEN,
+            data=data,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception:
+        return False
+
+    if response.status_code != 200:
+        return False
+
+    data = response.json()
+
+    STATE["access_token"] = data.get(
+        "access_token",
+        STATE.get("access_token"),
     )
 
-    return oferta
-
-
-# ============================================================
-# SCORE
-# ============================================================
-
-def score_oferta(oferta):
-
-    score = 0
-
-    desconto = money(
-        oferta.get(
-            "desconto"
-        )
+    STATE["refresh_token"] = data.get(
+        "refresh_token",
+        STATE.get("refresh_token"),
     )
 
-    total = money(
-        oferta.get(
-            "total"
-        )
+    STATE["expires_at"] = (
+        time.time()
+        + int(data.get("expires_in", 21600))
+        - 120
     )
 
-    relevancia = money(
-        oferta.get(
-            "relevancia"
-        )
+    return True
+
+
+def get_me():
+
+    if not STATE.get("access_token"):
+        return None
+
+    response = ml_request(
+        "GET",
+        f"{ML_API}/users/me",
     )
 
-    score += min(
-        relevancia,
-        120
-    )
-
-    if desconto >= 50:
-        score += 55
-
-    elif desconto >= 30:
-        score += 40
-
-    elif desconto >= 20:
-        score += 30
-
-    elif desconto >= 10:
-        score += 18
-
-    elif desconto >= 5:
-        score += 8
-
-    if oferta.get(
-        "frete_gratis"
-    ):
-        score += 25
-
-    if total <= 50:
-        score += 8
-
-    elif total <= 100:
-        score += 6
-
-    elif total <= 300:
-        score += 4
-
-    return round(
-        score,
-        2
-    )
-
-
-# ============================================================
-# SCAN DE UMA QUERY
-# ============================================================
-
-def scan_query(
-    query,
-    categoria="",
-    limite_tempo=CATEGORY_TIME_LIMIT
-):
-
-    inicio = time.time()
-
-    produtos = search_products(
-        query
-    )
-
-    if not produtos:
-        return []
-
-    ofertas = []
-
-    processados = set()
-
-    for produto_ref in produtos:
-
-        if (
-            time.time()
-            - inicio
-        ) >= limite_tempo:
-            break
-
-        product_id = produto_ref.get(
-            "id"
-        )
-
-        if not product_id:
-            continue
-
-        if product_id in processados:
-            continue
-
-        processados.add(
-            product_id
-        )
-
-        titulo = (
-            produto_ref.get(
-                "titulo"
-            )
-            or ""
-        )
-
-        perfil = detectar_perfil_busca(
-            query
-        )
-
-        if (
-            perfil
-            and not produto_relevante(
-                titulo,
-                query,
-                perfil
-            )
-        ):
-            continue
-
-        # IMPORTANTE:
-        # Não fazemos /products/{id} para
-        # todos os produtos.
-        #
-        # Isso reduziu bastante a quantidade
-        # de chamadas e deixa a caça mais rápida.
-        product = {
-            "id":
-                product_id,
-            "name":
-                titulo
-        }
-
-        items = get_product_items(
-            product_id
-        )
-
-        if not items:
-            continue
-
-        for item in items:
-
-            if (
-                time.time()
-                - inicio
-            ) >= limite_tempo:
-                break
-
-            oferta = montar_oferta(
-                item=item,
-                product=product,
-                product_title=titulo,
-                query=query,
-                categoria=categoria
-            )
-
-            if oferta:
-
-                ofertas.append(
-                    oferta
-                )
-
-    return ofertas
-
-
-# ============================================================
-# DEDUPLICAÇÃO
-# ============================================================
-
-def deduplicar_ofertas(
-    ofertas
-):
-
-    melhores = {}
-
-    for oferta in ofertas:
-
-        product_id = str(
-            oferta.get(
-                "product_id"
-            )
-            or ""
-        )
-
-        seller_id = str(
-            oferta.get(
-                "seller_id"
-            )
-            or ""
-        )
-
-        titulo = normalizar(
-            oferta.get(
-                "titulo",
-                ""
-            )
-        )
-
-        produto_chave = (
-            product_id
-            if product_id
-            else titulo[:150]
-        )
-
-        chave = (
-            produto_chave
-            + "|"
-            + seller_id
-        )
-
-        atual = melhores.get(
-            chave
-        )
-
-        if atual is None:
-
-            melhores[chave] = oferta
-
-        else:
-
-            if (
-                oferta.get(
-                    "total",
-                    999999
-                )
-                <
-                atual.get(
-                    "total",
-                    999999
-                )
-            ):
-
-                melhores[chave] = oferta
-
-    resultado = list(
-        melhores.values()
-    )
-
-    for oferta in resultado:
-
-        oferta[
-            "score_oferta"
-        ] = score_oferta(
-            oferta
-        )
-
-    resultado.sort(
-        key=lambda x: (
-            -float(
-                x.get(
-                    "score_oferta",
-                    0
-                )
-            ),
-            float(
-                x.get(
-                    "total",
-                    999999
-                )
-            )
-        )
-    )
-
-    return resultado
-
-
-# ============================================================
-# BUSCA MANUAL
-# ============================================================
-
-def buscar_manual(query):
-
-    resultados = scan_query(
-        query=query,
-        categoria="Busca"
-    )
-
-    resultados = deduplicar_ofertas(
-        resultados
-    )
-
-    return resultados[:80]
-
-
-# ============================================================
-# CAÇAR CATEGORIA
-# ============================================================
-
-def cacar_categoria(categoria):
-
-    consultas = SCAN_QUERIES.get(
-        categoria,
-        CATALOG.get(
-            categoria,
-            []
-        )
-    )
-
-    consultas = consultas[
-        :MAX_QUERIES_PER_CATEGORY
-    ]
-
-    inicio = time.time()
-
-    todos = []
-
-    for query in consultas:
-
-        restante = (
-            CATEGORY_TIME_LIMIT
-            -
-            (
-                time.time()
-                - inicio
-            )
-        )
-
-        if restante <= 0:
-            break
-
-        try:
-
-            resultados = scan_query(
-                query=query,
-                categoria=categoria,
-                limite_tempo=restante
-            )
-
-            todos.extend(
-                resultados
-            )
-
-        except Exception:
-
-            continue
-
-        # Não deixa uma categoria
-        # consumir tempo demais.
-        if (
-            time.time()
-            - inicio
-        ) >= CATEGORY_TIME_LIMIT:
-            break
-
-    todos = deduplicar_ofertas(
-        todos
-    )
-
-    return todos[
-        :MAX_OFFERS_PER_CATEGORY
-    ]
-
-
-# ============================================================
-# API BUSCAR
-# ============================================================
-
-@app.route("/api/buscar")
-def api_buscar():
-
-    query = request.args.get(
-        "q",
-        ""
-    ).strip()
-
-    if not query:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Digite uma busca."
-        }), 400
-
-    inicio = time.time()
+    if response is None:
+        return None
+
+    if response.status_code != 200:
+        return None
 
     try:
+        data = response.json()
+    except Exception:
+        return None
 
-        resultados = buscar_manual(
-            query
-        )
+    STATE["user"] = data
 
-    except Exception as e:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                str(e)
-        }), 500
-
-    return jsonify({
-        "ok": True,
-        "query":
-            query,
-        "perfil":
-            detectar_perfil_busca(
-                query
-            ),
-        "tempo":
-            round(
-                time.time()
-                - inicio,
-                2
-            ),
-        "total":
-            len(resultados),
-        "resultados":
-            resultados
-    })
-
-
-# ============================================================
-# API CAÇAR CATEGORIA
-# ============================================================
-
-@app.route("/api/cacar")
-def api_cacar():
-
-    categoria = request.args.get(
-        "categoria",
-        ""
-    ).strip()
-
-    if categoria not in CATALOG:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Categoria inválida."
-        }), 400
-
-    inicio = time.time()
-
-    try:
-
-        resultados = cacar_categoria(
-            categoria
-        )
-
-        return jsonify({
-            "ok": True,
-            "categoria":
-                categoria,
-            "tempo":
-                round(
-                    time.time()
-                    - inicio,
-                    2
-                ),
-            "total":
-                len(resultados),
-            "resultados":
-                resultados
-        })
-
-    except Exception as e:
-
-        return jsonify({
-            "ok": False,
-            "categoria":
-                categoria,
-            "erro":
-                str(e),
-            "resultados":
-                []
-        }), 500
+    return data
 
 
 # ============================================================
 # CUPONS
 # ============================================================
 
-def buscar_cupons():
+COUPON_URLS = [
+    "https://www.mercadolivre.com.br/l/promocoes",
+    "https://www.mercadolivre.com.br/ofertas/cupons",
+    "https://www.mercadolivre.com.br/l/descontaco-cupons",
+]
 
-    try:
 
-        response = HTTP.get(
-            "https://www.mercadolivre.com.br/l/promocoes",
-            headers={
-                "User-Agent":
-                    "Mozilla/5.0"
+def clean_html(text):
+    text = re.sub(
+        r"<script.*?</script>",
+        " ",
+        text,
+        flags=re.I | re.S,
+    )
+
+    text = re.sub(
+        r"<style.*?</style>",
+        " ",
+        text,
+        flags=re.I | re.S,
+    )
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&amp;", "&")
+
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+def parse_coupon_text(text):
+    """
+    Tenta identificar códigos e condições em páginas públicas
+    de promoções do Mercado Livre.
+
+    Não considera o cupom como garantidamente elegível para
+    qualquer produto.
+    """
+
+    text = clean_html(text)
+
+    coupons = {}
+
+    # Formatos comuns:
+    # Cupom ABC123
+    # CUPOM ABC123
+    # Código ABC123
+    patterns = [
+        r"(?:cupom|codigo|código)\s+([A-Z0-9_-]{4,30})",
+        r"\b([A-Z0-9][A-Z0-9_-]{5,24})\b",
+    ]
+
+    candidates = []
+
+    for pattern in patterns:
+        try:
+            candidates.extend(
+                re.findall(
+                    pattern,
+                    text,
+                    flags=re.I,
+                )
+            )
+        except Exception:
+            pass
+
+    stopwords = {
+        "CUPOM",
+        "CODIGO",
+        "CÓDIGO",
+        "MERCADO",
+        "LIVRE",
+        "DESCONTO",
+        "PROMOCAO",
+        "PROMOÇÃO",
+        "TERMOS",
+        "CONDICOES",
+        "CONDIÇÕES",
+        "VALIDO",
+        "VÁLIDO",
+        "FRETE",
+        "GRATIS",
+        "GRÁTIS",
+        "PRODUTOS",
+        "COMPRA",
+        "CUPONS",
+    }
+
+    for code in candidates:
+
+        code = str(code).upper().strip()
+
+        if code in stopwords:
+            continue
+
+        if len(code) < 5 or len(code) > 25:
+            continue
+
+        # Evita palavras normais gigantes capturadas como código.
+        if not re.search(r"[0-9]", code):
+            continue
+
+        coupons.setdefault(
+            code,
+            {
+                "code": code,
+                "percent": 0,
+                "min_purchase": 0,
+                "max_discount": 0,
+                "source": "Mercado Livre",
+                "raw": "",
             },
-            timeout=8
         )
 
+    # Procura blocos ao redor dos códigos.
+    for code, coupon in coupons.items():
+
+        pos = text.upper().find(code)
+
+        if pos < 0:
+            continue
+
+        block = text[
+            max(0, pos - 350):
+            min(len(text), pos + 800)
+        ]
+
+        coupon["raw"] = block
+
+        # Percentual
+        percent_match = re.search(
+            r"(?:até\s*)?(\d{1,2})\s*%",
+            block,
+            flags=re.I,
+        )
+
+        if percent_match:
+            coupon["percent"] = safe_float(
+                percent_match.group(1)
+            )
+
+        # Valores em reais
+        values = re.findall(
+            r"R\$\s*([\d\.,]+)",
+            block,
+            flags=re.I,
+        )
+
+        parsed_values = []
+
+        for value in values:
+            value = value.replace(".", "").replace(",", ".")
+
+            try:
+                parsed_values.append(float(value))
+            except Exception:
+                pass
+
+        # Mínimo
+        minimum_match = re.search(
+            r"(?:compra|compras|partir de|a partir)\s*(?:de)?\s*R\$\s*([\d\.,]+)",
+            block,
+            flags=re.I,
+        )
+
+        if minimum_match:
+            value = (
+                minimum_match.group(1)
+                .replace(".", "")
+                .replace(",", ".")
+            )
+
+            coupon["min_purchase"] = safe_float(value)
+
+        # Máximo
+        maximum_match = re.search(
+            r"(?:máximo|maximo|desconto máximo|desconto maximo)"
+            r".{0,80}?R\$\s*([\d\.,]+)",
+            block,
+            flags=re.I,
+        )
+
+        if maximum_match:
+            value = (
+                maximum_match.group(1)
+                .replace(".", "")
+                .replace(",", ".")
+            )
+
+            coupon["max_discount"] = safe_float(value)
+
+        # Fallback:
+        # se temos percentual e vários valores mas não achamos
+        # explicitamente o máximo, usamos o maior valor.
+        if (
+            coupon["max_discount"] <= 0
+            and coupon["percent"] > 0
+            and parsed_values
+        ):
+            coupon["max_discount"] = max(parsed_values)
+
+    # Remove códigos obviamente falsos.
+    result = []
+
+    for coupon in coupons.values():
+
+        if coupon["percent"] <= 0:
+            continue
+
+        if coupon["percent"] > 100:
+            continue
+
+        result.append(coupon)
+
+    # Remove duplicados.
+    unique = {}
+
+    for coupon in result:
+        unique[coupon["code"]] = coupon
+
+    return list(unique.values())
+
+
+def fetch_coupons():
+
+    all_coupons = {}
+
+    for url in COUPON_URLS:
+
+        try:
+            response = session.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 "
+                        "like Mac OS X) AppleWebKit/605.1.15"
+                    ),
+                    "Accept-Language": "pt-BR,pt;q=0.9",
+                },
+            )
+        except Exception:
+            continue
+
         if response.status_code != 200:
-            return []
+            continue
 
-        html = response.text
+        parsed = parse_coupon_text(
+            response.text
+        )
 
+        for coupon in parsed:
+
+            code = coupon["code"]
+
+            if code not in all_coupons:
+                all_coupons[code] = coupon
+            else:
+                old = all_coupons[code]
+
+                if coupon["percent"] > old["percent"]:
+                    old["percent"] = coupon["percent"]
+
+                if coupon["min_purchase"] > 0:
+                    old["min_purchase"] = coupon["min_purchase"]
+
+                if coupon["max_discount"] > 0:
+                    old["max_discount"] = coupon["max_discount"]
+
+    return list(all_coupons.values())
+
+
+# ============================================================
+# CUPOM CALCULATOR
+# ============================================================
+
+
+def calculate_coupon(price, coupon):
+
+    price = safe_float(price)
+
+    minimum = safe_float(
+        coupon.get("min_purchase")
+    )
+
+    percent = safe_float(
+        coupon.get("percent")
+    )
+
+    maximum = safe_float(
+        coupon.get("max_discount")
+    )
+
+    if price <= 0:
+        return {
+            "eligible_estimate": False,
+            "discount": 0,
+            "estimated_price": price,
+        }
+
+    if minimum > 0 and price < minimum:
+        return {
+            "eligible_estimate": False,
+            "discount": 0,
+            "estimated_price": price,
+        }
+
+    if percent <= 0:
+        return {
+            "eligible_estimate": False,
+            "discount": 0,
+            "estimated_price": price,
+        }
+
+    discount = price * (percent / 100)
+
+    if maximum > 0:
+        discount = min(
+            discount,
+            maximum,
+        )
+
+    estimated = max(
+        0,
+        price - discount,
+    )
+
+    return {
+        "eligible_estimate": True,
+        "discount": round(discount, 2),
+        "estimated_price": round(estimated, 2),
+    }
+
+
+# ============================================================
+# PRODUCT SEARCH
+# ============================================================
+
+
+def product_search(query, limit=10):
+
+    params = {
+        "site_id": SITE_ID,
+        "q": query,
+        "limit": limit,
+        "offset": 0,
+    }
+
+    response = ml_request(
+        "GET",
+        f"{ML_API}/products/search",
+        params=params,
+    )
+
+    if response is None:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        data = response.json()
     except Exception:
         return []
 
-    padrao = re.compile(
-        r"(?i)"
-        r"(?:código|codigo|cupom|usar cupom)"
-        r".{0,120}?"
-        r"([A-Z0-9]{5,20})"
-    )
+    results = data.get("results", [])
 
-    encontrados = padrao.findall(
-        html
-    )
+    if not isinstance(results, list):
+        return []
 
-    cupons = []
-    vistos = set()
-
-    for codigo in encontrados:
-
-        codigo = (
-            codigo
-            .upper()
-            .strip()
-        )
-
-        if codigo in vistos:
-            continue
-
-        vistos.add(
-            codigo
-        )
-
-        cupons.append({
-            "codigo":
-                codigo,
-            "estimativa":
-                True
-        })
-
-        if len(cupons) >= 20:
-            break
-
-    return cupons
-
-
-@app.route("/api/cupons")
-def api_cupons():
-
-    return jsonify({
-        "ok": True,
-        "cupons":
-            buscar_cupons()
-    })
-
-
-@app.route("/cupons")
-def cupons():
-
-    return jsonify({
-        "ok": True,
-        "cupons":
-            buscar_cupons()
-    })
+    return results
 
 
 # ============================================================
-# GERAR ANÚNCIO
+# PRODUCT ITEMS
 # ============================================================
 
-@app.route(
-    "/api/gerar-anuncio",
-    methods=["POST"]
-)
-def gerar_anuncio():
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+def product_items(product_id, limit=8):
 
-    titulo = data.get(
-        "titulo",
-        "Oferta"
+    url = (
+        f"{ML_API}/products/"
+        f"{quote(str(product_id), safe='')}/items"
     )
 
-    preco = money(
-        data.get(
-            "preco"
+    params = {
+        "limit": limit,
+        "offset": 0,
+    }
+
+    response = ml_request(
+        "GET",
+        url,
+        params=params,
+    )
+
+    if response is None:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        data = response.json()
+    except Exception:
+        return []
+
+    results = data.get("results", [])
+
+    if not isinstance(results, list):
+        return []
+
+    return results[:limit]
+
+
+# ============================================================
+# CATEGORIA
+# ============================================================
+
+
+def allowed_for_category(title, category_key):
+
+    title_norm = normalize_text(title)
+
+    if category_key == "academia":
+
+        for blocked in ACADEMIA_BLOCK:
+            if normalize_text(blocked) in title_norm:
+                return False
+
+    return True
+
+
+# ============================================================
+# CONVERTER PRODUTO EM OFERTA
+# ============================================================
+
+
+def build_offer(
+    product,
+    item,
+    category_key,
+    coupon,
+):
+
+    product_id = (
+        product.get("id")
+        or product.get("product_id")
+        or ""
+    )
+
+    title = (
+        product.get("name")
+        or product.get("title")
+        or item.get("title")
+        or "Produto"
+    )
+
+    if not allowed_for_category(
+        title,
+        category_key,
+    ):
+        return None
+
+    price = safe_float(
+        item.get("price")
+    )
+
+    if price <= 0:
+        price = safe_float(
+            product.get("price")
         )
+
+    if price <= 0:
+        return None
+
+    coupon_result = calculate_coupon(
+        price,
+        coupon,
     )
 
-    original = money(
-        data.get(
-            "preco_original"
-        )
+    if not coupon_result["eligible_estimate"]:
+        return None
+
+    shipping = item.get("shipping") or {}
+
+    shipping_cost = safe_float(
+        shipping.get("cost")
     )
 
-    desconto = money(
-        data.get(
-            "desconto"
-        )
+    free_shipping = bool(
+        shipping.get("free_shipping")
+        or shipping.get("free_shipping_flag")
     )
 
-    link = data.get(
-        "link",
-        ""
-    )
+    if free_shipping:
+        shipping_cost = 0
 
-    frete_gratis = bool(
-        data.get(
-            "frete_gratis"
-        )
-    )
-
-    categoria = data.get(
-        "categoria",
-        ""
-    )
-
-    linhas = [
-        "🔥 OFERTA ENCONTRADA!",
-        ""
+    coupon_discount = coupon_result[
+        "discount"
     ]
 
-    if categoria:
+    estimated_price = coupon_result[
+        "estimated_price"
+    ]
 
-        linhas.extend([
-            f"📌 {categoria}",
-            ""
-        ])
-
-    linhas.extend([
-        f"🛒 {titulo}",
-        ""
-    ])
-
-    if (
-        original > preco
-        and desconto > 0
-    ):
-
-        linhas.append(
-            f"💸 De R$ {original:.2f} "
-            f"por R$ {preco:.2f}"
-        )
-
-        linhas.append(
-            f"🏷️ {desconto:.0f}% OFF"
-        )
-
-    else:
-
-        linhas.append(
-            f"💰 Por apenas R$ {preco:.2f}"
-        )
-
-    if frete_gratis:
-
-        linhas.append(
-            "🚚 FRETE GRÁTIS"
-        )
-
-    linhas.extend([
-        "",
-        "👉 Confira:",
-        link,
-        "",
-        "⚠️ Preço e disponibilidade podem mudar."
-    ])
-
-    return jsonify({
-        "ok": True,
-        "texto":
-            "\n".join(
-                linhas
-            )
-    })
-
-
-# ============================================================
-# SALVAR
-# ============================================================
-
-@app.route(
-    "/api/salvar",
-    methods=["POST"]
-)
-def salvar():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    conn = sqlite3.connect(
-        DB_FILE
+    estimated_total = (
+        estimated_price
+        + shipping_cost
     )
 
-    conn.execute("""
-        INSERT INTO salvos (
-            titulo,
-            preco,
-            desconto,
-            frete,
-            total,
-            link,
-            seller_id,
-            produto_id
+    # Desconto normal do anúncio.
+    original_price = safe_float(
+        item.get("original_price")
+    )
+
+    seller_discount = 0
+
+    if (
+        original_price > price
+        and original_price > 0
+    ):
+        seller_discount = (
+            (original_price - price)
+            / original_price
+            * 100
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        data.get(
-            "titulo"
-        ),
-        money(
-            data.get(
-                "preco"
-            )
-        ),
-        money(
-            data.get(
-                "desconto"
-            )
-        ),
-        money(
-            data.get(
-                "frete"
-            )
-        ),
-        money(
-            data.get(
-                "total"
-            )
-        ),
-        data.get(
-            "link"
-        ),
-        str(
-            data.get(
-                "seller_id"
-            )
-            or ""
-        ),
-        str(
-            data.get(
-                "product_id"
-            )
-            or data.get(
-                "item_id"
-            )
-            or ""
+
+    seller_id = str(
+        item.get("seller_id")
+        or ""
+    )
+
+    item_id = str(
+        item.get("item_id")
+        or item.get("id")
+        or ""
+    )
+
+    url = (
+        item.get("permalink")
+        or (
+            f"https://www.mercadolivre.com.br/"
+            f"{item_id}"
+            if item_id
+            else ""
         )
-    ))
+    )
+
+    # Pontuação para ordenar:
+    # primeiro economia real estimada,
+    # depois preço final,
+    # depois frete grátis.
+    score = (
+        coupon_discount * 100
+        - estimated_total
+        + (50 if free_shipping else 0)
+    )
+
+    return {
+        "product_id": product_id,
+        "item_id": item_id,
+        "title": title,
+        "category": CATEGORIES.get(
+            category_key,
+            {}
+        ).get("name", category_key),
+        "category_key": category_key,
+
+        "price": round(price, 2),
+
+        # Informação do vendedor, separada do cupom.
+        "seller_discount": round(
+            seller_discount,
+            2,
+        ),
+
+        "coupon_code": coupon["code"],
+        "coupon_percent": coupon["percent"],
+        "coupon_min": coupon["min_purchase"],
+        "coupon_max": coupon["max_discount"],
+
+        "coupon_discount": round(
+            coupon_discount,
+            2,
+        ),
+
+        "estimated_price": round(
+            estimated_price,
+            2,
+        ),
+
+        "shipping": round(
+            shipping_cost,
+            2,
+        ),
+
+        "estimated_total": round(
+            estimated_total,
+            2,
+        ),
+
+        "free_shipping": free_shipping,
+
+        "seller_id": seller_id,
+        "url": url,
+
+        # Ainda não é um link de afiliado.
+        # O portal/Central do Mercado Livre deve gerar
+        # o link oficial de afiliado.
+        "affiliate_url": "",
+
+        "score": round(
+            score,
+            2,
+        ),
+
+        "estimated": True,
+    }
+
+
+# ============================================================
+# BUSCAR OFERTAS COM CUPONS
+# ============================================================
+
+
+def scan_category(
+    category_key,
+    coupons,
+    progress_callback=None,
+):
+
+    category = CATEGORIES[category_key]
+
+    offers = []
+
+    products_seen = set()
+
+    queries = category["queries"][
+        :MAX_QUERIES_PER_CATEGORY
+    ]
+
+    for query_index, query in enumerate(queries):
+
+        if progress_callback:
+            progress_callback(
+                f"{category['name']} — buscando {query}"
+            )
+
+        products = product_search(
+            query,
+            MAX_PRODUCTS_PER_QUERY,
+        )
+
+        for product in products:
+
+            if len(products_seen) >= MAX_TOTAL_PRODUCTS:
+                break
+
+            product_id = (
+                product.get("id")
+                or product.get("product_id")
+            )
+
+            if not product_id:
+                continue
+
+            if product_id in products_seen:
+                continue
+
+            products_seen.add(product_id)
+
+            title = (
+                product.get("name")
+                or product.get("title")
+                or ""
+            )
+
+            if not allowed_for_category(
+                title,
+                category_key,
+            ):
+                continue
+
+            items = product_items(
+                product_id,
+                MAX_ITEMS_PER_PRODUCT,
+            )
+
+            if not items:
+                continue
+
+            for item in items:
+
+                for coupon in coupons:
+
+                    offer = build_offer(
+                        product,
+                        item,
+                        category_key,
+                        coupon,
+                    )
+
+                    if not offer:
+                        continue
+
+                    offers.append(offer)
+
+            # Limite por categoria.
+            if len(offers) >= MAX_OFFERS_PER_CATEGORY:
+                break
+
+        if len(offers) >= MAX_OFFERS_PER_CATEGORY:
+            break
+
+    # ========================================================
+    # Remove duplicações.
+    # Um mesmo item pode aparecer em mais de uma busca.
+    # ========================================================
+
+    unique = {}
+
+    for offer in offers:
+
+        key = (
+            offer["item_id"],
+            offer["coupon_code"],
+        )
+
+        if key not in unique:
+            unique[key] = offer
+        else:
+            old = unique[key]
+
+            if (
+                offer["estimated_total"]
+                < old["estimated_total"]
+            ):
+                unique[key] = offer
+
+    offers = list(unique.values())
+
+    # ========================================================
+    # ORDENAÇÃO
+    # ========================================================
+
+    offers.sort(
+        key=lambda x: (
+            -x["coupon_discount"],
+            x["estimated_total"],
+            not x["free_shipping"],
+            x["price"],
+        )
+    )
+
+    return offers[
+        :MAX_OFFERS_PER_CATEGORY
+    ]
+
+
+# ============================================================
+# SCAN COMPLETO
+# ============================================================
+
+
+def run_full_scan():
+
+    global SCAN_STATE
+
+    with STATE_LOCK:
+        SCAN_STATE = {
+            "running": True,
+            "finished": False,
+            "progress": 0,
+            "message": "Buscando cupons...",
+            "offers": [],
+            "coupons": [],
+            "started_at": time.time(),
+            "finished_at": None,
+            "error": None,
+        }
+
+    try:
+
+        # ====================================================
+        # 1 — CUPONS PRIMEIRO
+        # ====================================================
+
+        coupons = fetch_coupons()
+
+        with STATE_LOCK:
+            SCAN_STATE["coupons"] = coupons
+            SCAN_STATE["progress"] = 5
+            SCAN_STATE["message"] = (
+                f"{len(coupons)} cupons encontrados"
+            )
+
+        if not coupons:
+            raise Exception(
+                "Nenhum cupom foi encontrado nas páginas públicas."
+            )
+
+        # ====================================================
+        # 2 — PRODUTOS
+        # ====================================================
+
+        category_keys = list(
+            CATEGORIES.keys()
+        )
+
+        all_offers = []
+
+        total_categories = len(
+            category_keys
+        )
+
+        for index, category_key in enumerate(
+            category_keys
+        ):
+
+            def progress_callback(message):
+                progress = 5 + int(
+                    (
+                        index
+                        / total_categories
+                    )
+                    * 90
+                )
+
+                with STATE_LOCK:
+                    SCAN_STATE["progress"] = progress
+                    SCAN_STATE["message"] = message
+
+            offers = scan_category(
+                category_key,
+                coupons,
+                progress_callback,
+            )
+
+            all_offers.extend(
+                offers
+            )
+
+            progress = 5 + int(
+                (
+                    (index + 1)
+                    / total_categories
+                )
+                * 90
+            )
+
+            with STATE_LOCK:
+                SCAN_STATE["progress"] = progress
+                SCAN_STATE["message"] = (
+                    f"{CATEGORIES[category_key]['name']} concluída"
+                )
+
+        # ====================================================
+        # 3 — ORDENAÇÃO GLOBAL
+        # ====================================================
+
+        all_offers.sort(
+            key=lambda x: (
+                -x["coupon_discount"],
+                x["estimated_total"],
+                not x["free_shipping"],
+            )
+        )
+
+        # Limita quantidade total para interface.
+        all_offers = all_offers[:250]
+
+        # ====================================================
+        # 4 — SALVAR
+        # ====================================================
+
+        save_offers(all_offers)
+
+        with STATE_LOCK:
+            SCAN_STATE["offers"] = all_offers
+            SCAN_STATE["progress"] = 100
+            SCAN_STATE["message"] = (
+                f"Caça finalizada — "
+                f"{len(all_offers)} ofertas com cupom"
+            )
+            SCAN_STATE["running"] = False
+            SCAN_STATE["finished"] = True
+            SCAN_STATE["finished_at"] = time.time()
+
+    except Exception as e:
+
+        with STATE_LOCK:
+            SCAN_STATE["running"] = False
+            SCAN_STATE["finished"] = True
+            SCAN_STATE["error"] = str(e)
+            SCAN_STATE["message"] = (
+                f"Erro: {e}"
+            )
+            SCAN_STATE["finished_at"] = time.time()
+
+
+# ============================================================
+# SALVAR OFERTAS
+# ============================================================
+
+
+def save_offers(offers):
+
+    conn = db()
+
+    for offer in offers:
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO ofertas (
+                    product_id,
+                    item_id,
+                    title,
+                    category,
+                    price,
+                    seller_discount,
+                    coupon_code,
+                    coupon_percent,
+                    coupon_min,
+                    coupon_max,
+                    coupon_discount,
+                    estimated_price,
+                    shipping,
+                    estimated_total,
+                    free_shipping,
+                    url,
+                    seller_id,
+                    affiliate_url
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    offer["product_id"],
+                    offer["item_id"],
+                    offer["title"],
+                    offer["category"],
+                    offer["price"],
+                    offer["seller_discount"],
+                    offer["coupon_code"],
+                    offer["coupon_percent"],
+                    offer["coupon_min"],
+                    offer["coupon_max"],
+                    offer["coupon_discount"],
+                    offer["estimated_price"],
+                    offer["shipping"],
+                    offer["estimated_total"],
+                    1 if offer["free_shipping"] else 0,
+                    offer["url"],
+                    offer["seller_id"],
+                    offer["affiliate_url"],
+                ),
+            )
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()
 
-    return jsonify({
-        "ok": True
-    })
+
+# ============================================================
+# ROTAS
+# ============================================================
 
 
-@app.route("/api/salvos")
-def api_salvos():
+@app.route("/")
+def index():
 
-    conn = sqlite3.connect(
-        DB_FILE
+    connected = bool(
+        STATE.get("access_token")
     )
 
-    conn.row_factory = sqlite3.Row
+    user = STATE.get("user")
 
-    rows = conn.execute("""
-        SELECT *
-        FROM salvos
-        ORDER BY id DESC
-        LIMIT 100
-    """).fetchall()
-
-    conn.close()
-
-    return jsonify({
-        "ok": True,
-        "salvos": [
-            dict(row)
-            for row in rows
-        ]
-    })
+    return render_template_string(
+        HTML,
+        connected=connected,
+        user=user,
+        categories=CATEGORIES,
+    )
 
 
-# ============================================================
-# TESTES
-# ============================================================
+@app.route("/health")
+def health():
 
-@app.route("/mercadolivre/teste-busca")
-def teste_busca():
+    return jsonify(
+        {
+            "status": "ok",
+            "app": APP_NAME,
+            "mercadolivre": bool(
+                STATE.get("access_token")
+            ),
+        }
+    )
+
+
+@app.route("/api/status")
+def api_status():
+
+    with STATE_LOCK:
+        state = dict(SCAN_STATE)
+
+    return jsonify(
+        {
+            "running": state["running"],
+            "finished": state["finished"],
+            "progress": state["progress"],
+            "message": state["message"],
+            "offers": state["offers"],
+            "coupons": state["coupons"],
+            "error": state["error"],
+        }
+    )
+
+
+@app.route("/api/coupons")
+def api_coupons():
+
+    coupons = fetch_coupons()
+
+    return jsonify(
+        {
+            "count": len(coupons),
+            "coupons": coupons,
+        }
+    )
+
+
+@app.route("/api/cacar")
+def api_cacar():
+
+    with STATE_LOCK:
+        if SCAN_STATE["running"]:
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": "Uma caça já está em andamento.",
+                }
+            )
+
+        SCAN_STATE["running"] = True
+
+    thread = threading.Thread(
+        target=run_full_scan,
+        daemon=True,
+    )
+
+    thread.start()
+
+    return jsonify(
+        {
+            "ok": True,
+            "message": "Caça iniciada.",
+        }
+    )
+
+
+@app.route("/api/search")
+def api_search():
 
     query = request.args.get(
         "q",
-        "celular"
+        "",
+    ).strip()
+
+    if not query:
+        return jsonify(
+            {
+                "offers": [],
+                "error": "Informe uma busca.",
+            }
+        )
+
+    coupons = fetch_coupons()
+
+    products = product_search(
+        query,
+        MAX_PRODUCTS_PER_QUERY,
     )
 
-    inicio = time.time()
+    offers = []
 
-    resultados = buscar_manual(
-        query
-    )
+    for product in products:
 
-    return jsonify({
-        "ok": True,
-        "query":
-            query,
-        "tempo":
-            round(
-                time.time()
-                - inicio,
-                2
-            ),
-        "total":
-            len(resultados),
-        "resultados":
-            resultados
-    })
+        product_id = (
+            product.get("id")
+            or product.get("product_id")
+        )
 
+        if not product_id:
+            continue
 
-@app.route(
-    "/mercadolivre/teste-produto-itens"
-)
-def teste_produto_itens():
-
-    product_id = request.args.get(
-        "id",
-        ""
-    )
-
-    if not product_id:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Use ?id=MLB..."
-        }), 400
-
-    itens = get_product_items(
-        product_id
-    )
-
-    return jsonify({
-        "ok": True,
-        "product_id":
+        items = product_items(
             product_id,
-        "total":
-            len(itens),
-        "itens":
-            itens
-    })
+            MAX_ITEMS_PER_PRODUCT,
+        )
 
+        for item in items:
 
-@app.route(
-    "/mercadolivre/teste-produto"
-)
-def teste_produto():
+            for coupon in coupons:
 
-    product_id = request.args.get(
-        "id",
-        ""
+                offer = build_offer(
+                    product,
+                    item,
+                    "busca",
+                    coupon,
+                )
+
+                if offer:
+                    offers.append(
+                        offer
+                    )
+
+    # Remove duplicados.
+    unique = {}
+
+    for offer in offers:
+
+        key = (
+            offer["item_id"],
+            offer["coupon_code"],
+        )
+
+        if key not in unique:
+            unique[key] = offer
+
+    offers = list(
+        unique.values()
     )
 
-    if not product_id:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Use ?id=MLB..."
-        }), 400
-
-    produto = get_product(
-        product_id
+    offers.sort(
+        key=lambda x: (
+            x["estimated_total"],
+            -x["coupon_discount"],
+        )
     )
-
-    if not produto:
-
-        return jsonify({
-            "ok": False,
-            "erro":
-                "Produto não encontrado."
-        }), 404
 
     return jsonify(
-        produto
+        {
+            "offers": offers[:100],
+            "coupons": coupons,
+        }
+    )
+
+
+@app.route("/api/salvar", methods=["POST"])
+def api_salvar():
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    offer = data.get("offer")
+
+    if not offer:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Oferta ausente.",
+            }
+        ), 400
+
+    save_offers(
+        [offer]
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+        }
+    )
+
+
+@app.route("/api/historico")
+def api_historico():
+
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM ofertas
+        ORDER BY id DESC
+        LIMIT 100
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return jsonify(
+        {
+            "offers": [
+                dict(row)
+                for row in rows
+            ]
+        }
     )
 
 
@@ -2253,374 +1784,387 @@ HTML = r'''
 
 body {
     margin: 0;
-    background: #0f1117;
-    color: #fff;
-    font-family: Arial, Helvetica, sans-serif;
+    background:
+        radial-gradient(
+            circle at top,
+            #172554 0,
+            #080b14 42%,
+            #05060a 100%
+        );
+    color: #f8fafc;
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Arial,
+        sans-serif;
 }
 
 .container {
-    max-width: 1100px;
+    width: min(1180px, 94%);
     margin: auto;
-    padding: 16px;
+    padding: 24px 0 60px;
 }
 
 .header {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.logo {
+    font-size: 28px;
+    font-weight: 900;
+}
+
+.subtitle {
+    color: #94a3b8;
+    margin-top: 6px;
+}
+
+.status {
+    padding: 10px 14px;
+    border-radius: 999px;
+    background: rgba(15,23,42,.9);
+    border: 1px solid #26334d;
+    font-size: 14px;
+}
+
+.card {
     background:
         linear-gradient(
-            135deg,
-            #171b24,
-            #202735
+            145deg,
+            rgba(15,23,42,.96),
+            rgba(8,13,25,.96)
         );
-    border-radius: 20px;
-    padding: 22px;
-    margin-bottom: 15px;
+    border: 1px solid #26334d;
+    border-radius: 22px;
+    padding: 20px;
+    margin-top: 22px;
+    box-shadow:
+        0 20px 60px rgba(0,0,0,.28);
 }
 
-.header h1 {
-    margin: 0 0 8px;
-    font-size: 29px;
+.hero {
+    text-align: center;
+    padding: 34px 20px;
 }
 
-.header p {
+.hero h1 {
     margin: 0;
-    color: #aeb7c5;
-    line-height: 1.5;
-    font-size: 16px;
+    font-size: clamp(28px, 5vw, 48px);
 }
 
-.buttons {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px;
-    margin-top: 20px;
+.hero p {
+    color: #94a3b8;
+    max-width: 700px;
+    margin: 12px auto 0;
+    line-height: 1.6;
 }
 
 .btn {
     border: 0;
-    border-radius: 12px;
-    padding: 14px 18px;
-    font-weight: bold;
-    font-size: 15px;
+    border-radius: 14px;
+    padding: 14px 20px;
+    font-size: 16px;
+    font-weight: 800;
     cursor: pointer;
+    transition: .2s;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
 }
 
 .btn-primary {
-    background: #00a650;
     color: white;
+    background:
+        linear-gradient(
+            135deg,
+            #22c55e,
+            #16a34a
+        );
 }
 
-.btn-secondary {
-    background: #2b313d;
+.btn-blue {
     color: white;
-    text-decoration: none;
+    background:
+        linear-gradient(
+            135deg,
+            #2563eb,
+            #4f46e5
+        );
 }
 
-.btn:disabled {
-    opacity: .5;
-}
-
-.connection {
-    margin-top: 14px;
-    padding: 12px 14px;
-    border-radius: 12px;
-    font-weight: bold;
-}
-
-.connected {
-    background: #103b27;
-    color: #55e494;
-}
-
-.disconnected {
-    background: #3b1c1c;
-    color: #ff8585;
-}
-
-.notice {
-    background: #29250f;
-    border: 1px solid #655313;
-    color: #ffe27b;
-    padding: 13px;
-    border-radius: 12px;
-    margin-bottom: 15px;
-    font-size: 13px;
-    line-height: 1.5;
+.btn-dark {
+    color: white;
+    background: #172033;
+    border: 1px solid #334155;
 }
 
 .search {
     display: flex;
-    gap: 8px;
-    margin-bottom: 14px;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
 .search input {
     flex: 1;
-    min-width: 0;
-    background: #181c24;
-    border: 1px solid #343b49;
-    border-radius: 13px;
-    padding: 15px;
+    min-width: 200px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    border: 1px solid #334155;
+    background: #080d18;
     color: white;
     font-size: 16px;
-}
-
-.categories {
-    display: grid;
-    grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(150px, 1fr)
-        );
-    gap: 9px;
-    margin-bottom: 15px;
-}
-
-.category {
-    min-height: 65px;
-    border-radius: 14px;
-    border: 1px solid #303744;
-    background: #181c24;
-    color: white;
-    font-weight: bold;
-    font-size: 14px;
-    cursor: pointer;
-}
-
-.category.active {
-    border-color: #00a650;
-    background: #103b27;
-}
-
-.status {
-    background: #181c24;
-    border-radius: 14px;
-    padding: 15px;
-    margin-bottom: 15px;
-    color: #cbd3df;
+    outline: none;
 }
 
 .progress {
-    height: 7px;
-    background: #303642;
-    border-radius: 20px;
-    margin-top: 10px;
+    height: 12px;
+    background: #0b1220;
+    border-radius: 999px;
     overflow: hidden;
+    margin-top: 14px;
+    border: 1px solid #26334d;
 }
 
 .progress-bar {
-    height: 100%;
     width: 0%;
-    background: #00a650;
-    transition: width .25s ease;
+    height: 100%;
+    background:
+        linear-gradient(
+            90deg,
+            #22c55e,
+            #06b6d4,
+            #3b82f6
+        );
+    transition: width .3s;
+}
+
+.coupons {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.coupon {
+    padding: 16px;
+    border-radius: 16px;
+    background: #0a1220;
+    border: 1px solid #26334d;
+}
+
+.coupon-code {
+    font-size: 19px;
+    font-weight: 900;
+    color: #facc15;
+}
+
+.coupon-info {
+    color: #cbd5e1;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-top: 8px;
+}
+
+.results-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.results {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.offer {
+    border-radius: 20px;
+    overflow: hidden;
+    background: #0b1220;
+    border: 1px solid #26334d;
+    padding: 18px;
+    position: relative;
+}
+
+.badge {
+    display: inline-block;
+    background: #7c2d12;
+    color: #fed7aa;
+    border: 1px solid #c2410c;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 900;
+}
+
+.badge-coupon {
+    background: #14532d;
+    color: #bbf7d0;
+    border-color: #22c55e;
+}
+
+.title {
+    font-size: 17px;
+    font-weight: 800;
+    line-height: 1.35;
+    margin: 13px 0;
+}
+
+.price-old {
+    color: #64748b;
+    text-decoration: line-through;
+    font-size: 14px;
+}
+
+.price-now {
+    font-size: 27px;
+    font-weight: 950;
+    margin-top: 3px;
+}
+
+.coupon-box {
+    margin-top: 15px;
+    padding: 14px;
+    border-radius: 16px;
+    background:
+        linear-gradient(
+            135deg,
+            rgba(34,197,94,.13),
+            rgba(16,185,129,.05)
+        );
+    border: 1px solid rgba(34,197,94,.4);
+}
+
+.coupon-code-big {
+    color: #86efac;
+    font-weight: 950;
+    font-size: 20px;
+}
+
+.estimated {
+    margin-top: 8px;
+    font-size: 23px;
+    font-weight: 950;
+}
+
+.savings {
+    color: #4ade80;
+    font-weight: 800;
+    margin-top: 4px;
+}
+
+.shipping {
+    margin-top: 10px;
+    color: #cbd5e1;
+    font-size: 14px;
+}
+
+.warning {
+    margin-top: 12px;
+    padding: 10px;
+    border-radius: 12px;
+    background: #17130a;
+    border: 1px solid #5b4611;
+    color: #facc15;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 15px;
+}
+
+.actions a,
+.actions button {
+    flex: 1;
+    text-align: center;
+    text-decoration: none;
+}
+
+.small {
+    color: #64748b;
+    font-size: 12px;
+}
+
+.empty {
+    text-align: center;
+    color: #94a3b8;
+    padding: 40px 10px;
+}
+
+.hidden {
+    display: none !important;
 }
 
 .stats {
     display: grid;
     grid-template-columns:
-        repeat(
-            auto-fit,
-            minmax(130px, 1fr)
-        );
-    gap: 9px;
-    margin-bottom: 15px;
+        repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
 }
 
 .stat {
-    background: #181c24;
-    border-radius: 14px;
-    padding: 15px;
+    background: #0a1220;
+    border: 1px solid #26334d;
+    padding: 17px;
+    border-radius: 16px;
 }
 
-.stat strong {
-    display: block;
+.stat-number {
     font-size: 25px;
-    margin-bottom: 4px;
+    font-weight: 950;
 }
 
-.stat span {
-    color: #8f99a9;
+.stat-label {
+    color: #94a3b8;
     font-size: 13px;
+    margin-top: 4px;
 }
 
-.results {
-    display: grid;
-    gap: 14px;
+.notice {
+    color: #cbd5e1;
+    line-height: 1.6;
+    font-size: 14px;
 }
 
-.product-card {
-    background: #181c24;
-    border: 1px solid #2d3440;
-    border-radius: 18px;
-    padding: 18px;
+.notice strong {
+    color: #fff;
 }
 
-.product-card.best {
-    border-color: #00a650;
-    box-shadow:
-        0 0 0 1px
-        rgba(
-            0,
-            166,
-            80,
-            .15
-        );
-}
-
-.product-title {
-    font-size: 20px;
-    line-height: 1.4;
-    font-weight: bold;
-    margin-bottom: 10px;
-}
-
-.product-summary {
-    color: #9ca6b5;
-    font-size: 13px;
-    margin-bottom: 14px;
-}
-
-.badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 12px;
-}
-
-.badge {
-    padding: 7px 10px;
-    border-radius: 20px;
-    background: #2c333f;
-    color: #e3e7ed;
-    font-size: 11px;
-    font-weight: bold;
-}
-
-.badge.green {
-    background: #103e29;
-    color: #58e498;
-}
-
-.badge.yellow {
-    background: #4d3e09;
-    color: #ffe16a;
-}
-
-.badge.blue {
-    background: #182f4b;
-    color: #78b9ff;
-}
-
-.best-price {
-    font-size: 30px;
-    font-weight: bold;
-    color: #4be18b;
-}
-
-.old-price {
-    margin-left: 8px;
-    color: #7e8795;
-    text-decoration: line-through;
-}
-
-.sellers-title {
-    margin-top: 18px;
-    margin-bottom: 8px;
-    font-size: 18px;
-    font-weight: bold;
-    color: #dce2eb;
-}
-
-.seller {
-    background: #11151c;
-    border: 1px solid #303744;
-    border-radius: 13px;
-    padding: 13px;
-    margin-top: 8px;
-}
-
-.seller.best-seller {
-    border-color: #00a650;
-}
-
-.seller-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.seller-price {
-    font-size: 22px;
-    font-weight: bold;
-    color: #4be18b;
-}
-
-.seller-info {
-    margin-top: 8px;
-    color: #aeb6c4;
-    font-size: 12px;
-    line-height: 1.7;
-}
-
-.seller-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-    margin-top: 11px;
-}
-
-.seller-actions a,
-.seller-actions button {
-    border: 0;
-    border-radius: 9px;
-    padding: 10px 12px;
-    font-weight: bold;
-    cursor: pointer;
-    text-decoration: none;
-    font-size: 12px;
-}
-
-.open {
-    background: #00a650;
-    color: white;
-}
-
-.copy,
-.save {
-    background: #303743;
-    color: white;
-}
-
-.empty {
-    text-align: center;
-    color: #8d97a6;
-    padding: 45px 10px;
-}
-
-@media (max-width: 600px) {
+@media(max-width:600px) {
 
     .container {
-        padding: 10px;
+        width: 92%;
+        padding-top: 15px;
     }
 
-    .search {
-        flex-direction: column;
+    .card {
+        padding: 15px;
+        border-radius: 18px;
+    }
+
+    .hero {
+        padding: 25px 12px;
+    }
+
+    .btn {
+        width: 100%;
     }
 
     .search .btn {
         width: 100%;
-    }
-
-    .header h1 {
-        font-size: 25px;
-    }
-
-    .best-price {
-        font-size: 27px;
-    }
-
-    .seller-row {
-        align-items: flex-start;
     }
 
 }
@@ -2633,156 +2177,250 @@ body {
 
 <div class="container">
 
-<div class="header">
+    <div class="header">
 
-<h1>
-🔥 Caçador de Ofertas
-</h1>
+        <div>
+            <div class="logo">
+                🏷️ Caçador de Ofertas
+            </div>
 
-<p>
-Encontre ofertas, compare vendedores e
-descubra oportunidades automaticamente.
-</p>
+            <div class="subtitle">
+                Cupom primeiro • preço final estimado
+            </div>
+        </div>
 
-<div class="buttons">
+        <div class="status">
+            {% if connected %}
+                🟢 Mercado Livre conectado
+                {% if user %}
+                    — {{ user.get("nickname", "") }}
+                {% endif %}
+            {% else %}
+                🔴 Mercado Livre desconectado
+            {% endif %}
+        </div>
 
-<button
-    id="btnCacar"
-    class="btn btn-primary"
-    type="button"
-    onclick="cacarTodas()"
->
-🚀 CAÇAR TODAS
-</button>
+    </div>
 
-<button
-    id="btnMercadoLivre"
-    class="btn btn-secondary"
-    type="button"
-    onclick="conectarMercadoLivre()"
->
-🔗 Conectar Mercado Livre
-</button>
 
-<a
-    class="btn btn-secondary"
-    href="/api/salvos"
-    target="_blank"
->
-💾 Salvos
-</a>
+    {% if not connected %}
+
+    <div class="card hero">
+
+        <h1>
+            Encontre ofertas usando cupons
+        </h1>
+
+        <p>
+            O sistema busca os cupons primeiro,
+            encontra produtos que podem atingir
+            as condições e calcula o preço
+            estimado depois do cupom.
+        </p>
+
+        <br>
+
+        <a
+            href="/mercadolivre/conectar"
+            class="btn btn-primary"
+        >
+            🔗 Conectar Mercado Livre
+        </a>
+
+    </div>
+
+    {% else %}
+
+    <div class="card hero">
+
+        <h1>
+            🔥 Caça de cupons
+        </h1>
+
+        <p>
+            A prioridade agora é o desconto do
+            <strong>cupom</strong>, e não o desconto
+            normal do vendedor.
+        </p>
+
+        <br>
+
+        <button
+            class="btn btn-primary"
+            onclick="cacar()"
+            id="btnCacar"
+        >
+            🚀 CAÇAR OFERTAS COM CUPOM
+        </button>
+
+        <div
+            id="progressArea"
+            class="hidden"
+            style="text-align:left;margin-top:22px;"
+        >
+
+            <div id="progressText">
+                Preparando...
+            </div>
+
+            <div class="progress">
+                <div
+                    class="progress-bar"
+                    id="progressBar"
+                ></div>
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <div class="results-header">
+
+            <h2>
+                🔎 Buscar produto
+            </h2>
+
+        </div>
+
+        <div class="search">
+
+            <input
+                id="searchInput"
+                placeholder="Ex.: smartwatch, perfume, fone..."
+                onkeydown="
+                    if(event.key === 'Enter') buscar();
+                "
+            >
+
+            <button
+                class="btn btn-blue"
+                onclick="buscar()"
+            >
+                🔎 Buscar com cupom
+            </button>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <div class="results-header">
+
+            <h2>
+                🏷️ Cupons encontrados
+            </h2>
+
+            <button
+                class="btn btn-dark"
+                onclick="carregarCupons()"
+            >
+                🔄 Atualizar
+            </button>
+
+        </div>
+
+        <div
+            id="coupons"
+            class="coupons"
+            style="margin-top:16px;"
+        >
+
+            <div class="empty">
+                Carregando cupons...
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <div class="results-header">
+
+            <h2>
+                🔥 Ofertas
+            </h2>
+
+            <div
+                id="resultCount"
+                class="small"
+            >
+                Nenhuma busca realizada
+            </div>
+
+        </div>
+
+        <div
+            id="stats"
+            class="stats"
+            style="margin-top:15px;"
+        ></div>
+
+        <div
+            id="results"
+            class="results"
+        >
+
+            <div class="empty">
+                Clique em
+                <strong>CAÇAR OFERTAS COM CUPOM</strong>
+                para começar.
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <div class="notice">
+
+            <strong>⚠️ Importante</strong>
+
+            <br><br>
+
+            O preço exibido como
+            <strong>“estimado com cupom”</strong>
+            é calculado usando as condições públicas
+            do cupom.
+
+            <br><br>
+
+            A elegibilidade definitiva depende do
+            produto, estoque, conta do comprador,
+            limite do cupom e confirmação no checkout.
+
+            <br><br>
+
+            O desconto normal do anúncio é mostrado
+            separadamente e não é tratado como cupom.
+
+        </div>
+
+    </div>
+
+    {% endif %}
 
 </div>
 
-<div
-    id="connectionStatus"
-    class="connection disconnected"
->
-🔴 Mercado Livre desconectado
-</div>
-
-</div>
-
-<div class="notice">
-
-⚠️ Descontos, frete e disponibilidade podem
-mudar no Mercado Livre. Sempre confirme a oferta
-antes de publicar.
-
-</div>
-
-<div class="search">
-
-<input
-    id="search"
-    type="text"
-    placeholder="Digite: celular, perfume, fone..."
-    onkeydown="if(event.key === 'Enter') buscar()"
->
-
-<button
-    class="btn btn-primary"
-    type="button"
-    onclick="buscar()"
->
-🔎 BUSCAR
-</button>
-
-</div>
-
-<div
-    id="categories"
-    class="categories"
-></div>
-
-<div class="status">
-
-<div id="statusText">
-Pronto para caçar ofertas.
-</div>
-
-<div class="progress">
-
-<div
-    id="progressBar"
-    class="progress-bar"
-></div>
-
-</div>
-
-</div>
-
-<div class="stats">
-
-<div class="stat">
-<strong id="statProducts">0</strong>
-<span>Ofertas</span>
-</div>
-
-<div class="stat">
-<strong id="statBest">R$ 0,00</strong>
-<span>Menor preço</span>
-</div>
-
-<div class="stat">
-<strong id="statDiscount">0%</strong>
-<span>Maior desconto</span>
-</div>
-
-<div class="stat">
-<strong id="statProductsUnique">0</strong>
-<span>Produtos</span>
-</div>
-
-</div>
-
-<div
-    id="results"
-    class="results"
->
-
-<div class="empty">
-Clique em uma categoria ou em
-<b>CAÇAR TODAS</b>.
-</div>
-
-</div>
-
-</div>
 
 <script>
 
-const CATEGORIES =
-    {{ categories | tojson }};
-
-let resultadosGlobais = [];
+let scanTimer = null;
 
 
 function money(value) {
 
-    return Number(
-        value || 0
-    ).toLocaleString(
+    value = Number(value || 0);
+
+    return value.toLocaleString(
         "pt-BR",
         {
             style: "currency",
@@ -2792,1216 +2430,691 @@ function money(value) {
 }
 
 
-function escapeHtml(value) {
+function escapeHtml(text) {
 
-    return String(
-        value || ""
-    )
-    .replaceAll(
-        "&",
-        "&amp;"
-    )
-    .replaceAll(
-        "<",
-        "&lt;"
-    )
-    .replaceAll(
-        ">",
-        "&gt;"
-    )
-    .replaceAll(
-        '"',
-        "&quot;"
-    )
-    .replaceAll(
-        "'",
-        "&#039;"
-    );
+    const div = document.createElement("div");
+
+    div.textContent = text ?? "";
+
+    return div.innerHTML;
 }
 
 
-function sleep(ms) {
+async function carregarCupons() {
 
-    return new Promise(
-        resolve =>
-            setTimeout(
-                resolve,
-                ms
-            )
-    );
-}
+    const box =
+        document.getElementById("coupons");
 
-
-function setStatus(
-    texto,
-    progresso
-) {
-
-    document.getElementById(
-        "statusText"
-    ).innerText = texto;
-
-    document.getElementById(
-        "progressBar"
-    ).style.width =
-        Math.max(
-            0,
-            Math.min(
-                100,
-                progresso || 0
-            )
-        )
-        + "%";
-}
-
-
-/* =========================================================
-   MERCADO LIVRE
-   ========================================================= */
-
-function conectarMercadoLivre() {
-
-    setStatus(
-        "🔗 Abrindo autorização do Mercado Livre...",
-        5
-    );
-
-    window.location.href =
-        "/mercadolivre/login";
-}
-
-
-async function verificarMercadoLivre() {
+    box.innerHTML =
+        '<div class="empty">🔎 Buscando cupons...</div>';
 
     try {
 
         const response =
-            await fetch(
-                "/api/mercadolivre/status",
-                {
-                    cache:
-                        "no-store"
-                }
-            );
+            await fetch("/api/coupons");
 
         const data =
             await response.json();
 
-        const status =
-            document.getElementById(
-                "connectionStatus"
-            );
+        if (!data.coupons || !data.coupons.length) {
 
-        const button =
-            document.getElementById(
-                "btnMercadoLivre"
-            );
-
-        if (data.conectado) {
-
-            const usuario =
-                data.usuario || {};
-
-            status.className =
-                "connection connected";
-
-            status.innerText =
-                "🟢 Mercado Livre conectado"
-                +
-                (
-                    usuario.nickname
-                    ?
-                    " — "
-                    +
-                    usuario.nickname
-                    :
-                    ""
-                );
-
-            button.innerText =
-                "🟢 Mercado Livre conectado";
-
-        } else {
-
-            status.className =
-                "connection disconnected";
-
-            status.innerText =
-                "🔴 Mercado Livre desconectado";
-
-            button.innerText =
-                "🔗 Conectar Mercado Livre";
-        }
-
-    } catch (error) {
-
-        console.error(error);
-    }
-}
-
-
-/* =========================================================
-   CATEGORIAS
-   ========================================================= */
-
-function renderCategories() {
-
-    const box =
-        document.getElementById(
-            "categories"
-        );
-
-    box.innerHTML = "";
-
-    CATEGORIES.forEach(
-        categoria => {
-
-            const button =
-                document.createElement(
-                    "button"
-                );
-
-            button.className =
-                "category";
-
-            button.innerText =
-                categoria;
-
-            button.onclick =
-                () => {
-
-                    document
-                        .querySelectorAll(
-                            ".category"
-                        )
-                        .forEach(
-                            x =>
-                                x.classList.remove(
-                                    "active"
-                                )
-                        );
-
-                    button.classList.add(
-                        "active"
-                    );
-
-                    cacarCategoria(
-                        categoria,
-                        true
-                    );
-                };
-
-            box.appendChild(
-                button
-            );
-        }
-    );
-}
-
-
-/* =========================================================
-   AGRUPAR PRODUTOS
-   ========================================================= */
-
-function chaveProduto(item) {
-
-    if (item.product_id) {
-
-        return (
-            "PRODUCT:"
-            +
-            String(
-                item.product_id
-            )
-        );
-    }
-
-    let texto =
-        String(
-            item.titulo || ""
-        ).toLowerCase();
-
-    texto = texto
-        .replace(
-            /\b(16gb|32gb|64gb|128gb|256gb|512gb|1tb|2tb)\b/g,
-            ""
-        )
-        .replace(
-            /\b(preto|branco|azul|verde|rosa|vermelho|cinza|dourado|prata|roxo)\b/g,
-            ""
-        )
-        .replace(
-            /\s+/g,
-            " "
-        )
-        .trim();
-
-    return (
-        "TITLE:"
-        +
-        texto.substring(
-            0,
-            150
-        )
-    );
-}
-
-
-function agruparProdutos(
-    lista
-) {
-
-    const grupos =
-        new Map();
-
-    lista.forEach(
-        item => {
-
-            const chave =
-                chaveProduto(
-                    item
-                );
-
-            if (
-                !grupos.has(
-                    chave
-                )
-            ) {
-
-                grupos.set(
-                    chave,
-                    []
-                );
-            }
-
-            grupos
-                .get(chave)
-                .push(item);
-        }
-    );
-
-    const produtos = [];
-
-    grupos.forEach(
-        ofertas => {
-
-            ofertas.sort(
-                (a, b) =>
-                    Number(
-                        a.total ||
-                        999999
-                    )
-                    -
-                    Number(
-                        b.total ||
-                        999999
-                    )
-            );
-
-            ofertas.forEach(
-                (
-                    oferta,
-                    index
-                ) => {
-
-                    oferta.menor_preco =
-                        index === 0;
-
-                    oferta.posicao_vendedor =
-                        index + 1;
-                }
-            );
-
-            const melhor =
-                ofertas[0];
-
-            produtos.push({
-                titulo:
-                    melhor.titulo,
-                categoria:
-                    melhor.categoria,
-                melhor:
-                    melhor,
-                ofertas:
-                    ofertas,
-                menorPreco:
-                    Number(
-                        melhor.total ||
-                        melhor.preco ||
-                        0
-                    ),
-                maiorDesconto:
-                    Math.max(
-                        ...ofertas.map(
-                            x =>
-                                Number(
-                                    x.desconto ||
-                                    0
-                                )
-                        )
-                    ),
-                quantidadeVendedores:
-                    ofertas.length
-            });
-        }
-    );
-
-    produtos.sort(
-        (a, b) => {
-
-            const scoreA =
-                Number(
-                    a.melhor.score_oferta ||
-                    0
-                );
-
-            const scoreB =
-                Number(
-                    b.melhor.score_oferta ||
-                    0
-                );
-
-            if (
-                scoreA !==
-                scoreB
-            ) {
-
-                return (
-                    scoreB -
-                    scoreA
-                );
-            }
-
-            return (
-                a.menorPreco -
-                b.menorPreco
-            );
-        }
-    );
-
-    return produtos;
-}
-
-
-/* =========================================================
-   ESTATÍSTICAS
-   ========================================================= */
-
-function updateStats(
-    lista
-) {
-
-    const produtos =
-        agruparProdutos(
-            lista
-        );
-
-    document.getElementById(
-        "statProducts"
-    ).innerText =
-        lista.length;
-
-    document.getElementById(
-        "statProductsUnique"
-    ).innerText =
-        produtos.length;
-
-    if (!lista.length) {
-
-        document.getElementById(
-            "statBest"
-        ).innerText =
-            "R$ 0,00";
-
-        document.getElementById(
-            "statDiscount"
-        ).innerText =
-            "0%";
-
-        return;
-    }
-
-    const menor =
-        Math.min(
-            ...lista.map(
-                x =>
-                    Number(
-                        x.total ||
-                        x.preco ||
-                        0
-                    )
-            )
-        );
-
-    const maiorDesconto =
-        Math.max(
-            ...lista.map(
-                x =>
-                    Number(
-                        x.desconto ||
-                        0
-                    )
-            )
-        );
-
-    document.getElementById(
-        "statBest"
-    ).innerText =
-        money(
-            menor
-        );
-
-    document.getElementById(
-        "statDiscount"
-    ).innerText =
-        maiorDesconto.toFixed(
-            0
-        )
-        + "%";
-}
-
-
-/* =========================================================
-   RENDER
-   ========================================================= */
-
-function renderResults(
-    lista
-) {
-
-    const box =
-        document.getElementById(
-            "results"
-        );
-
-    if (!lista.length) {
-
-        box.innerHTML = `
-            <div class="empty">
-                Nenhuma oferta encontrada.
-            </div>
-        `;
-
-        updateStats([]);
-
-        return;
-    }
-
-    const produtos =
-        agruparProdutos(
-            lista
-        );
-
-    box.innerHTML = "";
-
-    produtos.forEach(
-        (
-            produto,
-            index
-        ) => {
-
-            const melhor =
-                produto.melhor;
-
-            const card =
-                document.createElement(
-                    "div"
-                );
-
-            card.className =
-                "product-card "
-                +
-                (
-                    index === 0
-                    ?
-                    "best"
-                    :
-                    ""
-                );
-
-            let badges = `
-                <span class="badge green">
-                    💰 MENOR PREÇO
-                </span>
-            `;
-
-            if (
-                produto.maiorDesconto > 0
-            ) {
-
-                badges += `
-                    <span class="badge yellow">
-                        🏷️ ${
-                            produto.maiorDesconto
-                        }% OFF
-                    </span>
-                `;
-            }
-
-            if (
-                melhor.frete_gratis
-            ) {
-
-                badges += `
-                    <span class="badge green">
-                        🚚 FRETE GRÁTIS
-                    </span>
-                `;
-            }
-
-            if (
-                produto.categoria
-            ) {
-
-                badges += `
-                    <span class="badge blue">
-                        ${
-                            escapeHtml(
-                                produto.categoria
-                            )
-                        }
-                    </span>
-                `;
-            }
-
-            card.innerHTML = `
-
-                <div class="badges">
-                    ${badges}
-                </div>
-
-                <div class="product-title">
-                    ${
-                        escapeHtml(
-                            produto.titulo
-                        )
-                    }
-                </div>
-
-                <div class="product-summary">
-                    🏪
-                    ${
-                        produto.quantidadeVendedores
-                    }
-                    vendedor(es)
-                    • menor preço:
-                    <b>
-                        ${
-                            money(
-                                produto.menorPreco
-                            )
-                        }
-                    </b>
-                </div>
-
-                <div>
-                    <span class="best-price">
-                        ${
-                            money(
-                                melhor.preco
-                            )
-                        }
-                    </span>
-
-                    ${
-                        Number(
-                            melhor.preco_original ||
-                            0
-                        )
-                        >
-                        Number(
-                            melhor.preco ||
-                            0
-                        )
-                        ?
-                        `
-                        <span class="old-price">
-                            ${
-                                money(
-                                    melhor.preco_original
-                                )
-                            }
-                        </span>
-                        `
-                        :
-                        ""
-                    }
-                </div>
-
-                <div class="sellers-title">
-                    🏪 Comparação de vendedores
-                </div>
-            `;
-
-            produto.ofertas.forEach(
-                (
-                    oferta,
-                    sellerIndex
-                ) => {
-
-                    const seller =
-                        document.createElement(
-                            "div"
-                        );
-
-                    seller.className =
-                        "seller "
-                        +
-                        (
-                            sellerIndex === 0
-                            ?
-                            "best-seller"
-                            :
-                            ""
-                        );
-
-                    let desconto = "";
-
-                    if (
-                        Number(
-                            oferta.desconto ||
-                            0
-                        ) > 0
-                    ) {
-
-                        desconto = `
-                            <span class="badge yellow">
-                                ${
-                                    oferta.desconto
-                                }% OFF
-                            </span>
-                        `;
-                    }
-
-                    const frete =
-                        oferta.frete_gratis
-                        ?
-                        "🚚 Frete grátis"
-                        :
-                        "🚚 Frete: "
-                        +
-                        money(
-                            oferta.frete
-                        );
-
-                    seller.innerHTML = `
-
-                        <div class="seller-row">
-
-                            <div>
-
-                                ${
-                                    sellerIndex === 0
-                                    ?
-                                    `
-                                    <span class="badge green">
-                                        🥇 MENOR PREÇO
-                                    </span>
-                                    `
-                                    :
-                                    `
-                                    <span class="badge">
-                                        #${
-                                            sellerIndex + 1
-                                        }
-                                    </span>
-                                    `
-                                }
-
-                                ${desconto}
-
-                            </div>
-
-                            <div class="seller-price">
-                                ${
-                                    money(
-                                        oferta.total
-                                    )
-                                }
-                            </div>
-
-                        </div>
-
-                        <div class="seller-info">
-
-                            👤 Vendedor:
-                            ${
-                                escapeHtml(
-                                    oferta.seller_id ||
-                                    "-"
-                                )
-                            }
-
-                            <br>
-
-                            💰 Produto:
-                            ${
-                                money(
-                                    oferta.preco
-                                )
-                            }
-
-                            <br>
-
-                            ${frete}
-
-                            <br>
-
-                            ⭐ Relevância:
-                            ${
-                                oferta.relevancia ??
-                                "-"
-                            }
-
-                            <br>
-
-                            🔥 Score:
-                            ${
-                                oferta.score_oferta ??
-                                "-"
-                            }
-
-                        </div>
-
-                        <div class="seller-actions">
-
-                            ${
-                                oferta.link
-                                ?
-                                `
-                                <a
-                                    class="open"
-                                    href="${
-                                        escapeHtml(
-                                            oferta.link
-                                        )
-                                    }"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                >
-                                    🛒 ABRIR OFERTA
-                                </a>
-                                `
-                                :
-                                ""
-                            }
-
-                            <button
-                                class="copy"
-                                type="button"
-                                onclick='copiarAnuncio(${JSON.stringify(oferta)})'
-                            >
-                                📋 COPIAR
-                            </button>
-
-                            <button
-                                class="save"
-                                type="button"
-                                onclick='salvarOferta(${JSON.stringify(oferta)})'
-                            >
-                                💾 SALVAR
-                            </button>
-
-                        </div>
-                    `;
-
-                    card.appendChild(
-                        seller
-                    );
-                }
-            );
-
-            box.appendChild(
-                card
-            );
-        }
-    );
-
-    updateStats(
-        lista
-    );
-}
-
-
-/* =========================================================
-   BUSCAR
-   ========================================================= */
-
-async function buscar() {
-
-    const query =
-        document.getElementById(
-            "search"
-        ).value.trim();
-
-    if (!query) {
-        return;
-    }
-
-    setStatus(
-        `🔎 Buscando "${query}"...`,
-        10
-    );
-
-    try {
-
-        const response =
-            await fetch(
-                "/api/buscar?q="
-                +
-                encodeURIComponent(
-                    query
-                ),
-                {
-                    cache:
-                        "no-store"
-                }
-            );
-
-        const data =
-            await response.json();
-
-        if (!data.ok) {
-
-            setStatus(
-                "❌ "
-                +
-                (
-                    data.erro ||
-                    "Erro na busca."
-                ),
-                0
-            );
+            box.innerHTML =
+                '<div class="empty">Nenhum cupom encontrado agora.</div>';
 
             return;
         }
 
-        resultadosGlobais =
-            data.resultados ||
-            [];
+        box.innerHTML =
+            data.coupons
+                .map(coupon => {
 
-        renderResults(
-            resultadosGlobais
-        );
+                    return `
+                        <div class="coupon">
 
-        setStatus(
-            `✅ ${resultadosGlobais.length} ofertas encontradas.`,
-            100
-        );
+                            <div class="coupon-code">
+                                🏷️ ${escapeHtml(coupon.code)}
+                            </div>
+
+                            <div class="coupon-info">
+
+                                ${coupon.percent}%
+                                OFF
+
+                                ${
+                                    coupon.min_purchase
+                                    ? " • mínimo " +
+                                      money(coupon.min_purchase)
+                                    : ""
+                                }
+
+                                ${
+                                    coupon.max_discount
+                                    ? " • máximo " +
+                                      money(coupon.max_discount)
+                                    : ""
+                                }
+
+                            </div>
+
+                        </div>
+                    `;
+
+                })
+                .join("");
 
     } catch (error) {
 
-        console.error(error);
-
-        setStatus(
-            "❌ Erro de conexão.",
-            0
-        );
+        box.innerHTML =
+            '<div class="empty">Erro ao carregar cupons.</div>';
     }
 }
 
 
-/* =========================================================
-   CATEGORIA
-   ========================================================= */
+async function cacar() {
 
-async function cacarCategoria(
-    categoria,
-    atualizarTela = true
-) {
+    const button =
+        document.getElementById("btnCacar");
 
-    setStatus(
-        `🔎 Caçando ${categoria}...`,
-        10
+    const progressArea =
+        document.getElementById("progressArea");
+
+    button.disabled = true;
+
+    button.innerText =
+        "⏳ CAÇANDO...";
+
+    progressArea.classList.remove(
+        "hidden"
     );
 
     try {
 
         const response =
-            await fetch(
-                "/api/cacar?categoria="
-                +
-                encodeURIComponent(
-                    categoria
-                ),
-                {
-                    cache:
-                        "no-store"
-                }
-            );
+            await fetch("/api/cacar");
 
         const data =
             await response.json();
 
         if (!data.ok) {
 
-            setStatus(
-                "❌ "
-                +
-                (
-                    data.erro ||
-                    "Erro."
-                ),
-                0
-            );
+            alert(data.message);
 
-            return [];
+            button.disabled = false;
+
+            button.innerText =
+                "🚀 CAÇAR OFERTAS COM CUPOM";
+
+            return;
         }
 
-        const resultados =
-            data.resultados ||
-            [];
-
-        if (atualizarTela) {
-
-            resultadosGlobais =
-                resultados;
-
-            renderResults(
-                resultadosGlobais
-            );
-        }
-
-        setStatus(
-            `✅ ${categoria} — ${resultados.length} ofertas.`,
-            100
-        );
-
-        return resultados;
+        iniciarMonitor();
 
     } catch (error) {
 
-        console.error(error);
-
-        setStatus(
-            `⚠️ Erro em ${categoria}.`,
-            0
+        alert(
+            "Erro ao iniciar a caça."
         );
 
-        return [];
+        button.disabled = false;
+
+        button.innerText =
+            "🚀 CAÇAR OFERTAS COM CUPOM";
     }
 }
 
 
-/* =========================================================
-   CAÇAR TODAS
-   ========================================================= */
+function iniciarMonitor() {
 
-async function cacarTodas() {
+    if (scanTimer) {
+        clearInterval(scanTimer);
+    }
 
-    const button =
+    scanTimer =
+        setInterval(
+            verificarStatus,
+            1200
+        );
+
+    verificarStatus();
+}
+
+
+async function verificarStatus() {
+
+    try {
+
+        const response =
+            await fetch("/api/status");
+
+        const data =
+            await response.json();
+
+        const progress =
+            Math.max(
+                0,
+                Math.min(
+                    100,
+                    Number(data.progress || 0)
+                )
+            );
+
         document.getElementById(
-            "btnCacar"
-        );
+            "progressBar"
+        ).style.width =
+            progress + "%";
 
-    button.disabled = true;
-
-    resultadosGlobais = [];
-
-    renderResults([]);
-
-    const total =
-        CATEGORIES.length;
-
-    for (
-        let i = 0;
-        i < total;
-        i++
-    ) {
-
-        const categoria =
-            CATEGORIES[i];
-
-        setStatus(
-            `🚀 ${i + 1}/${total} — Caçando ${categoria}...`,
-            Math.round(
-                (
-                    i /
-                    total
-                ) * 100
-            )
-        );
-
-        const resultados =
-            await cacarCategoria(
-                categoria,
-                false
+        document.getElementById(
+            "progressText"
+        ).innerText =
+            progress +
+            "% — " +
+            (
+                data.message ||
+                "Processando..."
             );
 
-        if (
-            Array.isArray(
-                resultados
-            )
-        ) {
+        if (data.offers) {
 
-            resultadosGlobais =
-                resultadosGlobais.concat(
-                    resultados
-                );
+            renderOffers(
+                data.offers
+            );
         }
 
-        resultadosGlobais =
-            dedupeClient(
-                resultadosGlobais
+        if (data.finished) {
+
+            clearInterval(
+                scanTimer
             );
 
-        renderResults(
-            resultadosGlobais
+            scanTimer = null;
+
+            const button =
+                document.getElementById(
+                    "btnCacar"
+                );
+
+            button.disabled = false;
+
+            button.innerText =
+                "🚀 CAÇAR OFERTAS COM CUPOM";
+
+            if (data.error) {
+
+                document.getElementById(
+                    "progressText"
+                ).innerText =
+                    "❌ " + data.error;
+
+            } else {
+
+                document.getElementById(
+                    "progressText"
+                ).innerText =
+                    "✅ " +
+                    data.message;
+            }
+
+            carregarCupons();
+        }
+
+    } catch (error) {
+
+        console.log(error);
+    }
+}
+
+
+async function buscar() {
+
+    const input =
+        document.getElementById(
+            "searchInput"
         );
 
-        setStatus(
-            `✅ ${categoria} concluída — ${resultadosGlobais.length} ofertas acumuladas.`,
-            Math.round(
-                (
-                    (i + 1)
-                    /
-                    total
-                ) * 100
-            )
+    const query =
+        input.value.trim();
+
+    if (!query) {
+
+        alert(
+            "Digite um produto."
         );
 
-        await sleep(100);
+        return;
     }
 
-    resultadosGlobais =
-        dedupeClient(
-            resultadosGlobais
+    const results =
+        document.getElementById(
+            "results"
         );
 
-    renderResults(
-        resultadosGlobais
-    );
+    results.innerHTML =
+        '<div class="empty">🔎 Procurando produtos e calculando cupons...</div>';
 
-    setStatus(
-        `🏆 CAÇA FINALIZADA — ${resultadosGlobais.length} ofertas em ${agruparProdutos(resultadosGlobais).length} produtos.`,
-        100
-    );
-
-    button.disabled = false;
-}
-
-
-/* =========================================================
-   DEDUPE NO NAVEGADOR
-   ========================================================= */
-
-function dedupeClient(
-    lista
-) {
-
-    const map =
-        new Map();
-
-    lista.forEach(
-        item => {
-
-            const chave =
-                (
-                    item.product_id
-                    ||
-                    String(
-                        item.titulo ||
-                        ""
-                    ).toLowerCase()
-                )
-                +
-                "|"
-                +
-                String(
-                    item.seller_id ||
-                    ""
-                );
-
-            const atual =
-                map.get(
-                    chave
-                );
-
-            if (
-                !atual
-                ||
-                Number(
-                    item.total ||
-                    999999
-                )
-                <
-                Number(
-                    atual.total ||
-                    999999
-                )
-            ) {
-
-                map.set(
-                    chave,
-                    item
-                );
-            }
-        }
-    );
-
-    return Array.from(
-        map.values()
-    );
-}
-
-
-/* =========================================================
-   COPIAR
-   ========================================================= */
-
-async function copiarAnuncio(
-    item
-) {
+    document.getElementById(
+        "resultCount"
+    ).innerText =
+        "Pesquisando...";
 
     try {
 
         const response =
             await fetch(
-                "/api/gerar-anuncio",
-                {
-                    method:
-                        "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body:
-                        JSON.stringify(
-                            item
-                        )
-                }
+                "/api/search?q=" +
+                encodeURIComponent(query)
             );
 
         const data =
             await response.json();
 
-        await navigator.clipboard.writeText(
-            data.texto
-        );
+        if (data.error) {
 
-        setStatus(
-            "📋 Anúncio copiado!",
-            100
+            results.innerHTML =
+                `<div class="empty">
+                    ${escapeHtml(data.error)}
+                </div>`;
+
+            return;
+        }
+
+        renderOffers(
+            data.offers || []
         );
 
     } catch (error) {
 
-        alert(
-            "Não foi possível copiar."
-        );
+        results.innerHTML =
+            '<div class="empty">Erro na busca.</div>';
     }
 }
 
 
-/* =========================================================
-   SALVAR
-   ========================================================= */
+function renderOffers(offers) {
 
-async function salvarOferta(
-    item
-) {
+    const results =
+        document.getElementById(
+            "results"
+        );
+
+    const count =
+        document.getElementById(
+            "resultCount"
+        );
+
+    const stats =
+        document.getElementById(
+            "stats"
+        );
+
+    if (!offers || !offers.length) {
+
+        results.innerHTML =
+            `
+            <div class="empty">
+                😕 Nenhuma oferta com cupom
+                encontrada com os critérios atuais.
+            </div>
+            `;
+
+        count.innerText =
+            "0 ofertas";
+
+        stats.innerHTML = "";
+
+        return;
+    }
+
+    count.innerText =
+        offers.length +
+        " ofertas encontradas";
+
+    const totalSavings =
+        offers.reduce(
+            (sum, offer) =>
+                sum +
+                Number(
+                    offer.coupon_discount || 0
+                ),
+            0
+        );
+
+    const freeShipping =
+        offers.filter(
+            offer =>
+                offer.free_shipping
+        ).length;
+
+    const lowest =
+        Math.min(
+            ...offers.map(
+                offer =>
+                    Number(
+                        offer.estimated_total || 0
+                    )
+            )
+        );
+
+    stats.innerHTML = `
+
+        <div class="stat">
+
+            <div class="stat-number">
+                ${offers.length}
+            </div>
+
+            <div class="stat-label">
+                ofertas com cupom
+            </div>
+
+        </div>
+
+        <div class="stat">
+
+            <div class="stat-number">
+                ${money(totalSavings)}
+            </div>
+
+            <div class="stat-label">
+                soma dos descontos estimados
+            </div>
+
+        </div>
+
+        <div class="stat">
+
+            <div class="stat-number">
+                ${money(lowest)}
+            </div>
+
+            <div class="stat-label">
+                menor total estimado
+            </div>
+
+        </div>
+
+        <div class="stat">
+
+            <div class="stat-number">
+                ${freeShipping}
+            </div>
+
+            <div class="stat-label">
+                com frete grátis
+            </div>
+
+        </div>
+    `;
+
+
+    results.innerHTML =
+        offers.map(
+            (offer, index) => {
+
+                const sellerDiscount =
+                    Number(
+                        offer.seller_discount || 0
+                    );
+
+                const couponPercent =
+                    Number(
+                        offer.coupon_percent || 0
+                    );
+
+                const couponDiscount =
+                    Number(
+                        offer.coupon_discount || 0
+                    );
+
+                const estimatedPrice =
+                    Number(
+                        offer.estimated_price || 0
+                    );
+
+                const shipping =
+                    Number(
+                        offer.shipping || 0
+                    );
+
+                const estimatedTotal =
+                    Number(
+                        offer.estimated_total || 0
+                    );
+
+                return `
+
+                <div class="offer">
+
+                    <div>
+
+                        <span class="badge badge-coupon">
+                            🏷️ CUPOM
+                        </span>
+
+                        ${
+                            offer.free_shipping
+                            ?
+                            `
+                            <span
+                                class="badge"
+                                style="
+                                    margin-left:5px;
+                                    background:#064e3b;
+                                    border-color:#10b981;
+                                    color:#a7f3d0;
+                                "
+                            >
+                                🚚 FRETE GRÁTIS
+                            </span>
+                            `
+                            :
+                            ""
+                        }
+
+                    </div>
+
+
+                    <div class="title">
+
+                        ${escapeHtml(
+                            offer.title
+                        )}
+
+                    </div>
+
+
+                    <div class="price-old">
+
+                        Preço no anúncio:
+                        ${money(
+                            offer.price
+                        )}
+
+                    </div>
+
+
+                    <div class="price-now">
+
+                        ${money(
+                            offer.price
+                        )}
+
+                    </div>
+
+
+                    ${
+                        sellerDiscount > 0
+                        ?
+                        `
+                        <div
+                            class="small"
+                            style="margin-top:4px;"
+                        >
+                            ↳ O anúncio já possui
+                            ${sellerDiscount.toFixed(1)}%
+                            de desconto do vendedor.
+                        </div>
+                        `
+                        :
+                        ""
+                    }
+
+
+                    <div class="coupon-box">
+
+                        <div
+                            class="coupon-code-big"
+                        >
+                            🏷️ CUPOM:
+                            ${escapeHtml(
+                                offer.coupon_code
+                            )}
+                        </div>
+
+
+                        <div
+                            style="
+                                margin-top:5px;
+                                color:#d1fae5;
+                            "
+                        >
+                            ${couponPercent}%
+                            OFF
+                        </div>
+
+
+                        <div class="savings">
+
+                            💰 Desconto estimado:
+                            ${money(
+                                couponDiscount
+                            )}
+
+                        </div>
+
+
+                        <div class="estimated">
+
+                            🔥 Preço estimado:
+                            ${money(
+                                estimatedPrice
+                            )}
+
+                        </div>
+
+
+                        <div
+                            style="
+                                color:#94a3b8;
+                                font-size:12px;
+                                margin-top:4px;
+                            "
+                        >
+                            + frete:
+                            ${
+                                offer.free_shipping
+                                ?
+                                "GRÁTIS"
+                                :
+                                money(shipping)
+                            }
+
+                        </div>
+
+
+                        <div
+                            style="
+                                color:#fff;
+                                font-size:14px;
+                                font-weight:800;
+                                margin-top:8px;
+                            "
+                        >
+                            💳 Total estimado:
+                            ${money(
+                                estimatedTotal
+                            )}
+
+                        </div>
+
+                    </div>
+
+
+                    <div class="warning">
+
+                        ⚠️ Desconto estimado.
+                        Confirme a elegibilidade do cupom
+                        no checkout antes de divulgar
+                        como preço final garantido.
+
+                    </div>
+
+
+                    <div class="actions">
+
+                        ${
+                            offer.url
+                            ?
+                            `
+                            <a
+                                href="${escapeHtml(
+                                    offer.url
+                                )}"
+                                target="_blank"
+                                rel="noopener"
+                                class="btn btn-blue"
+                            >
+                                🛒 Ver produto
+                            </a>
+                            `
+                            :
+                            ""
+                        }
+
+
+                        <button
+                            class="btn btn-dark"
+                            onclick='salvarOferta(${JSON.stringify(
+                                offer
+                            )})'
+                        >
+                            💾 Salvar
+                        </button>
+
+                    </div>
+
+
+                    <div
+                        class="small"
+                        style="margin-top:10px;"
+                    >
+
+                        ${escapeHtml(
+                            offer.category || ""
+                        )}
+
+                        ${
+                            offer.seller_id
+                            ?
+                            " • vendedor " +
+                            escapeHtml(
+                                offer.seller_id
+                            )
+                            :
+                            ""
+                        }
+
+                    </div>
+
+                </div>
+
+                `;
+
+            }
+        ).join("");
+}
+
+
+async function salvarOferta(offer) {
 
     try {
 
@@ -4009,18 +3122,15 @@ async function salvarOferta(
             await fetch(
                 "/api/salvar",
                 {
-                    method:
-                        "POST",
-
+                    method: "POST",
                     headers: {
                         "Content-Type":
                             "application/json"
                     },
-
                     body:
-                        JSON.stringify(
-                            item
-                        )
+                        JSON.stringify({
+                            offer: offer
+                        })
                 }
             );
 
@@ -4029,9 +3139,15 @@ async function salvarOferta(
 
         if (data.ok) {
 
-            setStatus(
-                "💾 Oferta salva!",
-                100
+            alert(
+                "Oferta salva!"
+            );
+
+        } else {
+
+            alert(
+                data.error ||
+                "Não foi possível salvar."
             );
         }
 
@@ -4044,58 +3160,18 @@ async function salvarOferta(
 }
 
 
-/* =========================================================
-   INICIALIZAÇÃO
-   ========================================================= */
+{% if connected %}
 
-renderCategories();
+carregarCupons();
 
-verificarMercadoLivre();
+{% endif %}
 
 </script>
 
 </body>
+
 </html>
 '''
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-@app.route("/")
-def index():
-
-    return render_template_string(
-        HTML,
-        categories=list(
-            CATALOG.keys()
-        )
-    )
-
-
-# ============================================================
-# ERROS
-# ============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-
-    return jsonify({
-        "ok": False,
-        "erro":
-            "Rota não encontrada."
-    }), 404
-
-
-@app.errorhandler(500)
-def server_error(error):
-
-    return jsonify({
-        "ok": False,
-        "erro":
-            "Erro interno do servidor."
-    }), 500
 
 
 # ============================================================
@@ -4107,12 +3183,12 @@ if __name__ == "__main__":
     port = int(
         os.getenv(
             "PORT",
-            "8080"
+            "8080",
         )
     )
 
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=False
+        debug=False,
     )
