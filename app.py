@@ -114,6 +114,92 @@ CATALOG = {
     ],
 }
 
+
+# ============================================================
+# TENDÊNCIAS / ALTA DE GIRO
+# ============================================================
+# O /trends do Mercado Livre retorna 50 termos semanalmente:
+# 10 de maior crescimento, 20 mais desejados e 20 tendências populares.
+# Usamos isso como sinal de descoberta e ranking, sem scraping.
+TREND_CATEGORY_ANCHORS = {
+    "📱 Celulares": ["smartphone", "iphone", "celular", "galaxy", "samsung", "motorola", "xiaomi", "redmi", "poco", "realme"],
+    "🌸 Perfumes": ["perfume", "parfum", "eau de parfum", "eau de toilette", "fragancia", "fragrancia"],
+    "🏋️ Academia": ["academia", "treino", "corrida", "tenis", "whey", "creatina", "suplemento", "legging", "short", "camiseta"],
+    "🔧 Ferramentas": ["furadeira", "parafusadeira", "esmerilhadeira", "serra", "ferramenta", "chave de impacto"],
+    "🎧 Eletrônicos": ["fone", "headset", "smartwatch", "tablet", "caixa de som", "camera", "power bank", "eletronico"],
+    "🏠 Casa": ["aspirador", "liquidificador", "cafeteira", "air fryer", "ventilador", "ferro de passar"],
+    "🍳 Cozinha": ["air fryer", "panela", "cafeteira", "liquidificador", "sanduicheira", "cozinha"],
+    "🚗 Automotivo": ["automotivo", "carro", "compressor", "aspirador automotivo", "carregador automotivo", "tapete automotivo"],
+    "👕 Moda": ["tenis", "mochila", "relogio", "bolsa", "oculos", "roupa", "camiseta", "vestido", "moda"],
+}
+
+_TRENDS_CACHE = {"at": 0.0, "items": []}
+_TRENDS_LOCK = threading.Lock()
+
+def trend_category(keyword):
+    t = norm(keyword)
+    best = None
+    best_hits = 0
+    for cat, anchors in TREND_CATEGORY_ANCHORS.items():
+        hits = sum(1 for a in anchors if norm(a) in t)
+        if hits > best_hits:
+            best_hits = hits
+            best = cat
+    return best if best_hits else None
+
+def get_trends(force=False):
+    """Consulta /trends no máximo uma vez por hora para não pesar a busca."""
+    now = time.time()
+    with _TRENDS_LOCK:
+        if not force and _TRENDS_CACHE["items"] and now - _TRENDS_CACHE["at"] < 3600:
+            return list(_TRENDS_CACHE["items"])
+        data, status, _ = ml_get(f"/trends/{SITE_ID}")
+        if status != 200 or not isinstance(data, list):
+            print(f"[TRENDS] HTTP {status}")
+            return list(_TRENDS_CACHE["items"])
+        items = []
+        for i, row in enumerate(data[:50], start=1):
+            if not isinstance(row, dict):
+                continue
+            kw = (row.get("keyword") or "").strip()
+            if not kw:
+                continue
+            if i <= 10:
+                bucket, base = "ALTA FORTE", 100
+            elif i <= 30:
+                bucket, base = "MAIS DESEJADO", 65
+            else:
+                bucket, base = "TENDÊNCIA", 35
+            items.append({
+                "keyword": kw,
+                "rank": i,
+                "bucket": bucket,
+                "score": max(5, base - ((i - 1) % 10) * 3),
+                "category": trend_category(kw),
+                "url": row.get("url") or "",
+            })
+        _TRENDS_CACHE.update({"at": now, "items": items})
+        print("[TRENDS] carregadas:", len(items))
+        return list(items)
+
+def trend_queries_for_categories(categories, limit=8):
+    """Seleciona poucos termos de tendência compatíveis com nossas categorias."""
+    cats = set(categories or CATALOG.keys())
+    trends = [x for x in get_trends() if x.get("category") in cats]
+    trends.sort(key=lambda x: (-x.get("score", 0), x.get("rank", 999)))
+    selected = []
+    seen = set()
+    # Prioriza crescimento real, mas reserva espaço para termos mais desejados.
+    for item in trends:
+        kw = norm(item.get("keyword"))
+        if not kw or kw in seen:
+            continue
+        seen.add(kw)
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
 # ============================================================
 # BANCO
 # ============================================================
@@ -197,6 +283,141 @@ def norm(s):
     trans = str.maketrans("áàãâäéèêëíìîïóòõôöúùûüç", "aaaaaeeeeiiiiooooouuuuc")
     s = s.translate(trans)
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]+", " ", s)).strip()
+
+# Mapeamento exato das buscas para as categorias que o usuário pediu.
+QUERY_TO_CATEGORY = {}
+for _cat, _queries in CATALOG.items():
+    for _q in _queries:
+        QUERY_TO_CATEGORY[norm(_q) if "norm" in globals() else _q.lower()] = _cat
+
+# Termos que indicam acessórios, peças ou produtos fora do que queremos
+# anunciar como a oportunidade principal. O filtro é aplicado ao título final.
+GLOBAL_BAD_PRODUCTS = [
+    "pingente", "charm", "enfeite", "miniatura", "brinquedo",
+    "capa", "capinha", "pelicula", "película", "adesivo", "case",
+    "suporte", "holder", "cordao", "cordão", "alca", "alça",
+    "peca de reposicao", "peça de reposição", "refil", "amostra",
+    "decant", "frasco vazio", "embalagem vazia", "manual",
+    "kit de limpeza", "protetor de tela", "carregador avulso",
+    "cabo avulso", "adaptador avulso", "bateria avulsa",
+    "broca avulsa", "disco de corte avulso", "ponteira avulsa"
+]
+
+CATEGORY_BAD_PRODUCTS = {
+    "📱 Celulares": [
+        "capa", "capinha", "pelicula", "película", "suporte", "carregador",
+        "cabo", "adaptador", "bateria avulsa", "case", "holder",
+        "pelicula de vidro", "película de vidro", "pingente", "charm"
+    ],
+    "🌸 Perfumes": [
+        "amostra", "decant", "decante", "frasco vazio", "porta perfume",
+        "refil vazio", "kit amostra"
+    ],
+    "🏋️ Academia": [
+        "halter", "halteres", "anilha", "barra olimpica", "barra olímpica",
+        "banco de musculacao", "banco de musculação", "caneleira",
+        "elastico de treino", "elástico de treino", "peca de reposicao",
+        "peça de reposição"
+    ],
+    "🔧 Ferramentas": [
+        "broca avulsa", "disco avulso", "lixa avulsa", "carvao para furadeira",
+        "carvão para furadeira", "bateria avulsa", "peca de reposicao",
+        "peça de reposição", "capa para ferramenta"
+    ],
+    "🎧 Eletrônicos": [
+        "capa", "capinha", "pelicula", "película", "cabo avulso",
+        "adaptador avulso", "suporte", "case avulso", "bateria avulsa"
+    ],
+    "🏠 Casa": [
+        "peca de reposicao", "peça de reposição", "filtro avulso",
+        "saco para aspirador", "refil", "capa", "suporte"
+    ],
+    "🍳 Cozinha": [
+        "peca de reposicao", "peça de reposição", "refil", "cuba avulsa",
+        "tampa avulsa", "cabo avulso", "capa", "suporte"
+    ],
+    "🚗 Automotivo": [
+        "capa de banco", "capa para volante", "pelicula", "película",
+        "adesivo", "suporte celular", "suporte de celular", "peca avulsa",
+        "peça avulsa", "parafuso avulso"
+    ],
+    "👕 Moda": [
+        "capa", "capinha", "pingente", "charm", "peca de reposicao",
+        "peça de reposição"
+    ],
+}
+
+def query_category(query):
+    qn = norm(query)
+    if qn in QUERY_TO_CATEGORY:
+        return QUERY_TO_CATEGORY[qn]
+    for key, cat in QUERY_TO_CATEGORY.items():
+        if key and (key in qn or qn in key):
+            return cat
+    return None
+
+def is_requested_product(title, query, category_name=None):
+    """Aceita somente produto principal dentro das categorias solicitadas."""
+    t = norm(title)
+    q = norm(query)
+    cat = category_name or query_category(query)
+
+    # Bloqueios universais para evitar acessórios e quinquilharias.
+    if any(term in t for term in [norm(x) for x in GLOBAL_BAD_PRODUCTS]):
+        return False
+
+    bad = CATEGORY_BAD_PRODUCTS.get(cat, [])
+    if any(norm(term) in t for term in bad):
+        return False
+
+    # Regras específicas: o título precisa representar o produto pedido,
+    # não apenas conter uma palavra da consulta.
+    if cat == "📱 Celulares":
+        strong = ["smartphone", "celular", "iphone", "galaxy", "samsung",
+                  "motorola", "xiaomi", "redmi", "poco", "realme"]
+        return any(x in t for x in strong)
+
+    if cat == "🌸 Perfumes":
+        return any(x in t for x in ["perfume", "eau de parfum", "eau de toilette", "parfum"])
+
+    if cat == "🏋️ Academia":
+        strong = ["roupa", "camiseta", "short", "legging", "tenis", "whey",
+                  "creatina", "pre treino", "suplemento"]
+        return any(x in t for x in strong)
+
+    if cat == "🔧 Ferramentas":
+        return any(x in t for x in ["furadeira", "parafusadeira", "esmerilhadeira",
+                                    "kit ferramentas", "maleta ferramentas", "serra",
+                                    "chave de impacto", "ferramenta eletrica",
+                                    "ferramenta elétrica"])
+
+    if cat == "🎧 Eletrônicos":
+        return any(x in t for x in ["fone", "headset", "smartwatch", "tablet",
+                                    "caixa de som", "camera", "câmera", "power bank"])
+
+    if cat == "🏠 Casa":
+        return any(x in t for x in ["aspirador", "liquidificador", "cafeteira",
+                                    "air fryer", "ventilador", "ferro de passar"])
+
+    if cat == "🍳 Cozinha":
+        return any(x in t for x in ["air fryer", "panela elétrica", "panela",
+                                    "jogo de panelas", "cafeteira", "liquidificador",
+                                    "sanduicheira", "sandwichera"])
+
+    if cat == "🚗 Automotivo":
+        return any(x in t for x in ["compressor automotivo", "aspirador automotivo",
+                                    "carregador automotivo", "ferramenta automotiva",
+                                    "tapete automotivo"])
+
+    if cat == "👕 Moda":
+        return any(x in t for x in ["tenis masculino", "tenis feminino", "mochila",
+                                    "relogio masculino", "relógio masculino",
+                                    "bolsa feminina", "oculos de sol", "óculos de sol"])
+
+    # Busca manual: exige que o termo principal esteja no título.
+    terms = [x for x in q.split() if len(x) >= 4]
+    return bool(terms) and sum(1 for x in terms if x in t) >= max(1, min(2, len(terms)))
+
 
 def discount(price, original):
     try:
@@ -1404,49 +1625,68 @@ def _fetch_product_fast(pid, raw=None, base=None):
     return None
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    """Caça rápida e tolerante a falhas de catálogo.
-
-    A busca principal usa somente a API do Mercado Livre. Não abre páginas
-    públicas e não procura cupom durante a caça. O objetivo é entregar uma
-    lista consistente de produtos; cupons ficam em etapa separada.
-    """
+    """Busca produtos pedidos + sinais oficiais de tendência e mais vendidos."""
     products = {}
-    # Mais candidatos para compensar produtos de catálogo que não expõem
-    # vendedores pelo endpoint /products/{id}/items.
-    target_candidates = 180
+    target_candidates = 220
+    base_queries = [q for q in queries if q]
+    requested_categories = set(query_category(q) for q in base_queries if query_category(q)) or set(CATALOG.keys())
 
-    # 1) Busca textual: barata e ampla.
-    for q in queries:
+    # 1) Busca textual principal.
+    for q in base_queries:
         results = search_products_direct(q, 20)
         for raw in results:
             if not isinstance(raw, dict):
                 continue
             pid = raw.get("id") or raw.get("product_id")
-            if not pid or pid in products:
+            if not pid:
                 continue
-            products[pid] = {
-                "raw": raw,
-                "category_id": None,
-                "category_name": None,
-                "query": q,
-            }
+            entry = products.setdefault(pid, {
+                "raw": raw, "category_id": None, "category_name": query_category(q),
+                "query": q, "trend_score": 0, "trend_keyword": None,
+                "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+            })
+            entry["raw"] = raw
 
-    # 2) Reforço com MAIS VENDIDOS. A API /highlights entrega os 20
-    # principais produtos/itens por categoria e é justamente a fonte oficial
-    # indicada pelo ML para descobrir produtos de alto giro.
-    # Descobrimos no máximo uma categoria relevante por consulta para não
-    # transformar a atualização em centenas de chamadas.
+    # 2) TENDÊNCIAS: adiciona alguns termos que estão em alta agora.
+    # O /trends é atualizado semanalmente; não fazemos scraping.
+    trend_items = trend_queries_for_categories(requested_categories, limit=8)
+    for tr in trend_items:
+        q = tr["keyword"]
+        results = search_products_direct(q, 15)
+        for raw in results:
+            if not isinstance(raw, dict):
+                continue
+            pid = raw.get("id") or raw.get("product_id")
+            if not pid:
+                continue
+            entry = products.setdefault(pid, {
+                "raw": raw, "category_id": None, "category_name": tr.get("category"),
+                "query": q, "trend_score": 0, "trend_keyword": None,
+                "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+            })
+            if tr.get("score", 0) > entry.get("trend_score", 0):
+                entry.update({
+                    "trend_score": tr.get("score", 0),
+                    "trend_keyword": q,
+                    "trend_bucket": tr.get("bucket"),
+                    "trend_rank": tr.get("rank"),
+                    "category_name": tr.get("category") or entry.get("category_name"),
+                    "query": q,
+                })
+
+    # 3) Descobre categorias e reforça com os 20 mais vendidos de cada uma.
     highlight_categories = {}
-    for q in queries:
+    for q in base_queries:
         if len(highlight_categories) >= 9:
             break
         try:
             cats = discover_categories(q)
-            if cats:
-                c = cats[0]
+            for c in cats[:2]:
                 cid = c.get("category_id")
                 if cid and cid not in highlight_categories:
                     highlight_categories[cid] = c.get("category_name") or cid
+                    if len(highlight_categories) >= 9:
+                        break
         except Exception as e:
             print("[HIGHLIGHT CATEGORY ERRO]", q, repr(e))
 
@@ -1459,32 +1699,41 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 pid = raw.get("id") or raw.get("product_id") or raw.get("catalog_product_id")
                 if not pid:
                     continue
-                if pid not in products:
-                    products[pid] = {
-                        "raw": raw,
-                        "category_id": cid,
-                        "category_name": cname,
-                        "query": cname,
-                    }
+                pos = raw.get("position")
+                entry = products.setdefault(pid, {
+                    "raw": raw, "category_id": cid, "category_name": cname,
+                    "query": cname, "trend_score": 0, "trend_keyword": None,
+                    "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+                })
+                if pos is not None:
+                    try:
+                        pos = int(pos)
+                        old = entry.get("best_seller_position")
+                        if old is None or pos < old:
+                            entry["best_seller_position"] = pos
+                    except Exception:
+                        pass
+                entry["category_id"] = entry.get("category_id") or cid
+                entry["category_name"] = entry.get("category_name") or cname
         except Exception as e:
             print("[HIGHLIGHTS ERRO]", cid, repr(e))
 
-    # Limite de segurança: bastante maior que antes, sem deixar a busca
-    # crescer indefinidamente.
     if len(products) > target_candidates:
-        products = dict(list(products.items())[:target_candidates])
+        # Prioriza candidatos com tendência/mais vendidos antes de cortar.
+        ordered = sorted(products.items(), key=lambda kv: (
+            -(kv[1].get("trend_score") or 0),
+            kv[1].get("best_seller_position") if kv[1].get("best_seller_position") is not None else 999,
+        ))
+        products = dict(ordered[:target_candidates])
 
-    print("[PRODUTOS CANDIDATOS]", len(products))
+    print("[PRODUTOS CANDIDATOS]", len(products), "| tendências", len(trend_items))
 
     fetched = []
-    # Quatro workers: suficiente para reduzir a espera sem criar pico grande.
     with ThreadPoolExecutor(max_workers=4) as executor:
-        future_map = {}
-        for pid, base in list(products.items())[:target_candidates]:
-            future_map[executor.submit(
-                _fetch_product_fast, pid, base.get("raw"), base
-            )] = (pid, base)
-
+        future_map = {
+            executor.submit(_fetch_product_fast, pid, base.get("raw"), base): (pid, base)
+            for pid, base in products.items()
+        }
         for fut in as_completed(future_map):
             try:
                 result = fut.result()
@@ -1497,19 +1746,18 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers = []
     seen_products = set()
-
     for result in fetched:
         try:
             pid, p, item, base = result
             title = p.get("name") or p.get("title") or pid
-            score = relevance(title, base.get("query", ""))
+            query_used = base.get("query", "")
+            cat_name = base.get("category_name") or query_category(query_used) or trend_category(query_used)
 
-            # Em buscas genéricas não descartamos produtos só porque o título
-            # não bateu com um perfil interno. Penalizamos apenas resultados
-            # claramente ruins para o termo pesquisado.
+            if not is_requested_product(title, query_used, cat_name):
+                continue
+            score = relevance(title, query_used)
             if score < -20:
                 continue
-
             if pid in seen_products:
                 continue
             seen_products.add(pid)
@@ -1517,21 +1765,17 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             item_id = item.get("item_id")
             if not item_id:
                 continue
-
             try:
                 price = float(item.get("price")) if item.get("price") is not None else None
             except Exception:
                 price = None
 
-            # Só consulta sale_price quando realmente necessário.
             sale_original = None
             if price is None or price <= 0 or price > 100000:
                 sale_price, sale_original = get_current_sale_price(item_id)
                 if sale_price is not None:
                     price = sale_price
-
             if not valid_catalog_price(price):
-                print("[PREÇO INVÁLIDO]", item_id, title, price)
                 continue
 
             original = sale_original
@@ -1541,21 +1785,18 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     original = float(op) if op is not None else None
                 except Exception:
                     original = None
-
             if original is None and isinstance(p.get("buy_box_winner"), dict):
                 bb = p["buy_box_winner"]
                 for key in ("regular_price", "original_price"):
                     try:
                         if bb.get(key) is not None:
-                            original = float(bb[key])
-                            break
+                            original = float(bb[key]); break
                     except Exception:
                         pass
 
             seller_disc = discount(price, original)
             if seller_disc < float(min_discount or 0):
                 continue
-
             shipping = item.get("shipping_cost")
             shipping_known = shipping is not None
             total_price = total(price, shipping) if shipping_known else price
@@ -1572,69 +1813,49 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if pictures and isinstance(pictures[0], dict):
                 image = pictures[0].get("url") or pictures[0].get("secure_url")
 
-            offers.append({
-                "product_id": pid,
-                "item_id": item_id,
-                "title": title,
-                "modelo_nome": model_name(title),
-                "especificacoes": specs(title),
-                "image": image,
-                "category_name": base.get("category_name") or "Produto",
-                "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
-                "price": price,
-                "original_price": original,
-                "discount": seller_disc,
-                "seller_id": item.get("seller_id"),
-                "condition": item.get("condition"),
-                "free_shipping": bool(item.get("free_shipping")),
-                "shipping_cost": shipping,
-                "shipping_known": shipping_known,
-                "total_price": total_price,
-                "relevance_score": score,
-                "sold_quantity": sold_quantity,
-                "giro_score": giro_score,
-                "cupom": None,
-                "desconto_cupom": 0,
-                "percentual_cupom_efetivo": 0,
-                "cupom_match": None,
-                "cupom_uso_limite": None,
-                "cupom_confirmado": False,
-                "cupom_status": "não verificado",
-                "cash_discount": 0,
-                "cash_label": None,
-                "cash_final": None,
-                "melhor_forma": None,
-                "maior_desconto": 0,
-                "preco_com_cupom": None,
-                "preco_final_melhor": None,
-                "affiliate_link": "",
-                "extra_earnings": 0,
-            })
+            trend_score = float(base.get("trend_score") or 0)
+            best_pos = base.get("best_seller_position")
+            best_score = max(0, 100 - ((int(best_pos) - 1) * 5)) if best_pos else 0
+            opportunity_score = round(
+                trend_score * 1.5 + best_score * 1.2 + giro_score +
+                (20 if shipping_known and item.get("free_shipping") else 0) +
+                min(30, max(0, seller_disc)) + max(0, score) * 0.15,
+                2
+            )
 
-            # Cupom é uma etapa separada: aqui usamos apenas as regras
-            # públicas atuais como CANDIDATO, sem afirmar elegibilidade.
-            candidate = best_public_coupon_candidate(title, price)
-            if candidate:
-                o = offers[-1]
-                o["cupom"] = candidate
-                o["desconto_cupom"] = candidate["desconto_estimado"]
-                o["percentual_cupom_efetivo"] = candidate["percentual_efetivo"]
-                o["cupom_match"] = "candidato_regras_publicas"
-                o["cupom_uso_limite"] = candidate.get("usage_limit")
-                o["cupom_confirmado"] = False
-                o["cupom_status"] = "candidato — confirme no checkout"
-                o["preco_com_cupom"] = round(max(0, float(price) - candidate["desconto_estimado"]), 2)
-                o["preco_final_melhor"] = o["preco_com_cupom"]
-                o["maior_desconto"] = candidate["desconto_estimado"]
+            offers.append({
+                "product_id": pid, "item_id": item_id, "title": title,
+                "modelo_nome": model_name(title), "especificacoes": specs(title),
+                "image": image, "category_name": cat_name or "Produto",
+                "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
+                "price": price, "original_price": original, "discount": seller_disc,
+                "seller_id": item.get("seller_id"), "condition": item.get("condition"),
+                "free_shipping": bool(item.get("free_shipping")),
+                "shipping_cost": shipping, "shipping_known": shipping_known,
+                "total_price": total_price, "relevance_score": score,
+                "sold_quantity": sold_quantity, "giro_score": giro_score,
+                "trend_score": trend_score, "trend_keyword": base.get("trend_keyword"),
+                "trend_bucket": base.get("trend_bucket"), "trend_rank": base.get("trend_rank"),
+                "best_seller_position": best_pos, "opportunity_score": opportunity_score,
+                "cupom": None, "desconto_cupom": 0, "percentual_cupom_efetivo": 0,
+                "cupom_match": None, "cupom_uso_limite": None, "cupom_confirmado": False,
+                "cupom_status": "não verificado", "cash_discount": 0, "cash_label": None,
+                "cash_final": None, "melhor_forma": None, "maior_desconto": 0,
+                "preco_com_cupom": None, "preco_final_melhor": None,
+                "affiliate_link": "", "extra_earnings": 0,
+            })
         except Exception as e:
             print("[OFERTA ERRO]", repr(e))
 
     def ranking_oferta(o):
         total_real = float(o.get("total_price") or o.get("price") or 999999)
         return (
+            -(o.get("opportunity_score") or 0),
             0 if o.get("shipping_known") else 1,
             0 if o.get("free_shipping") else 1,
             total_real,
+            -(o.get("trend_score") or 0),
+            (o.get("best_seller_position") if o.get("best_seller_position") is not None else 999),
             -(o.get("giro_score") or 0),
             -(o.get("discount") or 0),
             -(o.get("relevance_score") or 0),
@@ -1642,19 +1863,12 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         )
 
     offers.sort(key=ranking_oferta)
-
-    # Um produto de catálogo = uma oportunidade. Isso evita repetir o mesmo
-    # produto por sellers diferentes.
     groups = {}
     for o in offers:
         groups.setdefault(o["product_id"], {
-            "product_id": o["product_id"],
-            "title": o["title"],
-            "modelo_nome": o["modelo_nome"],
-            "especificacoes": o["especificacoes"],
-            "image": o["image"],
-            "category_name": o.get("category_name", ""),
-            "ofertas": []
+            "product_id": o["product_id"], "title": o["title"],
+            "modelo_nome": o["modelo_nome"], "especificacoes": o["especificacoes"],
+            "image": o["image"], "category_name": o.get("category_name", ""), "ofertas": []
         })["ofertas"].append(o)
 
     models = []
@@ -1664,31 +1878,29 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             g["ofertas"] = g["ofertas"][:1]
             g["ofertas"][0]["menor_preco_modelo"] = True
             models.append(g)
-
     models.sort(key=lambda g: ranking_oferta(g["ofertas"][0]))
     models = models[:30]
     flat = [o for g in models for o in g["ofertas"]]
 
     valores = [o.get("price") for o in flat if o.get("price") is not None]
     totais = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
-
     couponed = [o for o in flat if o.get("cupom")]
     coupon_discounts = [float(o.get("desconto_cupom") or 0) for o in couponed if float(o.get("desconto_cupom") or 0) > 0]
     final_coupon = [float(o.get("preco_com_cupom")) for o in couponed if o.get("preco_com_cupom") is not None]
     usage = [o.get("cupom_uso_limite") for o in couponed if o.get("cupom_uso_limite")]
+    trend_count = sum(1 for o in flat if o.get("trend_score", 0) > 0)
+    best_count = sum(1 for o in flat if o.get("best_seller_position") is not None)
     stats = {
-        "ofertas": len(flat),
-        "cupom candidato": len(couponed),
-        "cupons com limite": len(usage),
-        "maior desconto estimado": brl(max(coupon_discounts or [0])),
+        "ofertas": len(flat), "produtos em alta": trend_count,
+        "mais vendidos": best_count, "cupom candidato": len(couponed),
+        "cupons com limite": len(usage), "maior desconto estimado": brl(max(coupon_discounts or [0])),
         "menor preço com cupom": brl(min(final_coupon)) if final_coupon else "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais or [0])),
         "produtos sem cupom": len(flat) - len(couponed),
-        "modo": "rápido — cupom candidato por regras públicas",
+        "modo": "produtos certos + tendência de alta + mais vendidos",
     }
     return {"stats": stats, "modelos": models, "ofertas": flat}
-
 
 def auto_scan(category=None, min_discount=0):
     if category:
@@ -1980,6 +2192,8 @@ function seller(o,mi,oi){
  <div class="price">${brl(o.price)}</div>
  ${o.original_price?`<div class="old">De: ${brl(o.original_price)}</div>`:''}
  ${o.discount>0?`<div class="green">🔥 ${o.discount}% OFF</div>`:''}
+ ${o.trend_score>0?`<div class="green">📈 ${esc(o.trend_bucket||'Produto em alta')}${o.trend_rank?` · #${o.trend_rank} nas tendências`:''}</div>`:''}
+ ${o.best_seller_position?`<div class="green">🏆 Mais vendido · posição #${o.best_seller_position}</div>`:''}
  ${o.free_shipping?'<div class="green">🚚 Frete grátis</div>':''}
  ${o.shipping_known ? (Number(o.shipping_cost||0)>0 ? `<div>🚚 Frete: ${brl(o.shipping_cost)}</div><div class="green"><b>💰 Total pago estimado: ${brl(o.total_price)}</b></div>` : `<div class="green"><b>💰 Total pago: ${brl(o.total_price)}</b></div>`) : '<div class="small">🚚 Frete não informado pelo Mercado Livre</div>'}
  ${cup?`<div class="coupon"><b>🎟️ CUPOM CANDIDATO: ${esc(cup.code || cup.label || 'Cupom disponível')}</b>
@@ -2030,14 +2244,14 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 69,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos a partir de R$ 69,90 combinando produtos pedidos, mais vendidos e tendências de alta. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS RÁPIDO</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons são candidatos calculados pelas regras públicas atuais; a elegibilidade final deve ser confirmada no checkout.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca usa a API do Mercado Livre e combina tendências semanais + ranking de mais vendidos. Cupons continuam separados nesta etapa.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
