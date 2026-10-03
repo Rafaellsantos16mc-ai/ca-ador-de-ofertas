@@ -16,7 +16,6 @@ from flask import (
     session,
     jsonify,
     render_template_string,
-    send_file,
 )
 
 # ============================================================
@@ -46,20 +45,30 @@ ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 
 SITE_ID = "MLB"
 
-MIN_PRODUCT_PRICE = 69.90
-MAX_PRODUCTS = 45
-SEARCH_LIMIT = 6
+# ============================================================
+# CAÇADOR
+# ============================================================
 
+MIN_PRODUCT_PRICE = 69.90
+
+# Mantemos baixo para não sobrecarregar o Railway
+MAX_PRODUCTS = 24
+
+PRODUCT_SEARCH_LIMIT = 5
+
+# Quantidade máxima de produtos detalhados
+MAX_DETAIL_REQUESTS = 24
+
+# Consultas usadas no buscador de produtos
 CATEGORIES = [
     "celular",
     "perfume",
-    "academia",
     "ferramentas",
     "eletronicos",
     "casa",
     "automotivo",
     "cozinha",
-    "moda",
+    "academia",
 ]
 
 # ============================================================
@@ -124,8 +133,17 @@ def save_token(
 
     conn.execute("""
         INSERT INTO ml_auth
-        (id, access_token, refresh_token, expires_at, user_id, nickname, updated_at)
+        (
+            id,
+            access_token,
+            refresh_token,
+            expires_at,
+            user_id,
+            nickname,
+            updated_at
+        )
         VALUES (1, ?, ?, ?, ?, ?, ?)
+
         ON CONFLICT(id) DO UPDATE SET
             access_token=excluded.access_token,
             refresh_token=excluded.refresh_token,
@@ -164,7 +182,9 @@ def get_auth():
 def clear_auth():
     conn = db()
 
-    conn.execute("DELETE FROM ml_auth WHERE id=1")
+    conn.execute(
+        "DELETE FROM ml_auth WHERE id=1"
+    )
 
     conn.commit()
     conn.close()
@@ -175,6 +195,7 @@ def clear_auth():
 # ============================================================
 
 def refresh_access_token():
+
     auth = get_auth()
 
     if not auth:
@@ -189,6 +210,7 @@ def refresh_access_token():
         return None
 
     try:
+
         response = requests.post(
             ML_TOKEN_URL,
             data={
@@ -200,10 +222,19 @@ def refresh_access_token():
             timeout=20,
         )
 
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
 
         if response.status_code != 200:
-            print("[REFRESH ERRO]", response.status_code, data)
+
+            print(
+                "[REFRESH ERRO]",
+                response.status_code,
+                data
+            )
+
             return None
 
         new_access = data.get("access_token")
@@ -219,7 +250,10 @@ def refresh_access_token():
         save_token(
             access_token=new_access,
             refresh_token=new_refresh,
-            expires_in=data.get("expires_in", 21600),
+            expires_in=data.get(
+                "expires_in",
+                21600
+            ),
             user_id=auth.get("user_id"),
             nickname=auth.get("nickname"),
         )
@@ -229,23 +263,34 @@ def refresh_access_token():
         return new_access
 
     except Exception as e:
-        print("[REFRESH EXCEPTION]", repr(e))
+
+        print(
+            "[REFRESH EXCEPTION]",
+            repr(e)
+        )
+
         return None
 
 
 def get_access_token(force_refresh=False):
+
     auth = get_auth()
 
     if not auth:
         return None
 
     token = auth.get("access_token")
-    expires_at = int(auth.get("expires_at") or 0)
 
-    if not force_refresh and token:
-        # Renova 2 minutos antes de expirar
-        if expires_at > int(time.time()) + 120:
-            return token
+    expires_at = int(
+        auth.get("expires_at") or 0
+    )
+
+    if (
+        not force_refresh
+        and token
+        and expires_at > int(time.time()) + 120
+    ):
+        return token
 
     return refresh_access_token()
 
@@ -255,40 +300,52 @@ def get_access_token(force_refresh=False):
 # ============================================================
 
 def ml_headers(token=None):
+
     if token is None:
         token = get_access_token()
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "CacadorDeOfertas/1.0",
+        "User-Agent": "CacadorDeOfertas/2.0",
     }
 
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = (
+            f"Bearer {token}"
+        )
 
     return headers
 
 
 # ============================================================
-# REQUEST ML
+# REQUEST MERCADO LIVRE
 # ============================================================
 
-def ml_get(path, params=None, retry_refresh=True):
+def ml_get(
+    path,
+    params=None,
+    retry_refresh=True
+):
+
     token = get_access_token()
 
     if not token:
+
         return {
             "ok": False,
             "status": 401,
             "data": {
                 "error": "not_authenticated",
-                "message": "Mercado Livre não conectado."
+                "message": (
+                    "Mercado Livre não conectado."
+                )
             }
         }
 
     url = ML_API + path
 
     try:
+
         response = requests.get(
             url,
             params=params,
@@ -303,12 +360,20 @@ def ml_get(path, params=None, retry_refresh=True):
                 "raw": response.text[:3000]
             }
 
-        if response.status_code == 401 and retry_refresh:
-            print("[ML] Token expirado. Tentando renovar...")
+        # Token expirado
+        if (
+            response.status_code == 401
+            and retry_refresh
+        ):
+
+            print(
+                "[ML] Token expirado. Renovando..."
+            )
 
             new_token = refresh_access_token()
 
             if new_token:
+
                 return ml_get(
                     path,
                     params=params,
@@ -323,6 +388,7 @@ def ml_get(path, params=None, retry_refresh=True):
         }
 
     except requests.RequestException as e:
+
         return {
             "ok": False,
             "status": 0,
@@ -339,10 +405,12 @@ def ml_get(path, params=None, retry_refresh=True):
 # ============================================================
 
 def make_code_verifier():
+
     return secrets.token_urlsafe(64)[:128]
 
 
 def make_code_challenge(verifier):
+
     digest = hashlib.sha256(
         verifier.encode("utf-8")
     ).digest()
@@ -356,13 +424,19 @@ def make_code_challenge(verifier):
 def ml_login():
 
     if not ML_CLIENT_ID:
+
         return """
         <h2>ML_CLIENT_ID não configurado</h2>
-        <p>Configure as variáveis do Mercado Livre no Railway.</p>
+        <p>
+            Configure as variáveis do Mercado Livre
+            no Railway.
+        </p>
         """, 500
 
     verifier = make_code_verifier()
-    challenge = make_code_challenge(verifier)
+    challenge = make_code_challenge(
+        verifier
+    )
 
     state = secrets.token_urlsafe(32)
 
@@ -374,16 +448,16 @@ def ml_login():
         "client_id": ML_CLIENT_ID,
         "redirect_uri": ML_REDIRECT_URI,
         "state": state,
-
-        # IMPORTANTE:
-        # A aplicação precisa solicitar leitura e refresh.
         "scope": "read offline_access",
-
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
 
-    url = ML_AUTH + "?" + urlencode(params)
+    url = (
+        ML_AUTH
+        + "?"
+        + urlencode(params)
+    )
 
     return redirect(url)
 
@@ -398,12 +472,18 @@ def ml_callback():
     error = request.args.get("error")
 
     if error:
+
         return f"""
         <html>
         <body style="font-family:Arial;padding:30px">
             <h2>❌ Mercado Livre recusou a autorização</h2>
             <p><b>Erro:</b> {error}</p>
-            <p>{request.args.get("error_description", "")}</p>
+            <p>
+                {request.args.get(
+                    "error_description",
+                    ""
+                )}
+            </p>
             <a href="/">Voltar</a>
         </body>
         </html>
@@ -412,28 +492,57 @@ def ml_callback():
     code = request.args.get("code")
     state = request.args.get("state")
 
-    saved_state = session.get("ml_state")
-    verifier = session.get("ml_code_verifier")
+    saved_state = session.get(
+        "ml_state"
+    )
+
+    verifier = session.get(
+        "ml_code_verifier"
+    )
 
     if not code:
-        return "Código OAuth não recebido.", 400
+        return (
+            "Código OAuth não recebido.",
+            400
+        )
 
     if not state or state != saved_state:
-        return "State OAuth inválido.", 400
+
+        return (
+            "State OAuth inválido.",
+            400
+        )
 
     if not verifier:
-        return "Code verifier não encontrado. Faça o login novamente.", 400
+
+        return (
+            "Code verifier não encontrado. "
+            "Faça o login novamente.",
+            400
+        )
 
     try:
+
         response = requests.post(
             ML_TOKEN_URL,
             data={
-                "grant_type": "authorization_code",
-                "client_id": ML_CLIENT_ID,
-                "client_secret": ML_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": ML_REDIRECT_URI,
-                "code_verifier": verifier,
+                "grant_type":
+                    "authorization_code",
+
+                "client_id":
+                    ML_CLIENT_ID,
+
+                "client_secret":
+                    ML_CLIENT_SECRET,
+
+                "code":
+                    code,
+
+                "redirect_uri":
+                    ML_REDIRECT_URI,
+
+                "code_verifier":
+                    verifier,
             },
             timeout=25,
         )
@@ -446,40 +555,71 @@ def ml_callback():
             }
 
         if response.status_code != 200:
+
             return f"""
             <html>
             <body style="font-family:Arial;padding:30px">
                 <h2>❌ Erro ao obter token</h2>
-                <pre>{json.dumps(data, indent=2, ensure_ascii=False)}</pre>
+
+                <pre>{
+                    json.dumps(
+                        data,
+                        indent=2,
+                        ensure_ascii=False
+                    )
+                }</pre>
+
                 <a href="/">Voltar</a>
             </body>
             </html>
             """, response.status_code
 
-        access_token = data.get("access_token")
+        access_token = data.get(
+            "access_token"
+        )
 
         if not access_token:
-            return "Mercado Livre não retornou access_token.", 500
 
-        refresh_token = data.get("refresh_token")
-        expires_in = data.get("expires_in", 21600)
+            return (
+                "Mercado Livre não retornou "
+                "access_token.",
+                500
+            )
 
-        # Busca usuário
+        refresh_token = data.get(
+            "refresh_token"
+        )
+
+        expires_in = data.get(
+            "expires_in",
+            21600
+        )
+
+        # Buscar usuário
         user_response = requests.get(
             ML_API + "/users/me",
-            headers=ml_headers(access_token),
+            headers=ml_headers(
+                access_token
+            ),
             timeout=20,
         )
 
         user_data = {}
 
         try:
-            user_data = user_response.json()
+            user_data = (
+                user_response.json()
+            )
         except Exception:
             pass
 
-        user_id = user_data.get("id")
-        nickname = user_data.get("nickname")
+        user_id = user_data.get(
+            "id"
+        )
+
+        nickname = user_data.get(
+            "nickname"
+        )
 
         save_token(
             access_token=access_token,
@@ -489,12 +629,22 @@ def ml_callback():
             nickname=nickname,
         )
 
-        session.pop("ml_state", None)
-        session.pop("ml_code_verifier", None)
+        session.pop(
+            "ml_state",
+            None
+        )
 
-        return redirect("/?connected=1")
+        session.pop(
+            "ml_code_verifier",
+            None
+        )
+
+        return redirect(
+            "/?connected=1"
+        )
 
     except Exception as e:
+
         return f"""
         <html>
         <body style="font-family:Arial;padding:30px">
@@ -515,10 +665,57 @@ def ml_reconnect():
 
     clear_auth()
 
-    session.pop("ml_state", None)
-    session.pop("ml_code_verifier", None)
+    session.pop(
+        "ml_state",
+        None
+    )
 
-    return redirect("/mercadolivre/login")
+    session.pop(
+        "ml_code_verifier",
+        None
+    )
+
+    return redirect(
+        "/mercadolivre/login"
+    )
+
+
+# ============================================================
+# UTILITÁRIOS
+# ============================================================
+
+def safe_float(value):
+
+    try:
+
+        if value is None:
+            return 0.0
+
+        if isinstance(value, str):
+
+            value = (
+                value
+                .replace("R$", "")
+                .replace(".", "")
+                .replace(",", ".")
+                .strip()
+            )
+
+        return float(value)
+
+    except Exception:
+
+        return 0.0
+
+
+def money(value):
+
+    return (
+        f"R$ {safe_float(value):,.2f}"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
 
 
 # ============================================================
@@ -526,9 +723,7 @@ def ml_reconnect():
 # ============================================================
 
 def clean_diagnostic_data(data):
-    """
-    Remove informações que não precisamos mostrar no painel.
-    """
+
     if not isinstance(data, dict):
         return data
 
@@ -543,6 +738,7 @@ def clean_diagnostic_data(data):
     }
 
     for key in list(result.keys()):
+
         if key.lower() in sensitive_keys:
             result[key] = "***"
 
@@ -555,55 +751,106 @@ def ml_diagnostic():
     auth = get_auth()
 
     result = {
-        "generated_at": int(time.time()),
+        "generated_at":
+            int(time.time()),
+
         "configuration": {
-            "client_id_configured": bool(ML_CLIENT_ID),
-            "client_secret_configured": bool(ML_CLIENT_SECRET),
-            "redirect_uri": ML_REDIRECT_URI,
-            "site_id": SITE_ID,
-            "oauth_scope_requested": "read offline_access",
+            "client_id_configured":
+                bool(ML_CLIENT_ID),
+
+            "client_secret_configured":
+                bool(ML_CLIENT_SECRET),
+
+            "redirect_uri":
+                ML_REDIRECT_URI,
+
+            "site_id":
+                SITE_ID,
+
+            "oauth_scope_requested":
+                "read offline_access",
         },
+
         "token": {
-            "connected": bool(auth and auth.get("access_token")),
-            "user_id": auth.get("user_id") if auth else None,
-            "nickname": auth.get("nickname") if auth else None,
-            "expires_at": auth.get("expires_at") if auth else None,
-            "has_refresh_token": bool(
-                auth and auth.get("refresh_token")
-            ),
+            "connected":
+                bool(
+                    auth
+                    and auth.get(
+                        "access_token"
+                    )
+                ),
+
+            "user_id":
+                auth.get("user_id")
+                if auth else None,
+
+            "nickname":
+                auth.get("nickname")
+                if auth else None,
+
+            "expires_at":
+                auth.get("expires_at")
+                if auth else None,
+
+            "has_refresh_token":
+                bool(
+                    auth
+                    and auth.get(
+                        "refresh_token"
+                    )
+                ),
         },
+
         "tests": {},
+
         "conclusion": [],
     }
 
     if not auth:
+
         result["conclusion"].append(
-            "Nenhum token do Mercado Livre está salvo. Conecte a conta primeiro."
+            "Nenhum token salvo."
         )
+
         return jsonify(result)
 
     # --------------------------------------------------------
-    # TESTE 1 - USERS ME
+    # USERS ME
     # --------------------------------------------------------
 
-    me = ml_get("/users/me")
+    me = ml_get(
+        "/users/me"
+    )
 
     result["tests"]["users_me"] = {
-        "status": me["status"],
-        "ok": me["ok"],
-        "data": clean_diagnostic_data(me.get("data")),
+        "status":
+            me["status"],
+
+        "ok":
+            me["ok"],
+
+        "data":
+            clean_diagnostic_data(
+                me.get("data")
+            ),
     }
 
     user_id = None
 
-    if me["ok"] and isinstance(me.get("data"), dict):
-        user_id = me["data"].get("id")
+    if (
+        me["ok"]
+        and isinstance(
+            me.get("data"),
+            dict
+        )
+    ):
 
-        if user_id:
-            result["token"]["user_id"] = user_id
+        user_id = me["data"].get(
+            "id"
+        )
 
     # --------------------------------------------------------
-    # TESTE 2 - APPLICATION
+    # APPLICATION
     # --------------------------------------------------------
 
     if ML_CLIENT_ID:
@@ -613,116 +860,53 @@ def ml_diagnostic():
         )
 
         result["tests"]["application"] = {
-            "status": app_test["status"],
-            "ok": app_test["ok"],
-            "data": clean_diagnostic_data(
-                app_test.get("data")
-            ),
-        }
+            "status":
+                app_test["status"],
 
-    # --------------------------------------------------------
-    # TESTE 3 - APLICAÇÕES DO USUÁRIO
-    # --------------------------------------------------------
+            "ok":
+                app_test["ok"],
 
-    if user_id:
-
-        user_apps = ml_get(
-            f"/users/{user_id}/applications"
-        )
-
-        result["tests"]["user_applications"] = {
-            "status": user_apps["status"],
-            "ok": user_apps["ok"],
-            "data": clean_diagnostic_data(
-                user_apps.get("data")
-            ),
-        }
-
-        # Procura nossa aplicação
-        if user_apps["ok"] and isinstance(
-            user_apps.get("data"),
-            (dict, list)
-        ):
-
-            raw_apps = user_apps.get("data")
-
-            if isinstance(raw_apps, dict):
-                apps_list = (
-                    raw_apps.get("applications")
-                    or raw_apps.get("results")
-                    or []
-                )
-            else:
-                apps_list = raw_apps
-
-            matching_app = None
-
-            for item in apps_list:
-                if not isinstance(item, dict):
-                    continue
-
-                app_id = str(
-                    item.get("app_id")
-                    or item.get("id")
-                    or ""
-                )
-
-                if app_id == str(ML_CLIENT_ID):
-                    matching_app = item
-                    break
-
-            if matching_app:
-
-                scopes = (
-                    matching_app.get("scopes")
-                    or matching_app.get("scope")
-                )
-
-                result["tests"]["our_grant"] = {
-                    "found": True,
-                    "app_id": matching_app.get(
-                        "app_id",
-                        matching_app.get("id")
-                    ),
-                    "scopes": scopes,
-                    "data": clean_diagnostic_data(
-                        matching_app
-                    ),
-                }
-
-                if scopes:
-
-                    scope_text = (
-                        " ".join(scopes)
-                        if isinstance(scopes, list)
-                        else str(scopes)
+            "data":
+                clean_diagnostic_data(
+                    app_test.get(
+                        "data"
                     )
-
-                    if "read" not in scope_text:
-                        result["conclusion"].append(
-                            "A autorização encontrada não possui o escopo read."
-                        )
-
-                    if "urn:mp:" in scope_text:
-                        result["conclusion"].append(
-                            "Foram encontrados escopos relacionados ao Mercado Pago nesta autorização. Verifique a separação entre aplicativos Mercado Livre e Mercado Pago."
-                        )
-
-            else:
-
-                result["tests"]["our_grant"] = {
-                    "found": False,
-                    "message": (
-                        "A aplicação não apareceu entre as autorizações "
-                        "deste usuário."
-                    ),
-                }
+                ),
+        }
 
     # --------------------------------------------------------
-    # TESTE 4 - BUSCA
+    # PRODUCTS SEARCH
     # --------------------------------------------------------
 
-    search_test = ml_get(
+    product_test = ml_get(
+        "/products/search",
+        params={
+            "site_id": SITE_ID,
+            "q": "celular",
+            "limit": 1,
+        }
+    )
+
+    result["tests"]["products_search"] = {
+        "status":
+            product_test["status"],
+
+        "ok":
+            product_test["ok"],
+
+        "data":
+            clean_diagnostic_data(
+                product_test.get(
+                    "data"
+                )
+            ),
+    }
+
+    # --------------------------------------------------------
+    # TESTE ANTIGO
+    # --------------------------------------------------------
+
+    old_search = ml_get(
         "/sites/MLB/search",
         params={
             "q": "celular",
@@ -730,166 +914,306 @@ def ml_diagnostic():
         }
     )
 
-    result["tests"]["search"] = {
-        "status": search_test["status"],
-        "ok": search_test["ok"],
-        "data": clean_diagnostic_data(
-            search_test.get("data")
-        ),
+    result["tests"]["old_search"] = {
+        "status":
+            old_search["status"],
+
+        "ok":
+            old_search["ok"],
+
+        "data":
+            clean_diagnostic_data(
+                old_search.get(
+                    "data"
+                )
+            ),
     }
 
-    # --------------------------------------------------------
-    # CONCLUSÃO AUTOMÁTICA
-    # --------------------------------------------------------
+    if old_search["status"] == 403:
 
-    if me["status"] == 403:
         result["conclusion"].append(
-            "O token atual recebe HTTP 403 em /users/me. Isso indica problema de autorização/permissão da aplicação ou do acesso concedido."
+            "O endpoint antigo /sites/MLB/search continua retornando 403. A nova caça não depende mais desse endpoint."
         )
 
-    if search_test["status"] == 403:
+    if product_test["status"] == 403:
+
         result["conclusion"].append(
-            "A busca /sites/MLB/search está bloqueada com HTTP 403. O código de busca não consegue contornar esse bloqueio."
+            "O endpoint /products/search também retornou 403 com o token atual."
         )
 
-    app_data = (
-        result["tests"]
-        .get("application", {})
-        .get("data")
-    )
+    elif product_test["ok"]:
 
-    if isinstance(app_data, dict):
-
-        if app_data.get("active") is False:
-            result["conclusion"].append(
-                "A aplicação do Mercado Livre aparece como inativa."
-            )
-
-        certification = app_data.get(
-            "certification_status"
+        result["conclusion"].append(
+            "O endpoint /products/search respondeu corretamente."
         )
 
-        if certification:
-            result["conclusion"].append(
-                f"Status de certificação informado pelo Mercado Livre: {certification}"
-            )
+    if me["status"] == 200:
 
-    if not result["conclusion"]:
         result["conclusion"].append(
-            "Os testes básicos não encontraram um bloqueio evidente. A busca pode ser executada novamente."
+            "O token consegue acessar /users/me."
         )
 
     return jsonify(result)
 
 
 # ============================================================
-# BUSCA DE PRODUTOS
+# BUSCAR PRODUTOS
 # ============================================================
 
-def search_items(query, diagnostics=None):
+def search_products(
+    query,
+    diagnostics=None
+):
 
     if diagnostics is None:
         diagnostics = []
 
     response = ml_get(
-        "/sites/MLB/search",
+        "/products/search",
         params={
-            "q": query,
-            "limit": SEARCH_LIMIT,
+            "site_id":
+                SITE_ID,
+
+            "q":
+                query,
+
+            "status":
+                "active",
+
+            "limit":
+                PRODUCT_SEARCH_LIMIT,
+
+            "offset":
+                0,
         }
     )
 
-    status = response["status"]
-    data = response.get("data")
+    data = response.get(
+        "data"
+    )
 
-    if status != 200:
+    if response["status"] != 200:
 
         diagnostics.append({
-            "query": query,
-            "status": status,
-            "count": 0,
-            "error": data,
+            "type":
+                "product_search",
+
+            "query":
+                query,
+
+            "status":
+                response["status"],
+
+            "count":
+                0,
+
+            "error":
+                data,
         })
 
         return []
 
     results = []
 
-    if isinstance(data, dict):
-        results = data.get("results") or []
+    if isinstance(
+        data,
+        dict
+    ):
+
+        results = (
+            data.get("results")
+            or []
+        )
 
     diagnostics.append({
-        "query": query,
-        "status": 200,
-        "count": len(results),
+        "type":
+            "product_search",
+
+        "query":
+            query,
+
+        "status":
+            200,
+
+        "count":
+            len(results),
     })
 
     return results
 
 
 # ============================================================
-# PREÇO
+# DETALHE DO PRODUTO
 # ============================================================
 
-def safe_float(value):
+def get_product_detail(
+    product_id,
+    diagnostics=None
+):
 
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
-
-
-# ============================================================
-# DESCONTO
-# ============================================================
-
-def get_discount(item):
-
-    original = safe_float(
-        item.get("original_price")
+    response = ml_get(
+        f"/products/{product_id}"
     )
 
-    current = safe_float(
-        item.get("price")
+    if diagnostics is not None:
+
+        diagnostics.append({
+            "type":
+                "product_detail",
+
+            "product_id":
+                product_id,
+
+            "status":
+                response["status"],
+        })
+
+    if not response["ok"]:
+        return None
+
+    data = response.get(
+        "data"
     )
 
-    if original <= 0 or current <= 0:
-        return 0.0
+    if not isinstance(
+        data,
+        dict
+    ):
+        return None
 
-    if original <= current:
-        return 0.0
-
-    return round(
-        ((original - current) / original) * 100,
-        2
-    )
+    return data
 
 
 # ============================================================
-# CUPOM REAL
+# ITENS DO PRODUTO
 # ============================================================
 
-COUPON_PATTERNS = [
-    r"cupom.{0,80}",
-    r"coupon.{0,80}",
-    r"R\$\s*\d+\s*OFF",
-    r"\d+\s*%\s*OFF",
-    r"\d+\s*OFF",
-]
+def get_product_items(
+    product_id,
+    diagnostics=None
+):
+
+    response = ml_get(
+        f"/products/{product_id}/items"
+    )
+
+    if diagnostics is not None:
+
+        diagnostics.append({
+            "type":
+                "product_items",
+
+            "product_id":
+                product_id,
+
+            "status":
+                response["status"],
+        })
+
+    if not response["ok"]:
+        return []
+
+    data = response.get(
+        "data"
+    )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+        return []
+
+    items = (
+        data.get("results")
+        or data.get("items")
+        or []
+    )
+
+    if not isinstance(
+        items,
+        list
+    ):
+        return []
+
+    return items
 
 
-def detect_coupon_from_text(text):
+# ============================================================
+# CUPOM
+# ============================================================
+
+def clean_html_text(text):
 
     if not text:
-        return None
+        return ""
+
+    text = re.sub(
+        r"<script.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    text = re.sub(
+        r"<style.*?</style>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"&nbsp;",
+        " ",
+        text,
+        flags=re.IGNORECASE
+    )
 
     text = re.sub(
         r"\s+",
         " ",
-        str(text)
-    ).strip()
+        text
+    )
 
-    for pattern in COUPON_PATTERNS:
+    return text.strip()
+
+
+def parse_coupon_text(text):
+
+    if not text:
+        return None
+
+    text = clean_html_text(
+        text
+    )
+
+    if not text:
+        return None
+
+    # --------------------------------------------------------
+    # FIXO
+    # Exemplos:
+    # Cupom R$ 15 OFF
+    # R$15 OFF
+    # R$ 30 de desconto
+    # --------------------------------------------------------
+
+    fixed_patterns = [
+        r"(?:cupom\s*)?R\$\s*"
+        r"(\d+(?:[.,]\d+)?)\s*"
+        r"(?:OFF|DE\s+DESCONTO)",
+
+        r"(?:cupom\s*)?"
+        r"(\d+(?:[.,]\d+)?)\s*"
+        r"reais\s+off",
+    ]
+
+    for pattern in fixed_patterns:
 
         match = re.search(
             pattern,
@@ -899,17 +1223,118 @@ def detect_coupon_from_text(text):
 
         if match:
 
-            found = match.group(0).strip()
+            amount = safe_float(
+                match.group(1)
+            )
 
-            if len(found) > 160:
-                found = found[:160]
+            if amount > 0:
 
-            return found
+                return {
+                    "type":
+                        "fixed",
+
+                    "value":
+                        amount,
+
+                    "percent":
+                        0,
+
+                    "max_discount":
+                        None,
+
+                    "min_price":
+                        None,
+
+                    "raw":
+                        match.group(0).strip(),
+
+                    "confirmed":
+                        True,
+                }
+
+    # --------------------------------------------------------
+    # PERCENTUAL
+    # --------------------------------------------------------
+
+    percent_patterns = [
+        r"(\d+(?:[.,]\d+)?)\s*%\s*OFF",
+        r"(\d+(?:[.,]\d+)?)\s*%\s*de\s+desconto",
+    ]
+
+    for pattern in percent_patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+
+            percent = safe_float(
+                match.group(1)
+            )
+
+            if percent > 0:
+
+                # Procuramos limite próximo
+                max_discount = None
+
+                around = text[
+                    max(
+                        0,
+                        match.start() - 100
+                    ):
+                    min(
+                        len(text),
+                        match.end() + 300
+                    )
+                ]
+
+                max_match = re.search(
+                    r"(?:máx(?:imo)?|limite)"
+                    r".{0,40}?"
+                    r"R\$\s*"
+                    r"(\d+(?:[.,]\d+)?)",
+                    around,
+                    flags=re.IGNORECASE
+                )
+
+                if max_match:
+
+                    max_discount = safe_float(
+                        max_match.group(1)
+                    )
+
+                return {
+                    "type":
+                        "percent",
+
+                    "value":
+                        percent,
+
+                    "percent":
+                        percent,
+
+                    "max_discount":
+                        max_discount,
+
+                    "min_price":
+                        None,
+
+                    "raw":
+                        match.group(0).strip(),
+
+                    "confirmed":
+                        True,
+                }
 
     return None
 
 
-def get_public_page_coupon(url):
+def get_coupon_from_product_page(
+    url
+):
 
     if not url:
         return None
@@ -919,14 +1344,18 @@ def get_public_page_coupon(url):
         response = requests.get(
             url,
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 "
-                    "Version/17.0 Mobile/15E148 Safari/604.1"
-                )
+                "User-Agent":
+                    (
+                        "Mozilla/5.0 "
+                        "(iPhone; CPU iPhone OS 17_0 "
+                        "like Mac OS X) "
+                        "AppleWebKit/605.1.15 "
+                        "Version/17.0 "
+                        "Mobile/15E148 "
+                        "Safari/604.1"
+                    )
             },
-            timeout=15,
+            timeout=12,
             allow_redirects=True,
         )
 
@@ -935,88 +1364,554 @@ def get_public_page_coupon(url):
 
         html = response.text
 
-        # Procura somente evidências existentes na página.
-        coupon = detect_coupon_from_text(html)
+        text = clean_html_text(
+            html
+        )
 
-        return coupon
+        if not text:
+            return None
 
-    except Exception:
+        # Procuramos primeiro frases contendo cupom.
+        coupon_contexts = []
+
+        for match in re.finditer(
+            r"cupom",
+            text,
+            flags=re.IGNORECASE
+        ):
+
+            start = max(
+                0,
+                match.start() - 100
+            )
+
+            end = min(
+                len(text),
+                match.end() + 350
+            )
+
+            coupon_contexts.append(
+                text[start:end]
+            )
+
+            if len(coupon_contexts) >= 8:
+                break
+
+        for context in coupon_contexts:
+
+            coupon = parse_coupon_text(
+                context
+            )
+
+            if coupon:
+
+                coupon["source"] = (
+                    "pagina_produto"
+                )
+
+                return coupon
+
+        # Segunda tentativa:
+        # procura diretamente ofertas
+        coupon = parse_coupon_text(
+            text[:15000]
+        )
+
+        if coupon:
+
+            coupon["source"] = (
+                "pagina_produto"
+            )
+
+            return coupon
+
+        return None
+
+    except Exception as e:
+
+        print(
+            "[CUPOM PAGE ERRO]",
+            repr(e)
+        )
+
         return None
 
 
 # ============================================================
-# ANALISAR PRODUTO
+# CALCULAR CUPOM
 # ============================================================
 
-def analyze_product(item):
+def calculate_coupon(
+    price,
+    coupon
+):
 
-    item_id = item.get("id")
-
-    title = (
-        item.get("title")
-        or "Produto sem título"
+    price = safe_float(
+        price
     )
 
+    if price <= 0 or not coupon:
+        return None
+
+    coupon_type = coupon.get(
+        "type"
+    )
+
+    discount = 0.0
+
+    if coupon_type == "percent":
+
+        percent = safe_float(
+            coupon.get("percent")
+        )
+
+        discount = (
+            price * percent / 100
+        )
+
+        max_discount = coupon.get(
+            "max_discount"
+        )
+
+        if max_discount:
+
+            discount = min(
+                discount,
+                safe_float(
+                    max_discount
+                )
+            )
+
+    elif coupon_type == "fixed":
+
+        discount = safe_float(
+            coupon.get("value")
+        )
+
+    if discount <= 0:
+        return None
+
+    discount = min(
+        discount,
+        price
+    )
+
+    final_price = (
+        price - discount
+    )
+
+    effective_percent = (
+        discount / price * 100
+        if price > 0
+        else 0
+    )
+
+    result = dict(
+        coupon
+    )
+
+    result.update({
+        "discount":
+            round(discount, 2),
+
+        "final_price":
+            round(final_price, 2),
+
+        "effective_percent":
+            round(
+                effective_percent,
+                2
+            ),
+    })
+
+    return result
+
+
+# ============================================================
+# PREÇO DO ITEM
+# ============================================================
+
+def get_item_price(item):
+
+    # Endpoint /products/{id}/items
     price = safe_float(
         item.get("price")
     )
 
-    original_price = safe_float(
-        item.get("original_price")
+    if price > 0:
+        return price
+
+    # Alguns retornos podem trazer
+    # buy_box_winner ou sale_price
+    sale_price = item.get(
+        "sale_price"
+    )
+
+    if isinstance(
+        sale_price,
+        dict
+    ):
+
+        price = safe_float(
+            sale_price.get(
+                "amount"
+            )
+        )
+
+        if price > 0:
+            return price
+
+    return 0.0
+
+
+# ============================================================
+# ESCOLHER MELHOR ITEM
+# ============================================================
+
+def choose_best_item(
+    items
+):
+
+    valid = []
+
+    for item in items:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        condition = (
+            item.get("condition")
+            or "new"
+        )
+
+        if condition != "new":
+            continue
+
+        item_id = (
+            item.get("item_id")
+            or item.get("id")
+        )
+
+        if not item_id:
+            continue
+
+        price = get_item_price(
+            item
+        )
+
+        if price < MIN_PRODUCT_PRICE:
+            continue
+
+        permalink = (
+            item.get("permalink")
+            or ""
+        )
+
+        shipping = (
+            item.get("shipping")
+            or {}
+        )
+
+        free_shipping = bool(
+            shipping.get(
+                "free_shipping"
+            )
+        )
+
+        seller_id = item.get(
+            "seller_id"
+        )
+
+        valid.append({
+            "item_id":
+                item_id,
+
+            "price":
+                price,
+
+            "permalink":
+                permalink,
+
+            "seller_id":
+                seller_id,
+
+            "shipping":
+                shipping,
+
+            "free_shipping":
+                free_shipping,
+
+            "raw":
+                item,
+        })
+
+    if not valid:
+        return None
+
+    # Primeiro menor preço.
+    # Frete grátis serve como desempate.
+    valid.sort(
+        key=lambda x: (
+            x["price"],
+            not x["free_shipping"]
+        )
+    )
+
+    return valid[0]
+
+
+# ============================================================
+# ANALISAR PRODUTO DE CATÁLOGO
+# ============================================================
+
+def analyze_catalog_product(
+    product,
+    diagnostics
+):
+
+    product_id = (
+        product.get("id")
+        or product.get(
+            "product_id"
+        )
+    )
+
+    if not product_id:
+        return None
+
+    # --------------------------------------------------------
+    # DETALHE
+    # --------------------------------------------------------
+
+    detail = get_product_detail(
+        product_id,
+        diagnostics
+    )
+
+    if not detail:
+        detail = product
+
+    title = (
+        detail.get("name")
+        or detail.get("title")
+        or product.get("name")
+        or product.get("title")
+        or "Produto"
+    )
+
+    # --------------------------------------------------------
+    # ITENS / VENDEDORES
+    # --------------------------------------------------------
+
+    items = get_product_items(
+        product_id,
+        diagnostics
+    )
+
+    # --------------------------------------------------------
+    # BUY BOX COMO FALLBACK
+    # --------------------------------------------------------
+
+    if not items:
+
+        winner = (
+            detail.get(
+                "buy_box_winner"
+            )
+        )
+
+        if isinstance(
+            winner,
+            dict
+        ):
+
+            items = [
+                winner
+            ]
+
+    best_item = choose_best_item(
+        items
+    )
+
+    if not best_item:
+        return None
+
+    price = safe_float(
+        best_item["price"]
     )
 
     if price < MIN_PRODUCT_PRICE:
         return None
 
-    discount = get_discount(item)
-
     permalink = (
-        item.get("permalink")
+        best_item.get(
+            "permalink"
+        )
+        or detail.get(
+            "permalink"
+        )
         or ""
     )
 
-    thumbnail = (
-        item.get("thumbnail")
-        or ""
+    # --------------------------------------------------------
+    # IMAGEM
+    # --------------------------------------------------------
+
+    thumbnail = ""
+
+    pictures = (
+        detail.get(
+            "pictures"
+        )
+        or []
     )
 
-    shipping = item.get("shipping") or {}
+    if pictures:
 
-    free_shipping = bool(
-        shipping.get("free_shipping")
-    )
+        first_picture = pictures[0]
 
-    condition = (
-        item.get("condition")
-        or ""
-    )
+        if isinstance(
+            first_picture,
+            dict
+        ):
 
-    if condition and condition != "new":
-        return None
+            thumbnail = (
+                first_picture.get(
+                    "url"
+                )
+                or first_picture.get(
+                    "secure_url"
+                )
+                or ""
+            )
 
-    coupon = get_public_page_coupon(
-        permalink
-    )
+    if not thumbnail:
 
-    estimated_savings = 0.0
-
-    if original_price > price:
-        estimated_savings = round(
-            original_price - price,
-            2
+        thumbnail = (
+            product.get(
+                "thumbnail"
+            )
+            or ""
         )
 
+    # --------------------------------------------------------
+    # CUPOM
+    # --------------------------------------------------------
+
+    coupon_raw = (
+        get_coupon_from_product_page(
+            permalink
+        )
+    )
+
+    coupon_result = (
+        calculate_coupon(
+            price,
+            coupon_raw
+        )
+        if coupon_raw
+        else None
+    )
+
+    # --------------------------------------------------------
+    # SEM CUPOM
+    # --------------------------------------------------------
+
+    if not coupon_result:
+
+        return None
+
+    discount = safe_float(
+        coupon_result.get(
+            "discount"
+        )
+    )
+
+    final_price = safe_float(
+        coupon_result.get(
+            "final_price"
+        )
+    )
+
+    if discount <= 0:
+        return None
+
+    # --------------------------------------------------------
+    # RESULTADO
+    # --------------------------------------------------------
+
     return {
-        "id": item_id,
-        "title": title,
-        "price": price,
-        "original_price": original_price,
-        "discount": discount,
-        "coupon": coupon,
-        "estimated_savings": estimated_savings,
-        "permalink": permalink,
-        "thumbnail": thumbnail,
-        "free_shipping": free_shipping,
+        "product_id":
+            product_id,
+
+        "item_id":
+            best_item.get(
+                "item_id"
+            ),
+
+        "title":
+            title,
+
+        "thumbnail":
+            thumbnail,
+
+        "price":
+            round(
+                price,
+                2
+            ),
+
+        "coupon":
+            coupon_result,
+
+        "coupon_discount":
+            round(
+                discount,
+                2
+            ),
+
+        "final_price":
+            round(
+                final_price,
+                2
+            ),
+
+        "effective_discount":
+            round(
+                (
+                    discount
+                    / price
+                    * 100
+                ),
+                2
+            ),
+
+        "permalink":
+            permalink,
+
+        "seller_id":
+            best_item.get(
+                "seller_id"
+            ),
+
+        "free_shipping":
+            bool(
+                best_item.get(
+                    "free_shipping"
+                )
+            ),
+
+        # Deixamos claro que é
+        # cálculo baseado na evidência
+        # encontrada na página.
+        "coupon_status":
+            "confirmado_na_pagina",
+
+        "note":
+            "Valor do cupom calculado sobre o preço encontrado. Confirme a aplicação no checkout.",
     }
 
 
@@ -1029,159 +1924,347 @@ def api_hunt():
 
     auth = get_auth()
 
-    if not auth or not auth.get("access_token"):
+    if not auth or not auth.get(
+        "access_token"
+    ):
+
         return jsonify({
-            "ok": False,
-            "error": "Mercado Livre não conectado.",
-            "login_url": "/mercadolivre/login",
+            "ok":
+                False,
+
+            "error":
+                "Mercado Livre não conectado.",
+
+            "login_url":
+                "/mercadolivre/login",
         }), 401
 
     diagnostics = []
 
-    all_items = []
-    seen_ids = set()
+    products = []
+
+    seen_products = set()
 
     # --------------------------------------------------------
-    # BUSCAR
+    # BUSCA DE CATÁLOGO
     # --------------------------------------------------------
 
     for query in CATEGORIES:
 
-        items = search_items(
+        if len(products) >= MAX_PRODUCTS:
+            break
+
+        results = search_products(
             query,
             diagnostics
         )
 
-        for item in items:
+        for product in results:
 
-            item_id = item.get("id")
+            product_id = (
+                product.get("id")
+                or product.get(
+                    "product_id"
+                )
+            )
 
-            if not item_id:
+            if not product_id:
                 continue
 
-            if item_id in seen_ids:
+            if product_id in seen_products:
                 continue
 
-            seen_ids.add(item_id)
-            all_items.append(item)
+            seen_products.add(
+                product_id
+            )
 
-            if len(all_items) >= MAX_PRODUCTS:
+            products.append(
+                product
+            )
+
+            if len(products) >= MAX_PRODUCTS:
                 break
 
-        if len(all_items) >= MAX_PRODUCTS:
-            break
-
     # --------------------------------------------------------
-    # SE NÃO VEIO NADA
+    # NADA ENCONTRADO
     # --------------------------------------------------------
 
-    if not all_items:
+    if not products:
 
         has_403 = any(
             d.get("status") == 403
             for d in diagnostics
         )
 
-        message = (
-            "O Mercado Livre está retornando HTTP 403 para as buscas."
-            if has_403
-            else
-            "Nenhum anúncio foi retornado pela busca."
-        )
+        if has_403:
+
+            message = (
+                "O Mercado Livre retornou "
+                "HTTP 403 para /products/search."
+            )
+
+        else:
+
+            message = (
+                "Nenhum produto foi retornado."
+            )
 
         return jsonify({
-            "ok": False,
-            "message": message,
+            "ok":
+                False,
+
+            "message":
+                message,
+
             "stats": {
-                "queries": len(CATEGORIES),
-                "returned": 0,
-                "unique": 0,
-                "analyzed": 0,
-                "opportunities": 0,
-                "coupons": 0,
-                "value": 0,
+                "queries":
+                    len(CATEGORIES),
+
+                "returned":
+                    0,
+
+                "unique":
+                    0,
+
+                "analyzed":
+                    0,
+
+                "opportunities":
+                    0,
+
+                "coupons":
+                    0,
+
+                "value":
+                    0,
+
+                "final_value":
+                    0,
             },
-            "diagnostics": diagnostics,
-            "diagnostic_url": "/api/ml-diagnostic",
+
+            "diagnostics":
+                diagnostics,
+
+            "diagnostic_url":
+                "/api/ml-diagnostic",
         })
 
     # --------------------------------------------------------
-    # ANALISAR
+    # ANALISAR PRODUTOS
     # --------------------------------------------------------
 
     offers = []
 
     analyzed = 0
-    coupons = 0
 
-    for item in all_items:
+    for product in products:
 
         analyzed += 1
 
         try:
 
-            offer = analyze_product(item)
+            offer = (
+                analyze_catalog_product(
+                    product,
+                    diagnostics
+                )
+            )
 
             if not offer:
                 continue
 
-            # Consideramos oportunidade quando existe
-            # desconto real ou frete grátis.
+            # Segurança:
+            # produto precisa custar pelo menos
+            # R$ 69,90 antes do cupom.
             if (
-                offer["discount"] > 0
-                or offer["free_shipping"]
-                or offer["coupon"]
+                offer["price"]
+                < MIN_PRODUCT_PRICE
             ):
+                continue
 
-                offers.append(offer)
-
-                if offer["coupon"]:
-                    coupons += 1
+            offers.append(
+                offer
+            )
 
         except Exception as e:
 
             print(
-                "[ERRO ANALISANDO]",
-                item.get("id"),
+                "[ERRO PRODUTO]",
+                product.get("id"),
                 repr(e)
             )
 
-    # Ordenar pelo maior desconto
+    # --------------------------------------------------------
+    # AGRUPAMENTO FINAL
+    # --------------------------------------------------------
+
+    unique_offers = {}
+
+    for offer in offers:
+
+        product_id = offer.get(
+            "product_id"
+        )
+
+        if not product_id:
+            continue
+
+        current = unique_offers.get(
+            product_id
+        )
+
+        if not current:
+
+            unique_offers[
+                product_id
+            ] = offer
+
+            continue
+
+        # Mantém a combinação que gera
+        # maior desconto real em R$.
+        current_discount = safe_float(
+            current.get(
+                "coupon_discount"
+            )
+        )
+
+        new_discount = safe_float(
+            offer.get(
+                "coupon_discount"
+            )
+        )
+
+        if new_discount > current_discount:
+
+            unique_offers[
+                product_id
+            ] = offer
+
+        elif (
+            new_discount == current_discount
+            and safe_float(
+                offer.get(
+                    "final_price"
+                )
+            )
+            < safe_float(
+                current.get(
+                    "final_price"
+                )
+            )
+        ):
+
+            unique_offers[
+                product_id
+            ] = offer
+
+    offers = list(
+        unique_offers.values()
+    )
+
+    # --------------------------------------------------------
+    # ORDENAR
+    # --------------------------------------------------------
+
     offers.sort(
         key=lambda x: (
-            x.get("discount", 0),
-            x.get("estimated_savings", 0)
+            safe_float(
+                x.get(
+                    "coupon_discount"
+                )
+            ),
+            safe_float(
+                x.get(
+                    "effective_discount"
+                )
+            ),
+            -safe_float(
+                x.get(
+                    "final_price"
+                )
+            ),
         ),
         reverse=True
     )
 
-    total_value = sum(
-        safe_float(x.get("estimated_savings"))
+    # --------------------------------------------------------
+    # ESTATÍSTICAS
+    # --------------------------------------------------------
+
+    total_coupon_discount = sum(
+        safe_float(
+            x.get(
+                "coupon_discount"
+            )
+        )
+        for x in offers
+    )
+
+    total_final_value = sum(
+        safe_float(
+            x.get(
+                "final_price"
+            )
+        )
         for x in offers
     )
 
     return jsonify({
-        "ok": True,
-        "message": (
-            f"Caça finalizada — "
-            f"{len(offers)} oportunidades encontradas."
-        ),
+
+        "ok":
+            True,
+
+        "message":
+            (
+                f"Caça finalizada — "
+                f"{len(offers)} produtos "
+                f"com cupom encontrados."
+            ),
+
         "stats": {
-            "queries": len(CATEGORIES),
-            "returned": len(all_items),
-            "unique": len(seen_ids),
-            "analyzed": analyzed,
-            "opportunities": len(offers),
-            "coupons": coupons,
-            "value": round(total_value, 2),
+
+            "queries":
+                len(CATEGORIES),
+
+            "returned":
+                len(products),
+
+            "unique":
+                len(seen_products),
+
+            "analyzed":
+                analyzed,
+
+            "opportunities":
+                len(offers),
+
+            "coupons":
+                len(offers),
+
+            "value":
+                round(
+                    total_coupon_discount,
+                    2
+                ),
+
+            "final_value":
+                round(
+                    total_final_value,
+                    2
+                ),
         },
-        "diagnostics": diagnostics,
-        "offers": offers,
+
+        "diagnostics":
+            diagnostics,
+
+        "offers":
+            offers,
     })
 
 
 # ============================================================
-# API STATUS
+# STATUS
 # ============================================================
 
 @app.route("/api/status")
@@ -1190,21 +2273,26 @@ def api_status():
     auth = get_auth()
 
     return jsonify({
-        "connected": bool(
-            auth and auth.get("access_token")
-        ),
-        "user_id": (
+
+        "connected":
+            bool(
+                auth
+                and auth.get(
+                    "access_token"
+                )
+            ),
+
+        "user_id":
             auth.get("user_id")
-            if auth else None
-        ),
-        "nickname": (
+            if auth else None,
+
+        "nickname":
             auth.get("nickname")
-            if auth else None
-        ),
-        "expires_at": (
+            if auth else None,
+
+        "expires_at":
             auth.get("expires_at")
-            if auth else None
-        ),
+            if auth else None,
     })
 
 
@@ -1214,6 +2302,7 @@ def api_status():
 
 HTML = r"""
 <!DOCTYPE html>
+
 <html lang="pt-BR">
 
 <head>
@@ -1243,8 +2332,8 @@ body {
 .container {
     width: 94%;
     max-width: 1100px;
-    margin: 0 auto;
-    padding: 25px 0 60px;
+    margin: auto;
+    padding: 20px 0 60px;
 }
 
 .header {
@@ -1255,7 +2344,7 @@ body {
 }
 
 .header h1 {
-    margin: 0 0 6px;
+    margin: 0 0 7px;
     font-size: 28px;
 }
 
@@ -1267,7 +2356,7 @@ body {
 .card {
     background: white;
     border-radius: 18px;
-    padding: 20px;
+    padding: 18px;
     margin-bottom: 18px;
     box-shadow: 0 4px 18px rgba(0,0,0,.06);
 }
@@ -1289,12 +2378,18 @@ body {
     color: #991b1b;
 }
 
+.buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 button,
 .button {
     display: inline-block;
     border: 0;
     border-radius: 12px;
-    padding: 14px 18px;
+    padding: 13px 17px;
     font-size: 15px;
     font-weight: bold;
     cursor: pointer;
@@ -1303,22 +2398,21 @@ button,
     background: #111827;
 }
 
-button.primary {
-    background: #3483fa;
+.primary {
+    background: #3483fa !important;
 }
 
-button.danger {
+.danger {
     background: #dc2626;
 }
 
 button:disabled {
     opacity: .5;
-    cursor: not-allowed;
 }
 
 .progress {
     width: 100%;
-    height: 10px;
+    height: 9px;
     background: #e5e7eb;
     border-radius: 20px;
     overflow: hidden;
@@ -1327,45 +2421,47 @@ button:disabled {
 
 .progress-bar {
     height: 100%;
-    width: 0%;
+    width: 0;
     background: #3483fa;
     transition: width .3s;
 }
 
 .stats {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
+    grid-template-columns:
+        repeat(4, 1fr);
+    gap: 10px;
 }
 
 .stat {
     background: #f9fafb;
     border-radius: 14px;
-    padding: 15px;
+    padding: 14px;
 }
 
 .stat strong {
     display: block;
     font-size: 23px;
-    margin-top: 4px;
+    margin-top: 5px;
 }
 
 .offers {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns:
+        repeat(3, 1fr);
     gap: 15px;
 }
 
 .offer {
     border: 1px solid #e5e7eb;
-    border-radius: 15px;
-    padding: 14px;
+    border-radius: 16px;
+    padding: 13px;
     background: white;
 }
 
 .offer img {
     width: 100%;
-    height: 180px;
+    height: 190px;
     object-fit: contain;
     border-radius: 10px;
     background: #f8fafc;
@@ -1377,62 +2473,77 @@ button:disabled {
     min-height: 42px;
 }
 
-.price {
-    font-size: 23px;
-    font-weight: bold;
-}
-
-.old {
-    color: #9ca3af;
+.before {
+    color: #6b7280;
+    font-size: 14px;
     text-decoration: line-through;
 }
 
-.discount {
-    display: inline-block;
-    background: #dcfce7;
-    color: #166534;
-    padding: 5px 8px;
-    border-radius: 8px;
+.price-final {
+    color: #111827;
+    font-size: 25px;
     font-weight: bold;
-    margin: 7px 0;
+    margin-top: 4px;
 }
 
-.coupon {
-    display: block;
+.coupon-box {
     background: #fef3c7;
     color: #92400e;
-    padding: 8px;
-    border-radius: 8px;
-    margin: 8px 0;
+    border-radius: 10px;
+    padding: 10px;
+    margin: 10px 0;
+}
+
+.coupon-title {
+    font-weight: bold;
+}
+
+.saving {
+    color: #166534;
+    font-weight: bold;
+    margin-top: 6px;
+}
+
+.confirmed {
+    color: #166534;
+    font-size: 12px;
+    margin-top: 7px;
+}
+
+.shipping {
     font-size: 13px;
+    margin: 8px 0;
 }
 
 .diagnostic {
     background: #111827;
     color: #e5e7eb;
     border-radius: 14px;
-    padding: 15px;
+    padding: 14px;
     overflow: auto;
-    font-size: 12px;
+    font-size: 11px;
     white-space: pre-wrap;
 }
 
 .notice {
-    padding: 14px;
+    padding: 12px;
     border-radius: 12px;
     background: #fff7ed;
     color: #9a3412;
-    margin-top: 15px;
+    margin-top: 12px;
+    font-size: 13px;
 }
 
 @media(max-width: 800px) {
 
     .offers {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns:
+            1fr 1fr;
     }
 
     .stats {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns:
+            1fr 1fr;
     }
 }
 
@@ -1442,13 +2553,10 @@ button:disabled {
         grid-template-columns: 1fr;
     }
 
-    .stats {
-        grid-template-columns: 1fr 1fr;
-    }
-
     .container {
         width: 92%;
     }
+
 }
 
 </style>
@@ -1464,8 +2572,8 @@ button:disabled {
         <h1>🤑 Caçador de Ofertas</h1>
 
         <p>
-            Busca produtos reais do Mercado Livre e identifica
-            descontos e cupons encontrados na página.
+            Produtos acima de R$ 69,90
+            com cupom encontrado.
         </p>
 
     </div>
@@ -1473,11 +2581,14 @@ button:disabled {
 
     <div class="card">
 
-        <div id="status" class="status">
+        <div
+            id="status"
+            class="status"
+        >
             Verificando conexão...
         </div>
 
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="buttons">
 
             <a
                 class="button primary"
@@ -1515,48 +2626,44 @@ button:disabled {
         </div>
 
         <div class="progress">
+
             <div
                 id="progressBar"
                 class="progress-bar"
             ></div>
+
         </div>
 
         <div class="stats">
 
             <div class="stat">
-                Consultas
-                <strong id="queries">0</strong>
+                Ofertas
+                <strong id="opportunities">
+                    0
+                </strong>
             </div>
 
             <div class="stat">
-                Anúncios
-                <strong id="returned">0</strong>
+                Cupom aplicável
+                <strong id="coupons">
+                    0
+                </strong>
             </div>
 
             <div class="stat">
-                Oportunidades
-                <strong id="opportunities">0</strong>
+                Desconto
+                <strong id="value">
+                    R$ 0,00
+                </strong>
             </div>
 
             <div class="stat">
-                Cupons
-                <strong id="coupons">0</strong>
+                Valor final
+                <strong id="finalValue">
+                    R$ 0,00
+                </strong>
             </div>
 
-        </div>
-
-    </div>
-
-
-    <div class="card">
-
-        <h2>Diagnóstico</h2>
-
-        <div
-            id="diagnostic"
-            class="diagnostic"
-        >
-Aguardando...
         </div>
 
     </div>
@@ -1575,23 +2682,56 @@ Aguardando...
 
     </div>
 
+
+    <div class="card">
+
+        <h2>Diagnóstico</h2>
+
+        <div
+            id="diagnostic"
+            class="diagnostic"
+        >
+Aguardando...
+        </div>
+
+    </div>
+
 </div>
 
 
 <script>
+
+function money(value) {
+
+    return Number(
+        value || 0
+    ).toLocaleString(
+        "pt-BR",
+        {
+            style: "currency",
+            currency: "BRL"
+        }
+    );
+
+}
+
 
 async function loadStatus() {
 
     try {
 
         const response =
-            await fetch("/api/status");
+            await fetch(
+                "/api/status"
+            );
 
         const data =
             await response.json();
 
         const status =
-            document.getElementById("status");
+            document.getElementById(
+                "status"
+            );
 
         if (data.connected) {
 
@@ -1599,10 +2739,16 @@ async function loadStatus() {
                 "status connected";
 
             status.innerHTML =
-                "🟢 Mercado Livre conectado" +
-                (data.nickname
-                    ? " — " + data.nickname
-                    : "");
+                "🟢 Mercado Livre conectado"
+                +
+                (
+                    data.nickname
+                        ? " — "
+                        + escapeHtml(
+                            data.nickname
+                        )
+                        : ""
+                );
 
         } else {
 
@@ -1616,10 +2762,13 @@ async function loadStatus() {
 
     } catch (error) {
 
-        document.getElementById("status").innerHTML =
+        document.getElementById(
+            "status"
+        ).innerHTML =
             "Erro verificando conexão.";
 
     }
+
 }
 
 
@@ -1628,66 +2777,94 @@ async function loadDiagnostic() {
     try {
 
         const response =
-            await fetch("/api/ml-diagnostic");
+            await fetch(
+                "/api/ml-diagnostic"
+            );
 
         const data =
             await response.json();
 
-        document.getElementById("diagnostic").textContent =
-            JSON.stringify(data, null, 2);
+        document.getElementById(
+            "diagnostic"
+        ).textContent =
+            JSON.stringify(
+                data,
+                null,
+                2
+            );
 
     } catch (error) {
 
-        document.getElementById("diagnostic").textContent =
-            "Erro ao executar diagnóstico: " +
-            error;
+        document.getElementById(
+            "diagnostic"
+        ).textContent =
+            "Erro: " + error;
 
     }
+
 }
 
 
 async function hunt() {
 
     const btn =
-        document.getElementById("huntBtn");
+        document.getElementById(
+            "huntBtn"
+        );
 
     const message =
-        document.getElementById("message");
+        document.getElementById(
+            "message"
+        );
 
     const progress =
-        document.getElementById("progressBar");
+        document.getElementById(
+            "progressBar"
+        );
 
     btn.disabled = true;
 
-    progress.style.width = "10%";
+    progress.style.width =
+        "10%";
 
     message.innerText =
-        "🔎 Consultando Mercado Livre...";
+        "🔎 Buscando produtos...";
 
     try {
 
-        progress.style.width = "35%";
+        progress.style.width =
+            "30%";
 
         const response =
-            await fetch("/api/hunt");
+            await fetch(
+                "/api/hunt"
+            );
 
-        progress.style.width = "70%";
+        progress.style.width =
+            "70%";
 
         const data =
             await response.json();
 
-        progress.style.width = "100%";
+        progress.style.width =
+            "100%";
 
         if (!data.ok) {
 
             message.innerText =
-                "❌ " +
-                (data.message || data.error);
+                "❌ "
+                +
+                (
+                    data.message
+                    || data.error
+                    || "Erro"
+                );
 
         } else {
 
             message.innerText =
-                "✅ " +
+                "✅ "
+                +
                 data.message;
 
         }
@@ -1695,17 +2872,29 @@ async function hunt() {
         const stats =
             data.stats || {};
 
-        document.getElementById("queries").innerText =
-            stats.queries || 0;
-
-        document.getElementById("returned").innerText =
-            stats.returned || 0;
-
-        document.getElementById("opportunities").innerText =
+        document.getElementById(
+            "opportunities"
+        ).innerText =
             stats.opportunities || 0;
 
-        document.getElementById("coupons").innerText =
+        document.getElementById(
+            "coupons"
+        ).innerText =
             stats.coupons || 0;
+
+        document.getElementById(
+            "value"
+        ).innerText =
+            money(
+                stats.value || 0
+            );
+
+        document.getElementById(
+            "finalValue"
+        ).innerText =
+            money(
+                stats.final_value || 0
+            );
 
         renderOffers(
             data.offers || []
@@ -1715,7 +2904,8 @@ async function hunt() {
             "diagnostic"
         ).textContent =
             JSON.stringify(
-                data.diagnostics || data,
+                data.diagnostics
+                || data,
                 null,
                 2
             );
@@ -1723,7 +2913,8 @@ async function hunt() {
     } catch (error) {
 
         message.innerText =
-            "❌ Erro: " + error;
+            "❌ Erro: "
+            + error;
 
         document.getElementById(
             "diagnostic"
@@ -1734,120 +2925,215 @@ async function hunt() {
 
         btn.disabled = false;
 
-        setTimeout(() => {
-            progress.style.width = "0%";
-        }, 1000);
+        setTimeout(
+            () => {
+                progress.style.width =
+                    "0%";
+            },
+            1000
+        );
+
     }
+
 }
 
 
-function renderOffers(offers) {
+function renderOffers(
+    offers
+) {
 
     const container =
-        document.getElementById("offers");
+        document.getElementById(
+            "offers"
+        );
 
     if (!offers.length) {
 
-        container.innerHTML =
-            "<p>Nenhuma oportunidade encontrada.</p>";
+        container.innerHTML = `
+            <div class="notice">
+                Nenhum produto com cupom
+                confirmado na página foi
+                encontrado nesta busca.
+            </div>
+        `;
 
         return;
     }
 
     container.innerHTML =
-        offers.map(offer => {
+        offers.map(
+            offer => {
 
-            const image =
-                offer.thumbnail
-                    ? `<img src="${offer.thumbnail}">`
+                const coupon =
+                    offer.coupon
+                    || {};
+
+                const image =
+                    offer.thumbnail
+                    ? `
+                        <img
+                            src="${escapeHtml(
+                                offer.thumbnail
+                            )}"
+                            loading="lazy"
+                        >
+                    `
                     : "";
 
-            const oldPrice =
-                offer.original_price > offer.price
-                    ? `<div class="old">
-                        R$ ${Number(
-                            offer.original_price
-                        ).toFixed(2).replace(".", ",")}
-                       </div>`
+                const code =
+                    coupon.raw
+                    || "Cupom encontrado";
+
+                const saving =
+                    Number(
+                        offer.coupon_discount
+                        || 0
+                    );
+
+                const finalPrice =
+                    Number(
+                        offer.final_price
+                        || 0
+                    );
+
+                const beforePrice =
+                    Number(
+                        offer.price
+                        || 0
+                    );
+
+                const percent =
+                    Number(
+                        offer.effective_discount
+                        || 0
+                    );
+
+                const shipping =
+                    offer.free_shipping
+                    ? `
+                        <div class="shipping">
+                            🚚 Frete grátis
+                        </div>
+                    `
                     : "";
 
-            const discount =
-                offer.discount > 0
-                    ? `<span class="discount">
-                        -${offer.discount}%
-                       </span>`
-                    : "";
+                return `
+                    <div class="offer">
 
-            const coupon =
-                offer.coupon
-                    ? `<div class="coupon">
-                        🎟️ ${escapeHtml(
-                            offer.coupon
-                        )}
-                       </div>`
-                    : "";
+                        ${image}
 
-            const shipping =
-                offer.free_shipping
-                    ? `<div>
-                        🚚 Frete grátis
-                       </div>`
-                    : "";
+                        <h3>
+                            ${escapeHtml(
+                                offer.title
+                            )}
+                        </h3>
 
-            return `
-                <div class="offer">
+                        <div class="before">
+                            Antes do cupom:
+                            ${money(
+                                beforePrice
+                            )}
+                        </div>
 
-                    ${image}
+                        <div class="price-final">
+                            ${money(
+                                finalPrice
+                            )}
+                        </div>
 
-                    <h3>
-                        ${escapeHtml(
-                            offer.title
-                        )}
-                    </h3>
+                        <div class="coupon-box">
 
-                    ${oldPrice}
+                            <div class="coupon-title">
+                                🎟️ ${escapeHtml(
+                                    code
+                                )}
+                            </div>
 
-                    <div class="price">
-                        R$ ${Number(
-                            offer.price
-                        ).toFixed(2).replace(".", ",")}
+                            <div class="saving">
+                                Você economiza
+                                ${money(
+                                    saving
+                                )}
+                                ${
+                                    percent > 0
+                                    ? " (" +
+                                      percent +
+                                      "%)"
+                                    : ""
+                                }
+                            </div>
+
+                            <div class="confirmed">
+                                🟢 Cupom encontrado
+                                na página do produto
+                            </div>
+
+                        </div>
+
+                        ${shipping}
+
+                        <div class="notice">
+                            O valor final é uma
+                            estimativa. Confirme o
+                            cupom no checkout.
+                        </div>
+
+                        <br>
+
+                        <a
+                            class="button primary"
+                            target="_blank"
+                            rel="noopener"
+                            href="${escapeHtml(
+                                offer.permalink
+                                || "#"
+                            )}"
+                        >
+                            🛒 Ver produto
+                        </a>
+
                     </div>
+                `;
 
-                    ${discount}
+            }
+        ).join("");
 
-                    ${coupon}
-
-                    ${shipping}
-
-                    <br>
-
-                    <a
-                        class="button primary"
-                        target="_blank"
-                        href="${offer.permalink}"
-                    >
-                        Ver produto
-                    </a>
-
-                </div>
-            `;
-
-        }).join("");
 }
 
 
-function escapeHtml(text) {
+function escapeHtml(
+    text
+) {
 
-    return String(text)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+    return String(
+        text || ""
+    )
+    .replaceAll(
+        "&",
+        "&amp;"
+    )
+    .replaceAll(
+        "<",
+        "&lt;"
+    )
+    .replaceAll(
+        ">",
+        "&gt;"
+    )
+    .replaceAll(
+        '"',
+        "&quot;"
+    )
+    .replaceAll(
+        "'",
+        "&#039;"
+    );
+
 }
 
 
 loadStatus();
+
 loadDiagnostic();
 
 </script>
@@ -1860,17 +3146,22 @@ loadDiagnostic();
 
 @app.route("/")
 def home():
-    return render_template_string(HTML)
+
+    return render_template_string(
+        HTML
+    )
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH
 # ============================================================
 
 @app.route("/health")
 def health():
+
     return jsonify({
-        "status": "ok"
+        "status":
+            "ok"
     })
 
 
