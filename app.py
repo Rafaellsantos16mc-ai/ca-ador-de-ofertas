@@ -1624,47 +1624,81 @@ def _fetch_product_fast(pid, raw=None, base=None):
     # 4) Se não houver item de venda, não inventa preço.
     return None
 
+# Cache curto para categorias/rankings. Evita repetir chamadas em cada caça.
+_CATEGORY_CACHE = {}
+_HIGHLIGHT_CACHE = {}
+
+
+def cached_category(q):
+    key = norm(q)
+    now = time.time()
+    hit = _CATEGORY_CACHE.get(key)
+    if hit and now - hit[0] < 21600:
+        return hit[1]
+    cats = discover_categories(q)
+    value = cats[0] if cats else None
+    _CATEGORY_CACHE[key] = (now, value)
+    return value
+
+
+def cached_highlights(cid):
+    now = time.time()
+    hit = _HIGHLIGHT_CACHE.get(cid)
+    if hit and now - hit[0] < 3600:
+        return list(hit[1])
+    data = highlights(cid)
+    _HIGHLIGHT_CACHE[cid] = (now, list(data))
+    return list(data)
+
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    """Busca produtos pedidos + sinais oficiais de tendência e mais vendidos."""
+    """Caça rápida: demanda (trends) + giro (highlights), sem scraping.
+
+    A lista final privilegia produtos que aparecem nos rankings oficiais do ML
+    e usa buscas textuais somente para transformar os sinais em produtos com
+    preço/oferta. Não abre páginas públicas e não consulta cupom por produto.
+    """
     products = {}
-    target_candidates = 220
     base_queries = [q for q in queries if q]
     requested_categories = set(query_category(q) for q in base_queries if query_category(q)) or set(CATALOG.keys())
 
-    # 1) Busca textual principal.
-    for q in base_queries:
-        results = search_products_direct(q, 20)
-        for raw in results:
+    # 1) UMA busca principal por categoria. Mantemos poucos candidatos para
+    # evitar dezenas de chamadas repetidas.
+    for q in base_queries[:12]:
+        for raw in search_products_direct(q, 12):
             if not isinstance(raw, dict):
                 continue
             pid = raw.get("id") or raw.get("product_id")
             if not pid:
                 continue
-            entry = products.setdefault(pid, {
-                "raw": raw, "category_id": None, "category_name": query_category(q),
+            cat = query_category(q)
+            products.setdefault(pid, {
+                "raw": raw, "category_id": None, "category_name": cat,
                 "query": q, "trend_score": 0, "trend_keyword": None,
-                "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+                "trend_bucket": None, "trend_rank": None,
+                "best_seller_position": None,
             })
-            entry["raw"] = raw
 
-    # 2) TENDÊNCIAS: adiciona alguns termos que estão em alta agora.
-    # O /trends é atualizado semanalmente; não fazemos scraping.
-    trend_items = trend_queries_for_categories(requested_categories, limit=8)
+    # 2) Trends: somente os melhores termos compatíveis. Uma chamada global
+    # de /trends é cacheada por 1h, portanto não pesa os ciclos seguintes.
+    trend_items = trend_queries_for_categories(requested_categories, limit=6)
     for tr in trend_items:
         q = tr["keyword"]
-        results = search_products_direct(q, 15)
-        for raw in results:
+        for raw in search_products_direct(q, 10):
             if not isinstance(raw, dict):
                 continue
             pid = raw.get("id") or raw.get("product_id")
             if not pid:
                 continue
             entry = products.setdefault(pid, {
-                "raw": raw, "category_id": None, "category_name": tr.get("category"),
-                "query": q, "trend_score": 0, "trend_keyword": None,
-                "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+                "raw": raw, "category_id": None,
+                "category_name": tr.get("category"), "query": q,
+                "trend_score": 0, "trend_keyword": None,
+                "trend_bucket": None, "trend_rank": None,
+                "best_seller_position": None,
             })
-            if tr.get("score", 0) > entry.get("trend_score", 0):
+            old = entry.get("trend_score") or 0
+            if tr.get("score", 0) > old:
                 entry.update({
                     "trend_score": tr.get("score", 0),
                     "trend_keyword": q,
@@ -1674,73 +1708,84 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     "query": q,
                 })
 
-    # 3) Descobre categorias e reforça com os 20 mais vendidos de cada uma.
+    # 3) Mais vendidos: descobre UMA categoria por grupo e pega só o TOP 5.
+    # O endpoint oficial entrega até 20; usamos apenas os primeiros 5 para
+    # reduzir drasticamente o número de detalhes que precisamos consultar.
     highlight_categories = {}
-    for q in base_queries:
-        if len(highlight_categories) >= 9:
-            break
+    for q in base_queries[:12]:
         try:
-            cats = discover_categories(q)
-            for c in cats[:2]:
-                cid = c.get("category_id")
-                if cid and cid not in highlight_categories:
-                    highlight_categories[cid] = c.get("category_name") or cid
-                    if len(highlight_categories) >= 9:
-                        break
+            c = cached_category(q)
+            if c and c.get("category_id"):
+                highlight_categories[c["category_id"]] = c.get("category_name") or c["category_id"]
         except Exception as e:
-            print("[HIGHLIGHT CATEGORY ERRO]", q, repr(e))
+            print("[CATEGORY CACHE ERRO]", q, repr(e))
 
-    for cid, cname in highlight_categories.items():
+    highlight_fetch = []
+    for cid, cname in list(highlight_categories.items())[:9]:
         try:
-            hs = highlights(cid)
-            for raw in hs[:20]:
+            for raw in cached_highlights(cid)[:5]:
                 if not isinstance(raw, dict):
                     continue
                 pid = raw.get("id") or raw.get("product_id") or raw.get("catalog_product_id")
                 if not pid:
                     continue
-                pos = raw.get("position")
+                try:
+                    pos = int(raw.get("position")) if raw.get("position") is not None else None
+                except Exception:
+                    pos = None
                 entry = products.setdefault(pid, {
-                    "raw": raw, "category_id": cid, "category_name": cname,
-                    "query": cname, "trend_score": 0, "trend_keyword": None,
-                    "trend_bucket": None, "trend_rank": None, "best_seller_position": None,
+                    "raw": {"id": pid}, "category_id": cid,
+                    "category_name": cname, "query": cname,
+                    "trend_score": 0, "trend_keyword": None,
+                    "trend_bucket": None, "trend_rank": None,
+                    "best_seller_position": pos,
                 })
                 if pos is not None:
-                    try:
-                        pos = int(pos)
-                        old = entry.get("best_seller_position")
-                        if old is None or pos < old:
-                            entry["best_seller_position"] = pos
-                    except Exception:
-                        pass
-                entry["category_id"] = entry.get("category_id") or cid
+                    old = entry.get("best_seller_position")
+                    if old is None or pos < old:
+                        entry["best_seller_position"] = pos
+                entry["category_id"] = cid
                 entry["category_name"] = entry.get("category_name") or cname
+                if not isinstance(entry.get("raw"), dict) or not entry["raw"].get("buy_box_winner"):
+                    highlight_fetch.append((pid, entry))
         except Exception as e:
             print("[HIGHLIGHTS ERRO]", cid, repr(e))
 
-    if len(products) > target_candidates:
-        # Prioriza candidatos com tendência/mais vendidos antes de cortar.
-        ordered = sorted(products.items(), key=lambda kv: (
-            -(kv[1].get("trend_score") or 0),
-            kv[1].get("best_seller_position") if kv[1].get("best_seller_position") is not None else 999,
-        ))
-        products = dict(ordered[:target_candidates])
+    # Só precisamos enriquecer os produtos de highlights que não têm dados
+    # completos. No máximo 45 chamadas e com 5 workers controlados.
+    unique_h = {}
+    for pid, base in highlight_fetch:
+        unique_h[pid] = base
+    if len(unique_h) > 45:
+        unique_h = dict(list(unique_h.items())[:45])
 
-    print("[PRODUTOS CANDIDATOS]", len(products), "| tendências", len(trend_items))
+    print("[CANDIDATOS RAPIDOS]", len(products), "| trends", len(trend_items), "| highlights", len(unique_h))
 
     fetched = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # Primeiro aproveita imediatamente os resultados de /products/search que
+    # já trazem buy_box_winner. Isso evita chamadas adicionais.
+    pending = {}
+    for pid, base in products.items():
+        raw = base.get("raw") or {}
+        if isinstance(raw, dict) and (raw.get("buy_box_winner") or raw.get("buy_box")):
+            r = _fetch_product_fast(pid, raw, base)
+            if r:
+                fetched.append(r)
+        elif pid in unique_h:
+            pending[pid] = base
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
         future_map = {
-            executor.submit(_fetch_product_fast, pid, base.get("raw"), base): (pid, base)
-            for pid, base in products.items()
+            executor.submit(_fetch_product_fast, pid, base.get("raw"), base): pid
+            for pid, base in pending.items()
         }
         for fut in as_completed(future_map):
             try:
-                result = fut.result()
-                if result:
-                    fetched.append(result)
+                r = fut.result()
+                if r:
+                    fetched.append(r)
             except Exception as e:
-                print("[PRODUTO FAST ERRO]", repr(e))
+                print("[PRODUTO RAPIDO ERRO]", repr(e))
 
     print("[PRODUTOS APROVEITADOS]", len(fetched))
 
@@ -1752,13 +1797,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             title = p.get("name") or p.get("title") or pid
             query_used = base.get("query", "")
             cat_name = base.get("category_name") or query_category(query_used) or trend_category(query_used)
-
             if not is_requested_product(title, query_used, cat_name):
                 continue
             score = relevance(title, query_used)
-            if score < -20:
-                continue
-            if pid in seen_products:
+            if score < -20 or pid in seen_products:
                 continue
             seen_products.add(pid)
 
@@ -1769,7 +1811,6 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 price = float(item.get("price")) if item.get("price") is not None else None
             except Exception:
                 price = None
-
             sale_original = None
             if price is None or price <= 0 or price > 100000:
                 sale_price, sale_original = get_current_sale_price(item_id)
@@ -1781,8 +1822,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             original = sale_original
             if original is None:
                 try:
-                    op = item.get("original_price")
-                    original = float(op) if op is not None else None
+                    original = float(item.get("original_price")) if item.get("original_price") is not None else None
                 except Exception:
                     original = None
             if original is None and isinstance(p.get("buy_box_winner"), dict):
@@ -1800,27 +1840,21 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             shipping = item.get("shipping_cost")
             shipping_known = shipping is not None
             total_price = total(price, shipping) if shipping_known else price
-
             sold_quantity = item.get("sold_quantity") or 0
-            try:
-                sold_quantity = float(sold_quantity)
-            except Exception:
-                sold_quantity = 0
+            try: sold_quantity = float(sold_quantity)
+            except Exception: sold_quantity = 0
             giro_score = min(80, sold_quantity / 10) if sold_quantity > 0 else 0
-
             pictures = p.get("pictures") or []
-            image = None
-            if pictures and isinstance(pictures[0], dict):
-                image = pictures[0].get("url") or pictures[0].get("secure_url")
+            image = pictures[0].get("url") or pictures[0].get("secure_url") if pictures and isinstance(pictures[0], dict) else None
 
             trend_score = float(base.get("trend_score") or 0)
             best_pos = base.get("best_seller_position")
             best_score = max(0, 100 - ((int(best_pos) - 1) * 5)) if best_pos else 0
+            both_bonus = 35 if trend_score > 0 and best_pos else 0
             opportunity_score = round(
-                trend_score * 1.5 + best_score * 1.2 + giro_score +
+                trend_score * 1.8 + best_score * 1.8 + both_bonus + giro_score +
                 (20 if shipping_known and item.get("free_shipping") else 0) +
-                min(30, max(0, seller_disc)) + max(0, score) * 0.15,
-                2
+                min(30, max(0, seller_disc)) + max(0, score) * 0.10, 2
             )
 
             offers.append({
@@ -1830,10 +1864,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
                 "price": price, "original_price": original, "discount": seller_disc,
                 "seller_id": item.get("seller_id"), "condition": item.get("condition"),
-                "free_shipping": bool(item.get("free_shipping")),
-                "shipping_cost": shipping, "shipping_known": shipping_known,
-                "total_price": total_price, "relevance_score": score,
-                "sold_quantity": sold_quantity, "giro_score": giro_score,
+                "free_shipping": bool(item.get("free_shipping")), "shipping_cost": shipping,
+                "shipping_known": shipping_known, "total_price": total_price,
+                "relevance_score": score, "sold_quantity": sold_quantity, "giro_score": giro_score,
                 "trend_score": trend_score, "trend_keyword": base.get("trend_keyword"),
                 "trend_bucket": base.get("trend_bucket"), "trend_rank": base.get("trend_rank"),
                 "best_seller_position": best_pos, "opportunity_score": opportunity_score,
@@ -1848,18 +1881,14 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             print("[OFERTA ERRO]", repr(e))
 
     def ranking_oferta(o):
-        total_real = float(o.get("total_price") or o.get("price") or 999999)
         return (
             -(o.get("opportunity_score") or 0),
+            0 if o.get("best_seller_position") is not None else 1,
+            o.get("best_seller_position") if o.get("best_seller_position") is not None else 999,
+            0 if o.get("trend_score", 0) > 0 else 1,
             0 if o.get("shipping_known") else 1,
             0 if o.get("free_shipping") else 1,
-            total_real,
-            -(o.get("trend_score") or 0),
-            (o.get("best_seller_position") if o.get("best_seller_position") is not None else 999),
-            -(o.get("giro_score") or 0),
-            -(o.get("discount") or 0),
-            -(o.get("relevance_score") or 0),
-            o.get("price") or 999999,
+            float(o.get("total_price") or o.get("price") or 999999),
         )
 
     offers.sort(key=ranking_oferta)
@@ -1870,7 +1899,6 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "modelo_nome": o["modelo_nome"], "especificacoes": o["especificacoes"],
             "image": o["image"], "category_name": o.get("category_name", ""), "ofertas": []
         })["ofertas"].append(o)
-
     models = []
     for g in groups.values():
         g["ofertas"].sort(key=ranking_oferta)
@@ -1881,40 +1909,324 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     models.sort(key=lambda g: ranking_oferta(g["ofertas"][0]))
     models = models[:30]
     flat = [o for g in models for o in g["ofertas"]]
-
     valores = [o.get("price") for o in flat if o.get("price") is not None]
     totais = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
-    couponed = [o for o in flat if o.get("cupom")]
-    coupon_discounts = [float(o.get("desconto_cupom") or 0) for o in couponed if float(o.get("desconto_cupom") or 0) > 0]
-    final_coupon = [float(o.get("preco_com_cupom")) for o in couponed if o.get("preco_com_cupom") is not None]
-    usage = [o.get("cupom_uso_limite") for o in couponed if o.get("cupom_uso_limite")]
     trend_count = sum(1 for o in flat if o.get("trend_score", 0) > 0)
     best_count = sum(1 for o in flat if o.get("best_seller_position") is not None)
+    both_count = sum(1 for o in flat if o.get("trend_score", 0) > 0 and o.get("best_seller_position") is not None)
     stats = {
         "ofertas": len(flat), "produtos em alta": trend_count,
-        "mais vendidos": best_count, "cupom candidato": len(couponed),
-        "cupons com limite": len(usage), "maior desconto estimado": brl(max(coupon_discounts or [0])),
-        "menor preço com cupom": brl(min(final_coupon)) if final_coupon else "—",
+        "mais vendidos": best_count, "aparecem nos dois": both_count,
+        "cupom candidato": 0, "cupons com limite": 0,
+        "maior desconto estimado": brl(0), "menor preço com cupom": "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais or [0])),
-        "produtos sem cupom": len(flat) - len(couponed),
-        "modo": "produtos certos + tendência de alta + mais vendidos",
+        "produtos sem cupom": len(flat),
+        "modo": "mais procurados + mais vendidos, com busca rápida",
     }
     return {"stats": stats, "modelos": models, "ofertas": flat}
 
-def auto_scan(category=None, min_discount=0):
-    if category:
-        queries = CATALOG.get(category, [])[:5]
-    else:
-        # 1 query forte por categoria + algumas segundas buscas das categorias
-        # com maior potencial de giro. Isso mantém cobertura sem explodir RPM.
-        queries = [qs[0] for qs in CATALOG.values() if qs]
-        extras = [
-            "smartphone", "fone bluetooth", "furadeira",
-            "air fryer", "tenis masculino"
-        ]
-        queries.extend(extras)
-    return scan_queries(queries[:14], min_discount, apply_coupons=False)
+# Cache curto para categorias/rankings. Evita repetir chamadas em cada caça.
+_CATEGORY_CACHE = {}
+_HIGHLIGHT_CACHE = {}
+
+
+def cached_category(q):
+    key = norm(q)
+    now = time.time()
+    hit = _CATEGORY_CACHE.get(key)
+    if hit and now - hit[0] < 21600:
+        return hit[1]
+    cats = discover_categories(q)
+    value = cats[0] if cats else None
+    _CATEGORY_CACHE[key] = (now, value)
+    return value
+
+
+def cached_highlights(cid):
+    now = time.time()
+    hit = _HIGHLIGHT_CACHE.get(cid)
+    if hit and now - hit[0] < 3600:
+        return list(hit[1])
+    data = highlights(cid)
+    _HIGHLIGHT_CACHE[cid] = (now, list(data))
+    return list(data)
+
+
+def scan_queries(queries, min_discount=0, apply_coupons=False):
+    """Caça rápida: demanda (trends) + giro (highlights), sem scraping.
+
+    A lista final privilegia produtos que aparecem nos rankings oficiais do ML
+    e usa buscas textuais somente para transformar os sinais em produtos com
+    preço/oferta. Não abre páginas públicas e não consulta cupom por produto.
+    """
+    products = {}
+    base_queries = [q for q in queries if q]
+    requested_categories = set(query_category(q) for q in base_queries if query_category(q)) or set(CATALOG.keys())
+
+    # 1) UMA busca principal por categoria. Mantemos poucos candidatos para
+    # evitar dezenas de chamadas repetidas.
+    for q in base_queries[:12]:
+        for raw in search_products_direct(q, 12):
+            if not isinstance(raw, dict):
+                continue
+            pid = raw.get("id") or raw.get("product_id")
+            if not pid:
+                continue
+            cat = query_category(q)
+            products.setdefault(pid, {
+                "raw": raw, "category_id": None, "category_name": cat,
+                "query": q, "trend_score": 0, "trend_keyword": None,
+                "trend_bucket": None, "trend_rank": None,
+                "best_seller_position": None,
+            })
+
+    # 2) Trends: somente os melhores termos compatíveis. Uma chamada global
+    # de /trends é cacheada por 1h, portanto não pesa os ciclos seguintes.
+    trend_items = trend_queries_for_categories(requested_categories, limit=6)
+    for tr in trend_items:
+        q = tr["keyword"]
+        for raw in search_products_direct(q, 10):
+            if not isinstance(raw, dict):
+                continue
+            pid = raw.get("id") or raw.get("product_id")
+            if not pid:
+                continue
+            entry = products.setdefault(pid, {
+                "raw": raw, "category_id": None,
+                "category_name": tr.get("category"), "query": q,
+                "trend_score": 0, "trend_keyword": None,
+                "trend_bucket": None, "trend_rank": None,
+                "best_seller_position": None,
+            })
+            old = entry.get("trend_score") or 0
+            if tr.get("score", 0) > old:
+                entry.update({
+                    "trend_score": tr.get("score", 0),
+                    "trend_keyword": q,
+                    "trend_bucket": tr.get("bucket"),
+                    "trend_rank": tr.get("rank"),
+                    "category_name": tr.get("category") or entry.get("category_name"),
+                    "query": q,
+                })
+
+    # 3) Mais vendidos: descobre UMA categoria por grupo e pega só o TOP 5.
+    # O endpoint oficial entrega até 20; usamos apenas os primeiros 5 para
+    # reduzir drasticamente o número de detalhes que precisamos consultar.
+    highlight_categories = {}
+    for q in base_queries[:12]:
+        try:
+            c = cached_category(q)
+            if c and c.get("category_id"):
+                highlight_categories[c["category_id"]] = c.get("category_name") or c["category_id"]
+        except Exception as e:
+            print("[CATEGORY CACHE ERRO]", q, repr(e))
+
+    highlight_fetch = []
+    for cid, cname in list(highlight_categories.items())[:9]:
+        try:
+            for raw in cached_highlights(cid)[:5]:
+                if not isinstance(raw, dict):
+                    continue
+                pid = raw.get("id") or raw.get("product_id") or raw.get("catalog_product_id")
+                if not pid:
+                    continue
+                try:
+                    pos = int(raw.get("position")) if raw.get("position") is not None else None
+                except Exception:
+                    pos = None
+                entry = products.setdefault(pid, {
+                    "raw": {"id": pid}, "category_id": cid,
+                    "category_name": cname, "query": cname,
+                    "trend_score": 0, "trend_keyword": None,
+                    "trend_bucket": None, "trend_rank": None,
+                    "best_seller_position": pos,
+                })
+                if pos is not None:
+                    old = entry.get("best_seller_position")
+                    if old is None or pos < old:
+                        entry["best_seller_position"] = pos
+                entry["category_id"] = cid
+                entry["category_name"] = entry.get("category_name") or cname
+                if not isinstance(entry.get("raw"), dict) or not entry["raw"].get("buy_box_winner"):
+                    highlight_fetch.append((pid, entry))
+        except Exception as e:
+            print("[HIGHLIGHTS ERRO]", cid, repr(e))
+
+    # Só precisamos enriquecer os produtos de highlights que não têm dados
+    # completos. No máximo 45 chamadas e com 5 workers controlados.
+    unique_h = {}
+    for pid, base in highlight_fetch:
+        unique_h[pid] = base
+    if len(unique_h) > 45:
+        unique_h = dict(list(unique_h.items())[:45])
+
+    print("[CANDIDATOS RAPIDOS]", len(products), "| trends", len(trend_items), "| highlights", len(unique_h))
+
+    fetched = []
+    # Primeiro aproveita imediatamente os resultados de /products/search que
+    # já trazem buy_box_winner. Isso evita chamadas adicionais.
+    pending = {}
+    for pid, base in products.items():
+        raw = base.get("raw") or {}
+        if isinstance(raw, dict) and (raw.get("buy_box_winner") or raw.get("buy_box")):
+            r = _fetch_product_fast(pid, raw, base)
+            if r:
+                fetched.append(r)
+        elif pid in unique_h:
+            pending[pid] = base
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_map = {
+            executor.submit(_fetch_product_fast, pid, base.get("raw"), base): pid
+            for pid, base in pending.items()
+        }
+        for fut in as_completed(future_map):
+            try:
+                r = fut.result()
+                if r:
+                    fetched.append(r)
+            except Exception as e:
+                print("[PRODUTO RAPIDO ERRO]", repr(e))
+
+    print("[PRODUTOS APROVEITADOS]", len(fetched))
+
+    offers = []
+    seen_products = set()
+    for result in fetched:
+        try:
+            pid, p, item, base = result
+            title = p.get("name") or p.get("title") or pid
+            query_used = base.get("query", "")
+            cat_name = base.get("category_name") or query_category(query_used) or trend_category(query_used)
+            if not is_requested_product(title, query_used, cat_name):
+                continue
+            score = relevance(title, query_used)
+            if score < -20 or pid in seen_products:
+                continue
+            seen_products.add(pid)
+
+            item_id = item.get("item_id")
+            if not item_id:
+                continue
+            try:
+                price = float(item.get("price")) if item.get("price") is not None else None
+            except Exception:
+                price = None
+            sale_original = None
+            if price is None or price <= 0 or price > 100000:
+                sale_price, sale_original = get_current_sale_price(item_id)
+                if sale_price is not None:
+                    price = sale_price
+            if not valid_catalog_price(price):
+                continue
+
+            original = sale_original
+            if original is None:
+                try:
+                    original = float(item.get("original_price")) if item.get("original_price") is not None else None
+                except Exception:
+                    original = None
+            if original is None and isinstance(p.get("buy_box_winner"), dict):
+                bb = p["buy_box_winner"]
+                for key in ("regular_price", "original_price"):
+                    try:
+                        if bb.get(key) is not None:
+                            original = float(bb[key]); break
+                    except Exception:
+                        pass
+
+            seller_disc = discount(price, original)
+            if seller_disc < float(min_discount or 0):
+                continue
+            shipping = item.get("shipping_cost")
+            shipping_known = shipping is not None
+            total_price = total(price, shipping) if shipping_known else price
+            sold_quantity = item.get("sold_quantity") or 0
+            try: sold_quantity = float(sold_quantity)
+            except Exception: sold_quantity = 0
+            giro_score = min(80, sold_quantity / 10) if sold_quantity > 0 else 0
+            pictures = p.get("pictures") or []
+            image = pictures[0].get("url") or pictures[0].get("secure_url") if pictures and isinstance(pictures[0], dict) else None
+
+            trend_score = float(base.get("trend_score") or 0)
+            best_pos = base.get("best_seller_position")
+            best_score = max(0, 100 - ((int(best_pos) - 1) * 5)) if best_pos else 0
+            both_bonus = 35 if trend_score > 0 and best_pos else 0
+            opportunity_score = round(
+                trend_score * 1.8 + best_score * 1.8 + both_bonus + giro_score +
+                (20 if shipping_known and item.get("free_shipping") else 0) +
+                min(30, max(0, seller_disc)) + max(0, score) * 0.10, 2
+            )
+
+            offers.append({
+                "product_id": pid, "item_id": item_id, "title": title,
+                "modelo_nome": model_name(title), "especificacoes": specs(title),
+                "image": image, "category_name": cat_name or "Produto",
+                "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
+                "price": price, "original_price": original, "discount": seller_disc,
+                "seller_id": item.get("seller_id"), "condition": item.get("condition"),
+                "free_shipping": bool(item.get("free_shipping")), "shipping_cost": shipping,
+                "shipping_known": shipping_known, "total_price": total_price,
+                "relevance_score": score, "sold_quantity": sold_quantity, "giro_score": giro_score,
+                "trend_score": trend_score, "trend_keyword": base.get("trend_keyword"),
+                "trend_bucket": base.get("trend_bucket"), "trend_rank": base.get("trend_rank"),
+                "best_seller_position": best_pos, "opportunity_score": opportunity_score,
+                "cupom": None, "desconto_cupom": 0, "percentual_cupom_efetivo": 0,
+                "cupom_match": None, "cupom_uso_limite": None, "cupom_confirmado": False,
+                "cupom_status": "não verificado", "cash_discount": 0, "cash_label": None,
+                "cash_final": None, "melhor_forma": None, "maior_desconto": 0,
+                "preco_com_cupom": None, "preco_final_melhor": None,
+                "affiliate_link": "", "extra_earnings": 0,
+            })
+        except Exception as e:
+            print("[OFERTA ERRO]", repr(e))
+
+    def ranking_oferta(o):
+        return (
+            -(o.get("opportunity_score") or 0),
+            0 if o.get("best_seller_position") is not None else 1,
+            o.get("best_seller_position") if o.get("best_seller_position") is not None else 999,
+            0 if o.get("trend_score", 0) > 0 else 1,
+            0 if o.get("shipping_known") else 1,
+            0 if o.get("free_shipping") else 1,
+            float(o.get("total_price") or o.get("price") or 999999),
+        )
+
+    offers.sort(key=ranking_oferta)
+    groups = {}
+    for o in offers:
+        groups.setdefault(o["product_id"], {
+            "product_id": o["product_id"], "title": o["title"],
+            "modelo_nome": o["modelo_nome"], "especificacoes": o["especificacoes"],
+            "image": o["image"], "category_name": o.get("category_name", ""), "ofertas": []
+        })["ofertas"].append(o)
+    models = []
+    for g in groups.values():
+        g["ofertas"].sort(key=ranking_oferta)
+        if g["ofertas"]:
+            g["ofertas"] = g["ofertas"][:1]
+            g["ofertas"][0]["menor_preco_modelo"] = True
+            models.append(g)
+    models.sort(key=lambda g: ranking_oferta(g["ofertas"][0]))
+    models = models[:30]
+    flat = [o for g in models for o in g["ofertas"]]
+    valores = [o.get("price") for o in flat if o.get("price") is not None]
+    totais = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
+    trend_count = sum(1 for o in flat if o.get("trend_score", 0) > 0)
+    best_count = sum(1 for o in flat if o.get("best_seller_position") is not None)
+    both_count = sum(1 for o in flat if o.get("trend_score", 0) > 0 and o.get("best_seller_position") is not None)
+    stats = {
+        "ofertas": len(flat), "produtos em alta": trend_count,
+        "mais vendidos": best_count, "aparecem nos dois": both_count,
+        "cupom candidato": 0, "cupons com limite": 0,
+        "maior desconto estimado": brl(0), "menor preço com cupom": "—",
+        "menor preço do produto": brl(min(valores or [0])),
+        "menor total com frete": brl(min(totais or [0])),
+        "produtos sem cupom": len(flat),
+        "modo": "mais procurados + mais vendidos, com busca rápida",
+    }
+    return {"stats": stats, "modelos": models, "ofertas": flat}
 
 # ============================================================
 # ANÚNCIO
@@ -1981,10 +2293,10 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro rapidamente...")
 
         if category:
-            queries = CATALOG.get(category, [])[:5]
+            queries = CATALOG.get(category, [])[:2]
         else:
-            # Um ciclo inicial enxuto. Novos ciclos podem atualizar novamente.
-            queries = [q for qs in CATALOG.values() for q in qs][:18]
+            # Uma busca forte por categoria; tendências e mais vendidos completam o ranking.
+            queries = [qs[0] for qs in CATALOG.values() if qs]
 
         update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
         update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
