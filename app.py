@@ -1724,4 +1724,1813 @@ def parse_visible_coupon_cards(
             if not prices:
                 continue
 
-            # Último
+            # Último preço da linha.
+            candidate_price = prices[-1]
+
+            # Ignora parcelas muito pequenas.
+            if (
+                candidate_price < 10
+                and "R$" in candidate
+            ):
+                continue
+
+            price = candidate_price
+
+            price_line_index = i
+
+            break
+
+        if not valid_price(
+            price
+        ):
+
+            print(
+                "[CUPOM IGNORADO - PREÇO]",
+                coupon_text
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Título:
+        #
+        # procura para trás a primeira linha
+        # que realmente parece nome de produto.
+        # ----------------------------------------------------
+
+        title = ""
+
+        search_end = (
+            price_line_index
+            if price_line_index is not None
+            else index
+        )
+
+        for i in range(
+            search_end - 1,
+            start - 1,
+            -1
+        ):
+
+            candidate = clean_text(
+                lines[i]
+            )
+
+            if not looks_like_product_title(
+                candidate
+            ):
+                continue
+
+            title = candidate
+
+            break
+
+        if not title:
+
+            # Segunda tentativa mais ampla.
+            candidates = []
+
+            for candidate in context:
+
+                if looks_like_product_title(
+                    candidate
+                ):
+
+                    candidates.append(
+                        candidate
+                    )
+
+            if candidates:
+
+                candidates.sort(
+                    key=len,
+                    reverse=True
+                )
+
+                title = candidates[0]
+
+        if not title:
+
+            print(
+                "[CUPOM IGNORADO - TITULO]",
+                coupon_text
+            )
+
+            continue
+
+        offer = calculate_offer(
+            price,
+            coupon
+        )
+
+        if not offer:
+            continue
+
+        item = {
+
+            **offer,
+
+            "title":
+                title[:280],
+
+            "product_id":
+                None,
+
+            "url":
+                "",
+
+            "source":
+                "descontaco-cupons",
+
+            "coupon_confirmed":
+                True,
+        }
+
+        offers.append(
+            item
+        )
+
+        print(
+            "[CUPOM ENCONTRADO]",
+            title[:90],
+            "|",
+            money_br(price),
+            "|",
+            coupon["label"],
+            "| final",
+            money_br(
+                offer["final_price"]
+            )
+        )
+
+    return offers
+
+
+# ============================================================
+# TENTAR PEGAR MLB DO BLOCO
+# ============================================================
+
+def attach_nearby_product_ids(
+    source,
+    offers
+):
+
+    if not offers:
+        return offers
+
+    # Não usamos isso para decidir se existe
+    # cupom. Serve apenas para melhorar o link.
+    ids = extract_mlb_ids(
+        source
+    )
+
+    if not ids:
+        return offers
+
+    print(
+        "[MLB ENCONTRADOS]",
+        len(ids)
+    )
+
+    # Faz uma tentativa simples:
+    # procura título perto de um MLB.
+    #
+    # Se não encontrar, deixamos o ID vazio
+    # e usamos busca por título.
+    for offer in offers:
+
+        title_norm = normalize_text(
+            offer.get(
+                "title",
+                ""
+            )
+        )
+
+        if not title_norm:
+            continue
+
+        best_id = None
+
+        best_score = 0
+
+        # Só examina uma quantidade razoável.
+        for product_id in ids[:250]:
+
+            # Aqui não sabemos o nome do ID.
+            # Portanto não fazemos associação
+            # cega. O ID será resolvido depois
+            # pela API.
+            pass
+
+        # Mantém None de propósito.
+
+        offer[
+            "product_id"
+        ] = best_id
+
+    return offers
+
+
+# ============================================================
+# RESOLVER PRODUTO
+# ============================================================
+
+def resolve_product(
+    offer
+):
+
+    title = clean_text(
+        offer.get(
+            "title",
+            ""
+        )
+    )
+
+    product_id = offer.get(
+        "product_id"
+    )
+
+    # --------------------------------------------------------
+    # Se já temos ID, tenta detalhe.
+    # --------------------------------------------------------
+
+    if product_id:
+
+        detail = get_product_detail(
+            product_id
+        )
+
+        if detail:
+
+            offer[
+                "catalog_id"
+            ] = detail.get(
+                "id"
+            )
+
+            if detail.get(
+                "name"
+            ):
+
+                offer[
+                    "catalog_title"
+                ] = detail.get(
+                    "name"
+                )
+
+            if detail.get(
+                "permalink"
+            ):
+
+                offer[
+                    "url"
+                ] = detail.get(
+                    "permalink"
+                )
+
+            return offer
+
+    # --------------------------------------------------------
+    # Busca pelo título.
+    # --------------------------------------------------------
+
+    result = search_product_by_title(
+        title
+    )
+
+    if result:
+
+        product_id = result.get(
+            "id"
+        )
+
+        if product_id:
+
+            offer[
+                "product_id"
+            ] = product_id
+
+            offer[
+                "catalog_id"
+            ] = product_id
+
+            if result.get(
+                "name"
+            ):
+
+                offer[
+                    "catalog_title"
+                ] = result.get(
+                    "name"
+                )
+
+            detail = get_product_detail(
+                product_id
+            )
+
+            if detail:
+
+                permalink = detail.get(
+                    "permalink"
+                )
+
+                if permalink:
+
+                    offer[
+                        "url"
+                    ] = permalink
+
+                if detail.get(
+                    "name"
+                ):
+
+                    offer[
+                        "catalog_title"
+                    ] = detail.get(
+                        "name"
+                    )
+
+            if not offer.get(
+                "url"
+            ):
+
+                offer[
+                    "url"
+                ] = (
+                    "https://www.mercadolivre.com.br/p/"
+                    + product_id
+                )
+
+            return offer
+
+    # --------------------------------------------------------
+    # Último fallback:
+    # link de pesquisa pelo produto.
+    # --------------------------------------------------------
+
+    offer[
+        "url"
+    ] = (
+        "https://lista.mercadolivre.com.br/"
+        + quote(
+            title,
+            safe=""
+        )
+    )
+
+    return offer
+
+
+# ============================================================
+# DEDUPLICAÇÃO
+# ============================================================
+
+def deduplicate_offers(
+    offers
+):
+
+    grouped = {}
+
+    for item in offers:
+
+        title = clean_text(
+            item.get(
+                "title",
+                ""
+            )
+        )
+
+        if not title:
+            continue
+
+        price = item.get(
+            "price"
+        )
+
+        if not valid_price(
+            price
+        ):
+            continue
+
+        product_id = item.get(
+            "product_id"
+        )
+
+        if product_id:
+
+            key = (
+                "id:"
+                + product_id
+            )
+
+        else:
+
+            key = (
+                "title:"
+                + product_key(
+                    title
+                )
+            )
+
+        old = grouped.get(
+            key
+        )
+
+        if old is None:
+
+            grouped[
+                key
+            ] = item
+
+            continue
+
+        current_score = (
+
+            float(
+                item.get(
+                    "discount",
+                    0
+                )
+            ),
+
+            -float(
+                item.get(
+                    "final_price",
+                    999999
+                )
+            ),
+        )
+
+        old_score = (
+
+            float(
+                old.get(
+                    "discount",
+                    0
+                )
+            ),
+
+            -float(
+                old.get(
+                    "final_price",
+                    999999
+                )
+            ),
+        )
+
+        if current_score > old_score:
+
+            grouped[
+                key
+            ] = item
+
+    return list(
+        grouped.values()
+    )
+
+
+# ============================================================
+# CAÇADOR
+# ============================================================
+
+def hunt_offers():
+
+    print("")
+    print(
+        "=========================================="
+    )
+    print(
+        "🤑 CAÇADOR DE OFERTAS"
+    )
+    print(
+        "🎟️ MODO CUPOM + PRODUTO"
+    )
+    print(
+        "=========================================="
+    )
+
+    result = fetch_public_page(
+        COUPON_HUB
+    )
+
+    if not result.get(
+        "ok"
+    ):
+
+        print(
+            "[HUB ERRO]",
+            result.get(
+                "status"
+            )
+        )
+
+        return []
+
+    source = result.get(
+        "html",
+        ""
+    )
+
+    print(
+        "[HUB BYTES]",
+        len(source)
+    )
+
+    print(
+        "[HUB CUPONS]",
+        source.lower().count(
+            "cupom"
+        )
+    )
+
+    offers = parse_visible_coupon_cards(
+        source
+    )
+
+    print(
+        "[RAW CUPOM + PRODUTO]",
+        len(offers)
+    )
+
+    # --------------------------------------------------------
+    # Resolve os produtos.
+    # --------------------------------------------------------
+
+    resolved = []
+
+    for offer in offers:
+
+        try:
+
+            offer = resolve_product(
+                offer
+            )
+
+            resolved.append(
+                offer
+            )
+
+        except Exception as e:
+
+            print(
+                "[RESOLVE ERRO]",
+                offer.get(
+                    "title"
+                ),
+                e
+            )
+
+        time.sleep(
+            0.08
+        )
+
+    # --------------------------------------------------------
+    # Deduplicação.
+    # --------------------------------------------------------
+
+    offers = deduplicate_offers(
+        resolved
+    )
+
+    # --------------------------------------------------------
+    # Ordenação:
+    # maior economia em reais primeiro.
+    # --------------------------------------------------------
+
+    offers.sort(
+        key=lambda x: (
+
+            -float(
+                x.get(
+                    "discount",
+                    0
+                )
+            ),
+
+            -float(
+                x.get(
+                    "effective_percent",
+                    0
+                )
+            ),
+
+            float(
+                x.get(
+                    "final_price",
+                    999999
+                )
+            ),
+        )
+    )
+
+    print(
+        "[PRODUTOS ÚNICOS]",
+        len(offers)
+    )
+
+    return offers[
+        :MAX_OFFERS
+    ]
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+@app.route(
+    "/api/status"
+)
+def api_status():
+
+    row = get_auth()
+
+    if not row:
+
+        return jsonify(
+            {
+                "connected":
+                    False
+            }
+        )
+
+    return jsonify(
+        {
+            "connected":
+                True,
+
+            "user_id":
+                row["user_id"],
+
+            "nickname":
+                row["nickname"],
+
+            "expires_at":
+                row["expires_at"],
+        }
+    )
+
+
+# ============================================================
+# HUNT API
+# ============================================================
+
+@app.route(
+    "/api/hunt"
+)
+def api_hunt():
+
+    try:
+
+        offers = hunt_offers()
+
+        total_discount = sum(
+            float(
+                item.get(
+                    "discount",
+                    0
+                )
+            )
+            for item in offers
+        )
+
+        total_final = sum(
+            float(
+                item.get(
+                    "final_price",
+                    0
+                )
+            )
+            for item in offers
+        )
+
+        return jsonify(
+            {
+
+                "ok":
+                    True,
+
+                "total":
+                    len(offers),
+
+                "coupon_confirmed":
+                    len(offers),
+
+                "total_discount":
+                    round(
+                        total_discount,
+                        2
+                    ),
+
+                "total_final":
+                    round(
+                        total_final,
+                        2
+                    ),
+
+                "offers":
+                    offers,
+            }
+        )
+
+    except Exception as e:
+
+        print(
+            "[HUNT ERRO]",
+            e
+        )
+
+        return jsonify(
+            {
+                "ok":
+                    False,
+
+                "error":
+                    str(e),
+            }
+        ), 500
+
+
+# ============================================================
+# DEBUG PÚBLICO
+# ============================================================
+
+@app.route(
+    "/api/debug-public"
+)
+def api_debug_public():
+
+    result = fetch_public_page(
+        COUPON_HUB
+    )
+
+    if not result.get(
+        "ok"
+    ):
+
+        return jsonify(
+            {
+                "ok":
+                    False,
+
+                "status":
+                    result.get(
+                        "status"
+                    ),
+
+                "error":
+                    result.get(
+                        "error"
+                    ),
+            }
+        )
+
+    source = result.get(
+        "html",
+        ""
+    )
+
+    lines = html_lines(
+        source
+    )
+
+    coupon_lines = []
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        if "cupom" not in line.lower():
+            continue
+
+        start = max(
+            0,
+            index - 10
+        )
+
+        end = min(
+            len(lines),
+            index + 5
+        )
+
+        coupon_lines.append(
+            {
+                "index":
+                    index,
+
+                "line":
+                    line,
+
+                "context":
+                    lines[
+                        start:end
+                    ],
+            }
+        )
+
+    offers = parse_visible_coupon_cards(
+        source
+    )
+
+    product_ids = extract_mlb_ids(
+        source
+    )
+
+    return jsonify(
+        {
+
+            "ok":
+                True,
+
+            "status":
+                result.get(
+                    "status"
+                ),
+
+            "bytes":
+                len(source),
+
+            "cupom_count":
+                source.lower().count(
+                    "cupom"
+                ),
+
+            "produto_count":
+                len(product_ids),
+
+            "unique_product_ids":
+                len(
+                    set(
+                        product_ids
+                    )
+                ),
+
+            "visible_lines":
+                len(lines),
+
+            "coupon_lines":
+                len(coupon_lines),
+
+            "offers_detected":
+                len(offers),
+
+            "sample_coupon_lines":
+                coupon_lines[
+                    :10
+                ],
+
+            "sample_offers":
+                offers[
+                    :10
+                ],
+
+            "sample_product_ids":
+                list(
+                    dict.fromkeys(
+                        product_ids
+                    )
+                )[
+                    :20
+                ],
+        }
+    )
+
+
+# ============================================================
+# DIAGNÓSTICO MERCADO LIVRE
+# ============================================================
+
+@app.route(
+    "/api/ml-diagnostic"
+)
+def ml_diagnostic():
+
+    result = {
+
+        "config": {
+
+            "client_id":
+                bool(
+                    ML_CLIENT_ID
+                ),
+
+            "client_secret":
+                bool(
+                    ML_CLIENT_SECRET
+                ),
+
+            "redirect_uri":
+                ML_REDIRECT_URI,
+        },
+
+        "auth":
+            None,
+
+        "tests":
+            [],
+    }
+
+    row = get_auth()
+
+    if not row:
+
+        result[
+            "auth"
+        ] = {
+            "connected":
+                False
+        }
+
+        return jsonify(
+            result
+        )
+
+    result[
+        "auth"
+    ] = {
+
+        "connected":
+            True,
+
+        "user_id":
+            row["user_id"],
+
+        "nickname":
+            row["nickname"],
+
+        "expires_at":
+            row["expires_at"],
+    }
+
+    response, data = ml_get(
+        "/users/me"
+    )
+
+    result[
+        "tests"
+    ].append(
+        {
+
+            "name":
+                "users_me",
+
+            "status":
+                response.status_code
+                if response
+                else None,
+
+            "ok":
+                bool(
+                    response
+                    and response.status_code == 200
+                ),
+
+            "data":
+                data,
+        }
+    )
+
+    response, data = ml_get(
+        "/products/search",
+
+        params={
+
+            "site_id":
+                "MLB",
+
+            "q":
+                "celular",
+
+            "status":
+                "active",
+
+            "limit":
+                1,
+        }
+    )
+
+    result[
+        "tests"
+    ].append(
+        {
+
+            "name":
+                "product_search",
+
+            "status":
+                response.status_code
+                if response
+                else None,
+
+            "ok":
+                bool(
+                    response
+                    and response.status_code == 200
+                ),
+
+            "data":
+                (
+                    {
+                        "paging":
+                            data.get(
+                                "paging"
+                            ),
+
+                        "results":
+                            data.get(
+                                "results",
+                                []
+                            )[:1],
+                    }
+
+                    if isinstance(
+                        data,
+                        dict
+                    )
+
+                    else data
+                ),
+        }
+    )
+
+    return jsonify(
+        result
+    )
+
+
+# ============================================================
+# INTERFACE
+# ============================================================
+
+HTML = r"""
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width,initial-scale=1.0"
+>
+
+<title>Caçador de Ofertas</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Arial,
+        sans-serif;
+    background: #f3f4f6;
+    color: #222;
+}
+
+.header {
+    background: #ffe600;
+    padding: 18px 16px;
+    box-shadow:
+        0 3px 10px
+        rgba(0,0,0,.12);
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 27px;
+    font-weight: 900;
+}
+
+.header p {
+    margin: 7px 0 0;
+    font-size: 15px;
+}
+
+.container {
+    max-width: 1100px;
+    margin: auto;
+    padding: 18px;
+}
+
+.connection {
+    background: white;
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 18px;
+    box-shadow:
+        0 3px 15px
+        rgba(0,0,0,.06);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.connected {
+    color: #398b46;
+    font-size: 18px;
+    font-weight: 800;
+}
+
+.disconnected {
+    color: #d32f2f;
+    font-weight: 700;
+}
+
+.btn {
+    display: inline-block;
+    border: 0;
+    border-radius: 12px;
+    padding: 13px 18px;
+    text-decoration: none;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.btn-red {
+    background: #df493e;
+    color: white;
+}
+
+.hunt {
+    width: 100%;
+    background: #ffe600;
+    color: #222;
+    font-size: 19px;
+    padding: 19px;
+    margin-bottom: 20px;
+}
+
+.hunt:disabled {
+    opacity: .65;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns:
+        repeat(4,1fr);
+    gap: 14px;
+    margin-bottom: 18px;
+}
+
+.stat {
+    background: white;
+    border-radius: 16px;
+    padding: 17px;
+    box-shadow:
+        0 3px 15px
+        rgba(0,0,0,.05);
+}
+
+.stat-title {
+    color: #777;
+    font-size: 14px;
+}
+
+.stat-value {
+    margin-top: 7px;
+    font-size: 28px;
+    font-weight: 900;
+}
+
+.status {
+    background: white;
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 18px;
+    font-size: 15px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fill,minmax(285px,1fr));
+    gap: 16px;
+}
+
+.card {
+    background: white;
+    border-radius: 16px;
+    padding: 17px;
+    box-shadow:
+        0 3px 14px
+        rgba(0,0,0,.06);
+}
+
+.badge {
+    display: inline-block;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: #fff3bf;
+    color: #7a5a00;
+    font-size: 12px;
+    font-weight: 900;
+    margin-bottom: 11px;
+}
+
+.title {
+    font-size: 16px;
+    line-height: 1.4;
+    font-weight: 800;
+    margin-bottom: 12px;
+}
+
+.price-old {
+    color: #888;
+    font-size: 13px;
+}
+
+.price {
+    font-size: 24px;
+    font-weight: 900;
+    margin-top: 3px;
+}
+
+.final {
+    color: #087c32;
+    font-size: 21px;
+    font-weight: 900;
+    margin-top: 10px;
+}
+
+.savings {
+    color: #087c32;
+    font-weight: 800;
+    margin-top: 7px;
+}
+
+.coupon {
+    background: #fff7cc;
+    border: 1px solid #f0d64a;
+    border-radius: 10px;
+    padding: 10px;
+    margin-top: 12px;
+    font-weight: 900;
+}
+
+.warning {
+    color: #777;
+    font-size: 11px;
+    margin-top: 10px;
+    line-height: 1.4;
+}
+
+.open {
+    width: 100%;
+    margin-top: 13px;
+    text-align: center;
+    background: #3483fa;
+    color: white;
+}
+
+.empty {
+    background: white;
+    border-radius: 16px;
+    padding: 35px 20px;
+    text-align: center;
+    color: #777;
+    font-size: 17px;
+}
+
+@media(max-width:700px) {
+
+    .stats {
+        grid-template-columns:
+            repeat(2,1fr);
+    }
+
+    .container {
+        padding: 12px;
+    }
+
+    .header h1 {
+        font-size: 25px;
+    }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="header">
+
+<h1>
+💰 Caçador de Ofertas
+</h1>
+
+<p>
+🎟️ Cupons + produtos acima de R$69,90
+</p>
+
+</div>
+
+
+<div class="container">
+
+
+<div class="connection">
+
+<div id="connection">
+Verificando conexão...
+</div>
+
+<a
+    class="btn btn-red"
+    href="/mercadolivre/reconnect"
+>
+Reconectar
+</a>
+
+</div>
+
+
+<button
+    id="hunt"
+    class="btn hunt"
+    onclick="hunt()"
+>
+🔎 CAÇAR OFERTAS
+</button>
+
+
+<div class="stats">
+
+<div class="stat">
+
+<div class="stat-title">
+Ofertas
+</div>
+
+<div
+    id="total"
+    class="stat-value"
+>
+0
+</div>
+
+</div>
+
+
+<div class="stat">
+
+<div class="stat-title">
+Cupom confirmado
+</div>
+
+<div
+    id="coupons"
+    class="stat-value"
+>
+0
+</div>
+
+</div>
+
+
+<div class="stat">
+
+<div class="stat-title">
+Desconto
+</div>
+
+<div
+    id="discount"
+    class="stat-value"
+>
+R$ 0,00
+</div>
+
+</div>
+
+
+<div class="stat">
+
+<div class="stat-title">
+Valor final
+</div>
+
+<div
+    id="final"
+    class="stat-value"
+>
+R$ 0,00
+</div>
+
+</div>
+
+</div>
+
+
+<div
+    id="status"
+    class="status"
+>
+Pronto para caçar.
+</div>
+
+
+<div
+    id="results"
+    class="grid"
+>
+
+<div class="empty">
+Clique em "CAÇAR OFERTAS".
+</div>
+
+</div>
+
+
+</div>
+
+
+<script>
+
+function money(value) {
+
+    return new Intl.NumberFormat(
+        "pt-BR",
+        {
+            style: "currency",
+            currency: "BRL"
+        }
+    ).format(
+        Number(value || 0)
+    );
+}
+
+
+function esc(value) {
+
+    return String(
+        value || ""
+    )
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+
+async function loadStatus() {
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/status"
+            );
+
+        const data =
+            await response.json();
+
+        const box =
+            document.getElementById(
+                "connection"
+            );
+
+        if (data.connected) {
+
+            box.className =
+                "connected";
+
+            box.innerHTML =
+                "🟢 Mercado Livre conectado como " +
+                "<strong>" +
+                esc(
+                    data.nickname ||
+                    data.user_id
+                ) +
+                "</strong>";
+
+        } else {
+
+            box.className =
+                "disconnected";
+
+            box.innerHTML =
+                '🔴 Mercado Livre não conectado ' +
+                '<a class="btn" ' +
+                'style="background:#ffe600;color:#222" ' +
+                'href="/mercadolivre/login">' +
+                'Conectar' +
+                '</a>';
+        }
+
+    } catch (e) {
+
+        document.getElementById(
+            "connection"
+        ).innerHTML =
+            "Erro ao verificar conexão.";
+    }
+}
+
+
+function renderOffers(
+    offers
+) {
+
+    const results =
+        document.getElementById(
+            "results"
+        );
+
+    if (
+        !offers ||
+        !offers.length
+    ) {
+
+        results.innerHTML = `
+            <div class="empty">
+
+                <strong>
+                    Nenhum produto com cupom encontrado.
+                </strong>
+
+                <br><br>
+
+                O sistema agora lê diretamente
+                os cards de produtos da página
+                oficial de cupons.
+
+                <br><br>
+
+                <a
+                    href="/api/debug-public"
+                    target="_blank"
+                >
+                    Ver diagnóstico
+                </a>
+
+            </div>
+        `;
+
+        return;
+    }
+
+
+    results.innerHTML =
+        offers.map(
+            item => `
+
+            <div class="card">
+
+                <div class="badge">
+                    🎟️ CUPOM IDENTIFICADO
+                </div>
+
+
+                <div class="title">
+                    ${esc(item.title)}
+                </div>
+
+
+                <div class="price-old">
+                    Preço atual antes do cupom:
+                </div>
+
+
+                <div class="price">
+                    ${money(item.price)}
+                </div>
+
+
+                <div class="coupon">
+                    ${esc(item.coupon_label)}
+                </div>
+
+
+                <div class="final">
+                    Final estimado:
+                    ${money(item.final_price)}
+                </div>
+
+
+                <div class="savings">
+                    Economia:
+                    ${money(item.discount)}
+
+                    (${Number(
+                        item.effective_percent || 0
+                    ).toFixed(1)}%)
+                </div>
+
+
+                <div class="warning">
+                    ⚠️ Cupom identificado na
+                    página pública. Confirme
+                    a aplicação no checkout.
+                </div>
+
+
+                <a
+                    class="btn open"
+                    href="${esc(item.url)}"
+                    target="_blank"
+                    rel="noopener"
+                >
+                    🛒 VER OFERTA
+                </a>
+
+            </div>
+
+            `
+        ).join("");
+}
+
+
+async function hunt() {
+
+    const button =
+        document.getElementById(
+            "hunt"
+        );
+
+    const status =
+        document.getElementById(
+            "status"
+        );
+
+    button.disabled = true;
+
+    button.innerText =
+        "⏳ CAÇANDO CUPONS...";
+
+    status.innerText =
+        "Lendo produtos e cupons da página oficial...";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/hunt"
+            );
+
+        const data =
+            await response.json();
+
+
+        if (!data.ok) {
+
+            throw new Error(
+                data.error ||
+                "Erro ao caçar ofertas."
+            );
+        }
+
+
+        const offers =
+            data.offers || [];
+
+
+        document.getElementById(
+            "total"
+        ).innerText =
+            offers.length;
+
+
+        document.getElementById(
+            "coupons"
+        ).innerText =
+            data.coupon_confirmed ||
+            offers.length;
+
+
+        document.getElementById(
+            "discount"
+        ).innerText =
+            money(
+                data.total_discount
+            );
+
+
+        document.getElementById(
+            "final"
+        ).innerText =
+            money(
+                data.total_final
+            );
+
+
+        status.innerText =
+            "✅ Caçada concluída: "
+            + offers.length
+            + " produto(s) único(s) com cupom.";
+
+
+        renderOffers(
+            offers
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            error
+        );
+
+        status.innerText =
+            "❌ "
+            + error.message;
+
+        document.getElementById(
+            "results"
+        ).innerHTML = `
+            <div class="empty">
+
+                ❌ Erro ao caçar ofertas.
+
+                <br><br>
+
+                ${esc(error.message)}
+
+            </div>
+        `;
+
+    } finally {
+
+        button.disabled = false;
+
+        button.innerText =
+            "🔎 CAÇAR OFERTAS";
+    }
+}
+
+
+loadStatus();
+
+</script>
+
+</body>
+
+</html>
+"""
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@app.route("/")
+def home():
+
+    return render_template_string(
+        HTML
+    )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.route(
+    "/health"
+)
+def health():
+
+    return jsonify(
+        {
+            "status":
+                "ok",
+
+            "app":
+                "cacador-de-ofertas",
+
+            "time":
+                now_ts(),
+        }
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "8080"
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
