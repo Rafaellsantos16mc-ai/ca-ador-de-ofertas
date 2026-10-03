@@ -1,5 +1,6 @@
 [variables]
-PLAYWRIGHT_BROWSERS_PATH = "0"
+PLAYWRIGHT_BROWSERS_PATH = "/ms-playwright"
+PLAYWRIGHT_SKIP_BROWSER_GC = "1"
 
 [phases.setup]
 nixPkgs = [
@@ -32,8 +33,10 @@ nixPkgs = [
 cmds = [
   "pip install --upgrade pip",
   "pip install -r requirements.txt",
-  "python -m playwright install chromium"
+  "mkdir -p /ms-playwright",
+  "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright python -m playwright install --with-deps chromium",
+  "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright python -m playwright install --list"
 ]
 
 [start]
-cmd = "gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 app:app"
+cmd = "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 app:app"
