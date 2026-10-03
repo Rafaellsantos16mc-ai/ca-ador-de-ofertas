@@ -244,6 +244,105 @@ PROFILES = {
     },
 }
 
+def is_requested_product(title, query, category=None):
+    """Filtra acessórios/peças e garante que o título pertence à categoria pedida."""
+    t = norm(title)
+    qn = norm(query)
+    cat = category or query_category(query) or _demand_category_from_text(title)
+
+    # Itens que normalmente contaminam buscas de produto principal.
+    generic_bad = [
+        "capa", "capinha", "pelicula", "película", "suporte", "holder",
+        "cabo", "adaptador", "adesivo", "peca de reposicao", "peca avulsa",
+        "refil vazio", "frasco vazio", "amostra", "decant", "miniatura",
+        "pingente", "chaveiro", "brinde", "molde", "manual digital"
+    ]
+
+    category_rules = {
+        "📱 Celulares": (
+            ["smartphone", "celular", "iphone", "galaxy", "samsung", "motorola", "xiaomi", "redmi", "poco", "realme"],
+            generic_bad + ["carregador", "bateria avulsa", "case"]
+        ),
+        "🌸 Perfumes": (
+            ["perfume", "parfum", "eau de parfum", "eau de toilette", "fragrancia"],
+            generic_bad + ["porta perfume", "estojo vazio"]
+        ),
+        "🏋️ Academia": (
+            ["academia", "treino", "corrida", "legging", "camiseta", "short", "tenis", "whey", "creatina", "suplemento", "pre treino"],
+            ["capa", "adesivo", "suporte", "peca de reposicao", "broca"]
+        ),
+        "🔧 Ferramentas": (
+            ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta", "serra", "chave de impacto", "impacto"],
+            ["broca avulsa", "carvao", "bateria avulsa", "capa", "peca de reposicao"]
+        ),
+        "🎧 Eletrônicos": (
+            ["fone", "headset", "smartwatch", "tablet", "caixa de som", "camera", "power bank"],
+            ["cabo", "case", "capa", "pelicula", "suporte", "peca de reposicao"]
+        ),
+        "🏠 Casa": (
+            ["aspirador", "liquidificador", "cafeteira", "air fryer", "ventilador", "ferro de passar"],
+            ["peca", "refil", "capa", "suporte", "acessorio"]
+        ),
+        "🍳 Cozinha": (
+            ["air fryer", "panela eletrica", "jogo de panelas", "cafeteira", "liquidificador", "sanduicheira"],
+            ["peca", "refil", "capa", "suporte", "acessorio"]
+        ),
+        "🚗 Automotivo": (
+            ["compressor automotivo", "aspirador automotivo", "carregador automotivo", "ferramenta automotiva", "tapete automotivo"],
+            ["capa de celular", "pelicula", "brinde", "adesivo"]
+        ),
+        "👕 Moda": (
+            ["tenis", "mochila", "relogio", "bolsa", "oculos", "camiseta", "vestido"],
+            ["capa", "pelicula", "suporte", "peca de reposicao"]
+        ),
+    }
+
+    strong, bad = category_rules.get(cat, ([], generic_bad))
+    if any(x in t for x in bad):
+        return False
+
+    # Para consultas específicas, exige que pelo menos uma palavra/expressão
+    # importante da consulta apareça no título.
+    q_terms = [x for x in qn.split() if len(x) >= 4]
+    if q_terms and not any(x in t for x in q_terms):
+        # A categoria ainda pode validar o produto quando a consulta é um
+        # termo genérico como "smartphone" ou "perfume".
+        if not any(x in t for x in strong):
+            return False
+
+    if strong and not any(x in t for x in strong):
+        return False
+
+    return True
+
+
+def query_category(q):
+    """Retorna a categoria do catálogo que corresponde à consulta."""
+    nq = norm(q)
+    if not nq:
+        return None
+
+    # Primeiro procura a consulta exata entre as buscas cadastradas.
+    for category, queries in CATALOG.items():
+        for item in queries:
+            if nq == norm(item):
+                return category
+
+    # Depois usa correspondência por palavras para consultas extras.
+    best_category = None
+    best_score = 0
+    q_words = {w for w in nq.split() if len(w) >= 3}
+    for category, queries in CATALOG.items():
+        for item in queries:
+            iw = {w for w in norm(item).split() if len(w) >= 3}
+            score = len(q_words & iw)
+            if score > best_score:
+                best_score = score
+                best_category = category
+
+    return best_category
+
+
 def profile_for(q):
     t = norm(q)
     if any(x in t for x in ["iphone","samsung","galaxy","motorola","xiaomi","redmi","poco","smartphone","celular"]):
