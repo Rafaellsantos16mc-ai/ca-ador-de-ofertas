@@ -1430,43 +1430,48 @@ def _fetch_product_fast(pid, raw=None, base=None):
 
 
 # ============================================================
-# SINAIS DE DEMANDA — LEVES, CACHEADOS E USADOS SÓ PARA RANKING
+# DEMANDA + BUSCA — ARQUITETURA ESTÁVEL E RÁPIDA
 # ============================================================
-# Estratégia:
-# 1) /trends/MLB: 1 chamada, atualizada semanalmente pela API.
-# 2) /highlights: TOP 20 por categoria. Os IDs de categoria ficam em cache.
-# 3) Os sinais NUNCA bloqueiam a busca de produtos. Se um endpoint falhar,
-#    a busca continua.
-# 4) Só os melhores candidatos são enriquecidos com detalhes de produto.
+# A regra desta versão é simples:
+#   1) cada categoria tem seu próprio ranking de MAIS VENDIDOS;
+#   2) cada categoria tem seu próprio ranking de TENDÊNCIAS/PROCURA;
+#   3) uma busca de catálogo fornece os produtos reais para exibição;
+#   4) os sinais de demanda apenas ranqueiam, nunca bloqueiam a busca;
+#   5) no máximo 5 candidatos por categoria são enriquecidos inicialmente;
+#   6) cupons NÃO participam desta etapa.
+#
+# Isso evita o erro das versões anteriores: Trends é uma lista de termos,
+# enquanto Highlights é uma lista de IDs; nenhum deles deve ser usado sozinho
+# para montar a lista final.
 
 DEMAND_TTL = 3600
 CATEGORY_TTL = 86400
-_DEMAND_CACHE = {"at": 0.0, "trend": [], "best": {}}
+_DEMAND_CACHE = {"at": 0.0, "categories": {}}
 _CATEGORY_CACHE = {"at": 0.0, "ids": {}}
 _DEMAND_LOCK = threading.Lock()
 
-DEMAND_CATEGORY_QUERIES = {
-    "📱 Celulares": "smartphone",
-    "🌸 Perfumes": "perfume",
-    "🏋️ Academia": "tenis corrida",
-    "🔧 Ferramentas": "furadeira",
-    "🎧 Eletrônicos": "fone bluetooth",
-    "🏠 Casa": "aspirador de pó",
-    "🍳 Cozinha": "air fryer",
-    "🚗 Automotivo": "acessorios automotivos",
-    "👕 Moda": "tenis masculino",
+CATEGORY_SEED = {
+    "📱 Celulares": ["smartphone", "iphone", "celular"],
+    "🌸 Perfumes": ["perfume", "perfume masculino", "perfume feminino"],
+    "🏋️ Academia": ["tenis corrida", "roupa academia", "whey protein"],
+    "🔧 Ferramentas": ["furadeira", "parafusadeira", "kit ferramentas"],
+    "🎧 Eletrônicos": ["fone bluetooth", "smartwatch", "tablet"],
+    "🏠 Casa": ["aspirador de pó", "liquidificador", "cafeteira"],
+    "🍳 Cozinha": ["air fryer", "panela elétrica", "cafeteira"],
+    "🚗 Automotivo": ["compressor automotivo", "aspirador automotivo", "ferramentas automotivas"],
+    "👕 Moda": ["tenis masculino", "tenis feminino", "mochila"],
 }
 
 DEMAND_ANCHORS = {
-    "📱 Celulares": ["smartphone", "celular", "iphone", "galaxy", "samsung", "motorola", "xiaomi", "redmi", "poco", "realme"],
-    "🌸 Perfumes": ["perfume", "parfum", "eau de parfum", "eau de toilette", "fragrancia"],
-    "🏋️ Academia": ["academia", "treino", "corrida", "tenis", "whey", "creatina", "suplemento", "legging"],
-    "🔧 Ferramentas": ["furadeira", "parafusadeira", "esmerilhadeira", "serra", "ferramenta", "impacto"],
-    "🎧 Eletrônicos": ["fone", "headset", "smartwatch", "tablet", "caixa de som", "camera", "power bank"],
-    "🏠 Casa": ["aspirador", "liquidificador", "cafeteira", "air fryer", "ventilador", "ferro"],
-    "🍳 Cozinha": ["air fryer", "panela", "cafeteira", "liquidificador", "sanduicheira", "cozinha"],
-    "🚗 Automotivo": ["automotivo", "carro", "compressor", "aspirador automotivo", "carregador automotivo", "tapete"],
-    "👕 Moda": ["tenis", "mochila", "relogio", "bolsa", "oculos", "camiseta", "vestido"],
+    "📱 Celulares": ["smartphone","celular","iphone","galaxy","samsung","motorola","xiaomi","redmi","poco","realme"],
+    "🌸 Perfumes": ["perfume","parfum","eau de parfum","eau de toilette","fragrancia"],
+    "🏋️ Academia": ["academia","treino","corrida","tenis","whey","creatina","suplemento","legging"],
+    "🔧 Ferramentas": ["furadeira","parafusadeira","esmerilhadeira","serra","ferramenta","impacto"],
+    "🎧 Eletrônicos": ["fone","headset","smartwatch","tablet","caixa de som","camera","power bank"],
+    "🏠 Casa": ["aspirador","liquidificador","cafeteira","air fryer","ventilador","ferro"],
+    "🍳 Cozinha": ["air fryer","panela","cafeteira","liquidificador","sanduicheira","cozinha"],
+    "🚗 Automotivo": ["automotivo","carro","compressor","aspirador automotivo","carregador automotivo","tapete"],
+    "👕 Moda": ["tenis","mochila","relogio","bolsa","oculos","camiseta","vestido"],
 }
 
 def _demand_category_from_text(text):
@@ -1478,319 +1483,290 @@ def _demand_category_from_text(text):
             best, hits = cat, h
     return best
 
-def _get_best_seller_category_ids(force=False):
+def _category_id_for(cat):
     now = time.time()
     with _DEMAND_LOCK:
-        if not force and _CATEGORY_CACHE["ids"] and now - _CATEGORY_CACHE["at"] < CATEGORY_TTL:
-            return dict(_CATEGORY_CACHE["ids"])
+        if now - _CATEGORY_CACHE["at"] < CATEGORY_TTL and cat in _CATEGORY_CACHE["ids"]:
+            return _CATEGORY_CACHE["ids"][cat]
 
-    ids = {}
-    # Cada categoria tenta as duas primeiras categorias retornadas pelo
-    # domain_discovery. Só guardamos uma que realmente tenha /highlights.
-    for cat, q in DEMAND_CATEGORY_QUERIES.items():
-        try:
-            found = discover_categories(q)
-            chosen = None
-            for candidate in found[:3]:
-                cid = candidate.get("category_id")
-                if not cid:
-                    continue
-                rows = highlights(cid)
-                if rows:
-                    chosen = cid
-                    break
-            if chosen:
-                ids[cat] = chosen
-        except Exception as e:
-            print("[CATEGORY ID]", cat, repr(e))
-
-    with _DEMAND_LOCK:
-        _CATEGORY_CACHE.update({"at": now, "ids": ids})
-    return dict(ids)
-
-def load_demand_signals(force=False):
-    now = time.time()
-    with _DEMAND_LOCK:
-        if not force and now - _DEMAND_CACHE["at"] < DEMAND_TTL:
-            return _DEMAND_CACHE["trend"], _DEMAND_CACHE["best"]
-
-    trend = []
-    best = {}
-
-    # Uma única chamada para tendências nacionais. Os 10 primeiros são os
-    # de maior crescimento; os 20 seguintes são os mais desejados; os últimos
-    # 20 são tendências populares.
+    found = []
+    # Uma única descoberta por categoria. O resultado fica em cache por 24h.
+    q = (CATEGORY_SEED.get(cat) or [""])[0]
     try:
-        data, status, _ = ml_get(f"/trends/{SITE_ID}")
-        if status == 200 and isinstance(data, list):
-            for pos, row in enumerate(data[:50], start=1):
-                if not isinstance(row, dict):
-                    continue
-                kw = (row.get("keyword") or "").strip()
-                if not kw:
-                    continue
-                trend.append({
-                    "keyword": kw,
-                    "rank": pos,
-                    "category": _demand_category_from_text(kw),
-                    "score": 130 if pos <= 10 else 90 if pos <= 30 else 60,
-                    "bucket": "ALTA FORTE" if pos <= 10 else "MAIS PROCURADO" if pos <= 30 else "TENDÊNCIA",
-                })
-        else:
-            print("[DEMANDA/TRENDS] HTTP", status)
+        found = discover_categories(q)
     except Exception as e:
-        print("[DEMANDA/TRENDS]", repr(e))
+        print("[CATEGORY]", cat, repr(e))
+        found = []
 
-    # Mais vendidos: top 20 por categoria. Para reduzir chamadas, os IDs de
-    # categoria são cacheados por 24h. O ranking é atualizado pela API a cada
-    # nova coleta de sinais.
-    ids = _get_best_seller_category_ids(force=False)
-    for cat, cid in ids.items():
+    if not found:
+        return None
+
+    # Escolhe a categoria cujo nome mais se parece com o conjunto de âncoras.
+    best_id = None
+    best_score = -1
+    anchors = DEMAND_ANCHORS.get(cat, [])
+    for row in found:
+        cid = row.get("category_id")
+        name = norm(row.get("category_name") or "")
+        if not cid:
+            continue
+        score = sum(1 for a in anchors if norm(a) in name)
+        # Prefere categorias mais específicas quando o nome tem algum sinal.
+        score += 0.1 if name else 0
+        if score > best_score:
+            best_score = score
+            best_id = cid
+
+    if best_id:
+        with _DEMAND_LOCK:
+            _CATEGORY_CACHE["ids"][cat] = best_id
+            _CATEGORY_CACHE["at"] = now
+    return best_id
+
+def _load_category_signals(cat):
+    cid = _category_id_for(cat)
+    best = {}
+    trends = []
+
+    if cid:
         try:
             rows = highlights(cid)
             for row in rows[:20]:
                 if not isinstance(row, dict):
                     continue
                 pid = str(row.get("id") or "")
-                if not pid:
-                    continue
-                pos = int(row.get("position") or 99)
-                old = best.get(pid)
-                if old is None or pos < old["position"]:
-                    best[pid] = {"position": pos, "category": cat, "category_id": cid}
+                if pid:
+                    best[pid] = {
+                        "position": int(row.get("position") or 99),
+                        "type": row.get("type"),
+                        "category_id": cid,
+                    }
         except Exception as e:
-            print("[DEMANDA/HIGHLIGHTS]", cat, repr(e))
+            print("[HIGHLIGHTS]", cat, repr(e))
+
+        try:
+            data, status, _ = ml_get(f"/trends/{SITE_ID}/{cid}")
+            if status == 200 and isinstance(data, list):
+                for pos, row in enumerate(data[:50], start=1):
+                    if not isinstance(row, dict):
+                        continue
+                    kw = str(row.get("keyword") or "").strip()
+                    if not kw:
+                        continue
+                    trends.append({
+                        "keyword": kw,
+                        "rank": pos,
+                        "score": 140 if pos <= 10 else 100 if pos <= 30 else 70,
+                        "bucket": "ALTA FORTE" if pos <= 10 else "MAIS PROCURADO" if pos <= 30 else "TENDÊNCIA",
+                    })
+        except Exception as e:
+            print("[TRENDS]", cat, repr(e))
+
+    return {"category_id": cid, "best": best, "trends": trends}
+
+def load_demand_signals(force=False):
+    now = time.time()
+    with _DEMAND_LOCK:
+        if not force and _DEMAND_CACHE["categories"] and now - _DEMAND_CACHE["at"] < DEMAND_TTL:
+            return dict(_DEMAND_CACHE["categories"])
+
+    result = {}
+    cats = list(CATALOG.keys())
+    # Limita concorrência para não criar picos de requests.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fmap = {ex.submit(_load_category_signals, cat): cat for cat in cats}
+        for fut in as_completed(fmap):
+            cat = fmap[fut]
+            try:
+                result[cat] = fut.result()
+            except Exception as e:
+                print("[DEMANDA]", cat, repr(e))
+                result[cat] = {"category_id": None, "best": {}, "trends": []}
 
     with _DEMAND_LOCK:
-        _DEMAND_CACHE.update({"at": now, "trend": trend, "best": best})
-    print("[DEMANDA] trends=", len(trend), "mais_vendidos=", len(best))
-    return trend, best
+        _DEMAND_CACHE["at"] = now
+        _DEMAND_CACHE["categories"] = result
+    return result
 
-def demand_score(title, category, product_id, trend_items, best_map):
+def _keyword_match(title, keyword):
     t = norm(title)
+    k = norm(keyword)
+    if not k:
+        return 0
+    if k in t:
+        return 1.0
+    words = [w for w in k.split() if len(w) >= 4]
+    if not words:
+        return 0
+    hits = sum(1 for w in words if w in t)
+    return hits / len(words)
+
+def demand_score(title, category, product_id, signals):
+    sig = signals.get(category, {}) if isinstance(signals, dict) else {}
+    best_map = sig.get("best", {}) or {}
+    trends = sig.get("trends", []) or []
+
+    seller = best_map.get(str(product_id))
+    best_pos = seller.get("position") if seller else None
+    best_score = max(0.0, 100.0 - (float(best_pos or 99) - 1) * 5.0) if best_pos else 0.0
+
     trend_score = 0.0
     trend_rank = None
     trend_keyword = None
     trend_bucket = None
+    for row in trends:
+        m = _keyword_match(title, row.get("keyword"))
+        if m >= 0.5:
+            score = float(row.get("score") or 0) * m
+            if score > trend_score:
+                trend_score = score
+                trend_rank = row.get("rank")
+                trend_keyword = row.get("keyword")
+                trend_bucket = row.get("bucket")
 
-    # Match da tendência pelo título, mas sem exigir que o produto seja uma
-    # tendência para poder aparecer.
-    for x in trend_items:
-        xcat = x.get("category")
-        kw = norm(x.get("keyword"))
-        if not kw:
-            continue
-        if xcat and category and xcat != category:
-            continue
-        words = [w for w in kw.split() if len(w) >= 5]
-        matched = kw in t or (words and sum(1 for w in words if w in t) >= max(1, len(words)//2))
-        if matched and float(x.get("score") or 0) > trend_score:
-            trend_score = float(x.get("score") or 0)
-            trend_rank = x.get("rank")
-            trend_keyword = x.get("keyword")
-            trend_bucket = x.get("bucket")
-
-    best = best_map.get(str(product_id))
-    best_pos = best.get("position") if best else None
-    best_cat = best.get("category") if best else None
-    best_score = max(0.0, 100.0 - (float(best_pos or 99) - 1.0) * 5.0) if best_pos else 0.0
-    both = trend_score > 0 and best_pos is not None
-
-    # Aparição nos dois é o sinal mais forte. Depois vem posição de vendas e
-    # procura. O score não depende de preço, então a demanda manda no ranking.
+    both = best_pos is not None and trend_score > 0
     return {
         "trend_score": trend_score,
         "trend_rank": trend_rank,
         "trend_keyword": trend_keyword,
         "trend_bucket": trend_bucket,
         "best_seller_position": best_pos,
-        "best_seller_category": best_cat,
+        "best_seller_category": category if best_pos else None,
         "best_seller_score": best_score,
         "appears_both": both,
-        "demand_score": (300 if both else 0) + best_score * 3.0 + trend_score * 2.0,
+        "demand_score": (1000 if both else 0) + best_score * 8 + trend_score * 4,
     }
 
-def _search_seed_queries(category=None):
-    if category:
-        # Mantém a categoria selecionada focada nos produtos principais.
-        return CATALOG.get(category, [])[:3]
-    return [qs[0] for qs in CATALOG.values() if qs]
+def _search_category(cat):
+    """Uma busca principal por categoria, rápida e ampla."""
+    q = CATEGORY_SEED.get(cat, [])[0]
+    if not q:
+        return []
+    try:
+        return search_products_direct(q, 20)
+    except Exception as e:
+        print("[BUSCA CATEGORIA]", cat, repr(e))
+        return []
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    """Caça robusta e rápida.
+    # Categoria única continua disponível para o botão da interface.
+    requested = None
+    if queries:
+        requested = query_category(str(queries[0]))
+        if str(queries[0]) in CATALOG:
+            requested = str(queries[0])
 
-    Regra principal:
-      - busca direta em cada categoria escolhida para garantir volume;
-      - acrescenta os TOP 20 de mais vendidos quando disponíveis;
-      - Trends/Highlights servem para RANQUEAR, nunca para bloquear;
-      - só os melhores candidatos são enriquecidos;
-      - nenhum scraping e nenhum cupom durante a caça.
-    """
-    base_queries = [str(q).strip() for q in (queries or []) if str(q).strip()]
-    if not base_queries:
-        base_queries = _search_seed_queries()
+    categories = [requested] if requested else list(CATALOG.keys())
+    signals = load_demand_signals()
 
-    # Sinais de demanda são opcionais. Se falharem, a busca continua normal.
-    try:
-        trend_items, best_map = load_demand_signals()
-    except Exception as e:
-        print("[DEMANDA] ignorada:", repr(e))
-        trend_items, best_map = [], {}
+    # 1 busca por categoria, em paralelo. Isso garante cobertura das opções
+    # escolhidas sem dezenas de buscas sequenciais.
+    raw_by_cat = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fmap = {ex.submit(_search_category, cat): cat for cat in categories}
+        for fut in as_completed(fmap):
+            cat = fmap[fut]
+            try:
+                raw_by_cat[cat] = fut.result()
+            except Exception as e:
+                print("[BUSCA]", cat, repr(e))
+                raw_by_cat[cat] = []
 
-    requested_categories = set()
-    for q in base_queries:
-        c = query_category(q)
-        if c:
-            requested_categories.add(c)
-
-    # --------------------------------------------------------
-    # 1) BUSCA DIRETA: uma chamada por consulta/categoria.
-    #    Isso garante que não ficaremos com 8 produtos só porque algum
-    #    endpoint de ranking retornou poucos IDs.
-    # --------------------------------------------------------
-    raw_candidates = {}
-    for q in base_queries:
-        try:
-            rows = search_products_direct(q, 15)
-        except Exception as e:
-            print("[BUSCA ERRO]", q, repr(e))
-            rows = []
-        cat = query_category(q)
+    candidates = []
+    seen = set()
+    for cat in categories:
+        rows = raw_by_cat.get(cat, []) or []
+        sig = signals.get(cat, {})
+        best_map = sig.get("best", {}) or {}
         for raw in rows:
             if not isinstance(raw, dict):
                 continue
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
-            if not pid:
+            if not pid or pid in seen:
                 continue
-            title = raw.get("name") or raw.get("title") or ""
-            if not is_requested_product(title, q, cat):
+            title = raw.get("name") or raw.get("title") or pid
+            if not is_requested_product(title, CATEGORY_SEED.get(cat, [""])[0], cat):
                 continue
-            raw_candidates.setdefault(pid, {
-                "raw": raw,
-                "category_id": None,
-                "category_name": cat,
-                "query": q,
-            })
+            seen.add(pid)
+            ds = demand_score(title, cat, pid, signals)
+            rel = relevance(title, CATEGORY_SEED.get(cat, [""])[0])
+            try:
+                p0 = float(raw.get("price")) if raw.get("price") is not None else 999999
+            except Exception:
+                p0 = 999999
+            # Forte prioridade a demanda, mas não impede produto válido de entrar.
+            preliminary = (
+                (5000 if ds["appears_both"] else 0)
+                + ds["demand_score"]
+                + max(0, rel) * 2
+                + (80 if 69.90 <= p0 <= 2500 else 0)
+            )
+            candidates.append((preliminary, pid, raw, cat, ds))
 
-    # --------------------------------------------------------
-    # 2) TOP MAIS VENDIDOS: acrescenta IDs que a busca direta não trouxe.
-    #    No máximo 3 por categoria para manter a atualização rápida.
-    # --------------------------------------------------------
-    best_added = 0
-    for pid, info in sorted(best_map.items(), key=lambda kv: (
-        int(kv[1].get("position") or 99), kv[0]
-    )):
-        cat = info.get("category")
-        if requested_categories and cat not in requested_categories:
+    candidates.sort(key=lambda x: (-x[0], x[1]))
+
+    # 2) Garante diversidade: primeiro até 5 fortes por categoria.
+    shortlist = []
+    per_cat = {cat: 0 for cat in categories}
+    used = set()
+    for row in candidates:
+        _, pid, raw, cat, ds = row
+        if per_cat.get(cat, 0) >= 5:
             continue
-        if pid in raw_candidates:
-            continue
-        q = DEMAND_CATEGORY_QUERIES.get(cat, "")
-        if not q:
-            continue
-        raw_candidates[pid] = {
-            "raw": None,
-            "category_id": info.get("category_id"),
-            "category_name": cat,
-            "query": q,
-        }
-        best_added += 1
-        if best_added >= 27:
+        shortlist.append(row)
+        used.add(pid)
+        per_cat[cat] = per_cat.get(cat, 0) + 1
+
+    # Completa com os melhores restantes até 45.
+    for row in candidates:
+        if len(shortlist) >= 45:
             break
+        if row[1] in used:
+            continue
+        shortlist.append(row)
+        used.add(row[1])
 
-    print("[CANDIDATOS ANTES DO RANKING]", len(raw_candidates))
-
-    # --------------------------------------------------------
-    # 3) Ranking barato antes de consultar detalhes.
-    #    Quem já é mais vendido / aparece em tendência sobe primeiro.
-    # --------------------------------------------------------
-    prelim = []
-    for pid, base in raw_candidates.items():
-        raw = base.get("raw") or {}
-        title = raw.get("name") or raw.get("title") or pid
-        ds = demand_score(title, base.get("category_name"), pid, trend_items, best_map)
-        relevance_score = relevance(title, base.get("query", ""))
-        price = raw.get("price")
-        try:
-            price_n = float(price) if price is not None else 999999.0
-        except Exception:
-            price_n = 999999.0
-        prelim_score = (
-            ds.get("demand_score", 0) * 10
-            + (1000 if ds.get("appears_both") else 0)
-            + max(0, relevance_score) * 2
-            + (50 if 69.90 <= price_n <= 2500 else 0)
-        )
-        prelim.append((prelim_score, pid, base))
-
-    prelim.sort(key=lambda x: (-x[0], x[1]))
-    # 42 candidatos no máximo. A maior parte sai diretamente do buy_box da
-    # busca; os demais usam /products e só depois /products/{id}/items.
-    shortlist = prelim[:42]
-
-    # --------------------------------------------------------
-    # 4) ENRIQUECIMENTO CONTROLADO.
-    # --------------------------------------------------------
+    # 3) Enriquece somente a shortlist.
     fetched = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_map = {
-            executor.submit(_fetch_product_fast, pid, base.get("raw"), base): (pid, base)
-            for _, pid, base in shortlist
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fmap = {
+            ex.submit(_fetch_product_fast, pid, raw, {
+                "category_name": cat,
+                "query": CATEGORY_SEED.get(cat, [""])[0],
+                "category_id": signals.get(cat, {}).get("category_id"),
+            }): (pid, raw, cat, ds)
+            for _, pid, raw, cat, ds in shortlist
         }
-        for fut in as_completed(future_map):
+        for fut in as_completed(fmap):
+            pid, raw, cat, ds = fmap[fut]
             try:
                 result = fut.result()
                 if result:
-                    fetched.append(result)
+                    fetched.append((result, cat, ds))
             except Exception as e:
-                print("[PRODUTO FAST ERRO]", repr(e))
-
-    print("[PRODUTOS APROVEITADOS]", len(fetched))
+                print("[ENRIQUECIMENTO]", pid, repr(e))
 
     offers = []
-    seen = set()
-
-    for pid, p, item, base in fetched:
+    for result, cat, ds0 in fetched:
         try:
+            pid, p, item, base = result
             title = p.get("name") or p.get("title") or pid
-            query_used = base.get("query", "")
-            category = (
-                base.get("category_name")
-                or query_category(query_used)
-                or _demand_category_from_text(title)
-                or "Produto"
-            )
-
-            # Produtos vindos de highlights também passam pelo filtro de
-            # categoria, mas nunca são descartados apenas por não aparecerem
-            # em Trends.
-            if not is_requested_product(title, query_used, category):
-                continue
-            if pid in seen:
-                continue
-            seen.add(pid)
-
-            relevance_score = relevance(title, query_used)
-            if relevance_score < -20:
+            if not is_requested_product(title, CATEGORY_SEED.get(cat, [""])[0], cat):
                 continue
 
-            item_id = item.get("item_id")
-            if not item_id:
-                continue
-
+            price = None
+            original = None
             try:
                 price = float(item.get("price")) if item.get("price") is not None else None
             except Exception:
-                price = None
+                pass
             try:
                 original = float(item.get("original_price")) if item.get("original_price") is not None else None
             except Exception:
-                original = None
+                pass
 
-            # Só chama sale_price quando o valor inicial estiver ausente ou
-            # claramente suspeito. Isso mantém a busca rápida.
             if price is None or price <= 0 or price > 100000:
-                sale, sale_original = get_current_sale_price(item_id)
+                sale, sale_original = get_current_sale_price(item.get("item_id"))
                 if sale is not None:
                     price = sale
                     if sale_original is not None:
@@ -1800,52 +1776,33 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
             if original is None and isinstance(p.get("buy_box_winner"), dict):
                 bb = p["buy_box_winner"]
-                for key in ("regular_price", "original_price"):
-                    try:
-                        if bb.get(key) is not None:
-                            original = float(bb[key])
-                            break
-                    except Exception:
-                        pass
+                try:
+                    original = float(bb.get("regular_price")) if bb.get("regular_price") is not None else None
+                except Exception:
+                    pass
 
             seller_disc = discount(price, original)
             if seller_disc < float(min_discount or 0):
                 continue
 
             shipping = item.get("shipping_cost")
-            shipping_known = shipping is not None
-            total_price = total(price, shipping) if shipping_known else price
+            known = shipping is not None
+            total_price = total(price, shipping) if known else price
             free = bool(item.get("free_shipping"))
-            sold = item.get("sold_quantity") or 0
-            try:
-                sold = float(sold)
-            except Exception:
-                sold = 0
+            rel = relevance(title, CATEGORY_SEED.get(cat, [""])[0])
+            ds = demand_score(title, cat, pid, signals)
 
-            ds = demand_score(title, category, pid, trend_items, best_map)
-            giro_score = min(100, sold / 10) if sold > 0 else 0
-            opportunity = round(
-                ds["demand_score"]
-                + giro_score
-                + (20 if free else 0)
-                + min(20, max(0, seller_disc))
-                + max(0, relevance_score) * 0.05,
-                2,
-            )
-
-            pictures = p.get("pictures") or []
-            image = None
-            if pictures and isinstance(pictures[0], dict):
-                image = pictures[0].get("url") or pictures[0].get("secure_url")
+            pics = p.get("pictures") or []
+            image = pics[0].get("url") or pics[0].get("secure_url") if pics and isinstance(pics[0], dict) else None
 
             offers.append({
                 "product_id": pid,
-                "item_id": item_id,
+                "item_id": item.get("item_id"),
                 "title": title,
                 "modelo_nome": model_name(title),
                 "especificacoes": specs(title),
                 "image": image,
-                "category_name": category,
+                "category_name": cat,
                 "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
                 "price": price,
                 "original_price": original,
@@ -1854,11 +1811,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "condition": item.get("condition"),
                 "free_shipping": free,
                 "shipping_cost": shipping,
-                "shipping_known": shipping_known,
+                "shipping_known": known,
                 "total_price": total_price,
-                "relevance_score": relevance_score,
-                "sold_quantity": sold,
-                "giro_score": giro_score,
+                "relevance_score": rel,
+                "sold_quantity": item.get("sold_quantity") or 0,
+                "giro_score": 0,
                 "trend_score": ds["trend_score"],
                 "trend_keyword": ds["trend_keyword"],
                 "trend_bucket": ds["trend_bucket"],
@@ -1867,7 +1824,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "best_seller_category": ds["best_seller_category"],
                 "appears_both": ds["appears_both"],
                 "demand_score": ds["demand_score"],
-                "opportunity_score": opportunity,
+                "opportunity_score": ds["demand_score"] + (20 if free else 0) + min(20, seller_disc),
                 "cupom": None,
                 "desconto_cupom": 0,
                 "percentual_cupom_efetivo": 0,
@@ -1884,73 +1841,65 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "extra_earnings": 0,
             })
         except Exception as e:
-            print("[OFERTA ERRO]", repr(e))
+            print("[OFERTA]", repr(e))
 
-    # Demanda primeiro; custo total é desempate.
+    # Ranking final: demanda primeiro, custo depois.
     offers.sort(key=lambda o: (
         0 if o.get("appears_both") else 1,
-        -(o.get("best_seller_position") is not None),
         float(o.get("best_seller_position") or 99),
         -(o.get("trend_score") or 0),
         -(o.get("demand_score") or 0),
-        -(o.get("giro_score") or 0),
         0 if o.get("free_shipping") else 1,
-        float(o.get("total_price") or o.get("price") or 999999),
+        float(o.get("total_price") or 999999),
     ))
 
-    # Um produto de catálogo = uma oportunidade.
+    # Uma oportunidade por produto.
     grouped = {}
     for o in offers:
         grouped.setdefault(o["product_id"], []).append(o)
 
-    models = []
+    flat = []
     for pid, arr in grouped.items():
-        arr.sort(key=lambda o: (
-            0 if o.get("free_shipping") else 1,
-            float(o.get("total_price") or o.get("price") or 999999),
-        ))
-        o = arr[0]
+        arr.sort(key=lambda o: (0 if o.get("free_shipping") else 1, float(o.get("total_price") or 999999)))
+        flat.append(arr[0])
+
+    flat.sort(key=lambda o: (
+        0 if o.get("appears_both") else 1,
+        float(o.get("best_seller_position") or 99),
+        -(o.get("trend_score") or 0),
+        -(o.get("demand_score") or 0),
+        0 if o.get("free_shipping") else 1,
+        float(o.get("total_price") or 999999),
+    ))
+    flat = flat[:30]
+
+    models = []
+    for o in flat:
         models.append({
-            "product_id": pid,
+            "product_id": o["product_id"],
             "title": o["title"],
             "modelo_nome": o["modelo_nome"],
             "especificacoes": o["especificacoes"],
             "image": o["image"],
-            "category_name": o.get("category_name", ""),
+            "category_name": o["category_name"],
             "ofertas": [o],
         })
 
-    models.sort(key=lambda g: (
-        0 if g["ofertas"][0].get("appears_both") else 1,
-        -(g["ofertas"][0].get("best_seller_position") is not None),
-        float(g["ofertas"][0].get("best_seller_position") or 99),
-        -(g["ofertas"][0].get("trend_score") or 0),
-        -(g["ofertas"][0].get("demand_score") or 0),
-        -(g["ofertas"][0].get("giro_score") or 0),
-        float(g["ofertas"][0].get("total_price") or g["ofertas"][0].get("price") or 999999),
-    ))
-    models = models[:30]
-    flat = [g["ofertas"][0] for g in models]
-
-    valores = [o["price"] for o in flat if o.get("price") is not None]
-    totais = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
-    trend_count = sum(1 for o in flat if o.get("trend_score", 0) > 0)
-    best_count = sum(1 for o in flat if o.get("best_seller_position") is not None)
-    both_count = sum(1 for o in flat if o.get("appears_both"))
-
+    values = [o["price"] for o in flat if o.get("price") is not None]
+    totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
         "ofertas": len(flat),
-        "produtos em alta": trend_count,
-        "mais vendidos": best_count,
-        "aparecem nos dois": both_count,
+        "aparecem nos dois": sum(1 for o in flat if o.get("appears_both")),
+        "mais vendidos": sum(1 for o in flat if o.get("best_seller_position") is not None),
+        "produtos em alta": sum(1 for o in flat if o.get("trend_score", 0) > 0),
         "cupom candidato": 0,
         "cupons com limite": 0,
         "maior desconto estimado": brl(0),
         "menor preço com cupom": "—",
-        "menor preço do produto": brl(min(valores or [0])),
-        "menor total com frete": brl(min(totais or [0])),
+        "menor preço do produto": brl(min(values or [0])),
+        "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": len(flat),
-        "modo": "mais procurados + mais vendidos — busca rápida e ranking por demanda",
+        "modo": "mais procurados + mais vendidos — rápido e por categoria",
     }
     return {"stats": stats, "modelos": models, "ofertas": flat}
 
