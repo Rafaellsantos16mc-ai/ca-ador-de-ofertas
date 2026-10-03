@@ -65,7 +65,7 @@ ML_REDIRECT_URI = os.getenv(
 
 
 # ============================================================
-# PÁGINAS OFICIAIS
+# PÁGINA OFICIAL DE OFERTAS COM CUPOM
 # ============================================================
 
 COUPON_HUB = (
@@ -177,6 +177,7 @@ def clean_text(value):
     )
 
     replacements = {
+
         "\\u002F": "/",
         "\\u003A": ":",
         "\\u003F": "?",
@@ -623,6 +624,7 @@ def ml_get(
     )
 
     headers = {
+
         "Authorization":
             f"Bearer {token}",
 
@@ -812,6 +814,7 @@ def mercadolivre_callback():
             ML_TOKEN_URL,
 
             data={
+
                 "grant_type":
                     "authorization_code",
 
@@ -887,6 +890,7 @@ def mercadolivre_callback():
 
         save_auth(
             {
+
                 "access_token":
                     access_token,
 
@@ -959,13 +963,17 @@ def mercadolivre_reconnect():
 
 
 # ============================================================
-# PRODUTOS
+# CACHE PRODUTOS
 # ============================================================
 
 PRODUCT_CACHE = {}
 
 SEARCH_CACHE = {}
 
+
+# ============================================================
+# DETALHE DE PRODUTO
+# ============================================================
 
 def get_product_detail(
     product_id
@@ -1006,6 +1014,10 @@ def get_product_detail(
     return data
 
 
+# ============================================================
+# BUSCA PRODUTO PELO TÍTULO
+# ============================================================
+
 def search_product_by_title(
     title
 ):
@@ -1028,9 +1040,11 @@ def search_product_by_title(
         ]
 
     response, data = ml_get(
+
         "/products/search",
 
         params={
+
             "site_id":
                 "MLB",
 
@@ -1118,19 +1132,15 @@ def search_product_by_title(
 
             best = result
 
-    if best is not None:
+    SEARCH_CACHE[
+        key
+    ] = best
 
-        SEARCH_CACHE[
-            key
-        ] = best
-
-        return best
-
-    return None
+    return best
 
 
 # ============================================================
-# PÁGINA PÚBLICA
+# DOWNLOAD PÚBLICO
 # ============================================================
 
 def fetch_public_page(
@@ -1140,6 +1150,7 @@ def fetch_public_page(
     try:
 
         response = requests.get(
+
             url,
 
             headers=PUBLIC_HEADERS,
@@ -1209,10 +1220,10 @@ def fetch_public_page(
 
 
 # ============================================================
-# HTML VISÍVEL
+# HTML -> TEXTO
 # ============================================================
 
-def visible_html(
+def normalize_public_text(
     source
 ):
 
@@ -1220,45 +1231,67 @@ def visible_html(
         return ""
 
     source = re.sub(
+
         r"<script\b[^>]*>.*?</script>",
+
         " ",
+
         source,
+
         flags=re.I | re.S
     )
 
     source = re.sub(
+
         r"<style\b[^>]*>.*?</style>",
+
         " ",
+
         source,
+
         flags=re.I | re.S
     )
 
     source = re.sub(
+
         r"<noscript\b[^>]*>.*?</noscript>",
+
         " ",
+
         source,
+
         flags=re.I | re.S
     )
 
-    # NÃO cria quebra entre spans.
-    # Esse era o problema da versão anterior.
     source = re.sub(
-        r"</(?:div|article|section|li|p|h1|h2|h3|h4|h5|h6)>",
+
+        r"</(?:div|article|section|li|p|"
+        r"h1|h2|h3|h4|h5|h6)>",
+
         "\n",
+
         source,
+
         flags=re.I
     )
 
     source = re.sub(
+
         r"<br\s*/?>",
+
         "\n",
+
         source,
+
         flags=re.I
     )
 
     source = re.sub(
+
         r"<[^>]+>",
+
         " ",
+
         source
     )
 
@@ -1266,258 +1299,397 @@ def visible_html(
         source
     )
 
-    return source
-
-
-def normalize_visible_text(
-    source
-):
-
-    text = visible_html(
+    source = clean_text(
         source
     )
 
-    text = text.replace(
-        "\xa0",
-        " "
+    # Corrige HTML que separa:
+    #
+    # R$ 229 , 99
+    #
+    # para:
+    #
+    # R$ 229,99
+    #
+
+    source = re.sub(
+
+        r"(\d)\s*,\s*(\d)",
+
+        r"\1,\2",
+
+        source
     )
 
-    text = text.replace(
-        "\\u00e7",
-        "ç"
+    source = re.sub(
+
+        r"(\d)\s*\.\s*(\d)",
+
+        r"\1.\2",
+
+        source
     )
 
-    text = text.replace(
-        "\\u00e3",
-        "ã"
-    )
-
-    text = text.replace(
-        "\\u00e9",
-        "é"
-    )
-
-    text = re.sub(
-        r"[ \t]+",
+    source = re.sub(
+        r"\s+",
         " ",
-        text
+        source
     )
 
-    text = re.sub(
-        r"\n+",
-        "\n",
-        text
-    )
-
-    return text
+    return source.strip()
 
 
 # ============================================================
-# PREÇOS ROBUSTOS
+# PREÇO
 # ============================================================
 
-PRICE_RE = re.compile(
+PRICE_PATTERN = (
     r"R\s*\$\s*"
     r"(\d{1,3}(?:\.\d{3})*"
     r"(?:,\d{2})"
     r"|\d+(?:,\d{2})"
-    r"|\d+)",
+    r"|\d+)"
+)
+
+
+PRICE_RE = re.compile(
+    PRICE_PATTERN,
     re.I
 )
 
 
-def extract_prices(
-    text
-):
-
-    result = []
-
-    for match in PRICE_RE.finditer(
-        text or ""
-    ):
-
-        value = parse_money(
-            match.group(1)
-        )
-
-        if value is not None:
-
-            result.append(
-                value
-            )
-
-    return result
-
-
 # ============================================================
-# CORRIGE PREÇO FRAGMENTADO
+# CUPOM — SOMENTE CUPOM DE VERDADE
 #
-# Exemplo real da página:
+# IMPORTANTE:
 #
-# R$
-# 85
-# ,
-# 99
+# NÃO aceitar:
 #
-# vira:
+# 59% OFF
+# 62% OFF
+# 50% OFF
 #
-# R$ 85,99
-# ============================================================
-
-def rebuild_money_fragments(
-    text
-):
-
-    text = clean_text(
-        text
-    )
-
-    # R$ 85 , 99
-    text = re.sub(
-        r"R\s*\$\s*"
-        r"(\d{1,3}(?:\.\d{3})*|\d+)"
-        r"\s*,\s*"
-        r"(\d{2})",
-        r"R$ \1,\2",
-        text,
-        flags=re.I
-    )
-
-    # R$ 85 . 99
-    text = re.sub(
-        r"R\s*\$\s*"
-        r"(\d{1,3}(?:,\d{3})*|\d+)"
-        r"\s*\.\s*"
-        r"(\d{2})",
-        r"R$ \1.\2",
-        text,
-        flags=re.I
-    )
-
-    # R$ 85 99
-    text = re.sub(
-        r"R\s*\$\s*"
-        r"(\d{1,4})"
-        r"\s+"
-        r"(\d{2})"
-        r"(?=\s|$)",
-        r"R$ \1,\2",
-        text,
-        flags=re.I
-    )
-
-    return text
-
-
-# ============================================================
-# CUPOM
+# como cupom.
+#
+# Só aceitar quando existir "Cupom"
+# associado diretamente ao desconto.
 # ============================================================
 
 def detect_coupon(
     text
 ):
 
-    text = rebuild_money_fragments(
+    text = clean_text(
         text
+    )
+
+    # --------------------------------------------------------
+    # Cupom R$ 15 OFF
+    # --------------------------------------------------------
+
+    patterns_fixed = [
+
+        r"cupom\s+"
+        r"r\s*\$\s*"
+        r"(\d+(?:[.,]\d+)?)"
+        r"\s*off",
+
+        r"r\s*\$\s*"
+        r"(\d+(?:[.,]\d+)?)"
+        r"\s*off"
+        r"\s+com\s+cupom",
+    ]
+
+    for pattern in patterns_fixed:
+
+        match = re.search(
+            pattern,
+            text,
+            re.I
+        )
+
+        if match:
+
+            value = parse_money(
+                match.group(1)
+            )
+
+            if (
+                value is not None
+                and value > 0
+                and value <= 1000
+            ):
+
+                return {
+
+                    "type":
+                        "fixed",
+
+                    "value":
+                        value,
+
+                    "label":
+                        f"Cupom {money_br(value)} OFF",
+                }
+
+    # --------------------------------------------------------
+    # Cupom 10% OFF
+    # --------------------------------------------------------
+
+    patterns_percent = [
+
+        r"cupom\s+"
+        r"(\d+(?:[.,]\d+)?)"
+        r"\s*%\s*off",
+
+        r"(\d+(?:[.,]\d+)?)"
+        r"\s*%\s*off"
+        r"\s+com\s+cupom",
+    ]
+
+    for pattern in patterns_percent:
+
+        match = re.search(
+            pattern,
+            text,
+            re.I
+        )
+
+        if match:
+
+            value = float(
+                match.group(1).replace(
+                    ",",
+                    "."
+                )
+            )
+
+            if (
+                value > 0
+                and value <= 100
+            ):
+
+                return {
+
+                    "type":
+                        "percent",
+
+                    "value":
+                        value,
+
+                    "label":
+                        f"Cupom {value:g}% OFF",
+                }
+
+    return None
+
+
+# ============================================================
+# LIMPA TITULO
+# ============================================================
+
+def clean_product_title(
+    text
+):
+
+    text = clean_text(
+        text
+    )
+
+    # Preços.
+    text = re.sub(
+
+        r"R\s*\$\s*[\d.,]+",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Percentuais.
+    text = re.sub(
+
+        r"\d+(?:[.,]\d+)?"
+        r"\s*%\s*off",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Parcelas.
+    text = re.sub(
+
+        r"\d+x\s*"
+        r"R?\$?\s*"
+        r"[\d.,]+",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Cupom.
+    text = re.sub(
+
+        r"cupom\s+"
+        r"(?:r\s*\$\s*)?"
+        r"[\d.,]+"
+        r"\s*(?:off)?",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Frete.
+    text = re.sub(
+
+        r"frete grátis.*",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Entrega.
+    text = re.sub(
+
+        r"chegará.*",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    text = re.sub(
+
+        r"por ser sua primeira compra.*",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    # Marcadores.
+    text = re.sub(
+
+        r"\bmais vendido\b",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    text = re.sub(
+
+        r"\boferta imperdível\b",
+
+        " ",
+
+        text,
+
+        flags=re.I
+    )
+
+    text = re.sub(
+
+        r"\boferta relâmpago\b",
+
+        " ",
+
+        text,
+
+        flags=re.I
     )
 
     text = clean_text(
         text
     )
 
-    if not text:
-        return None
-
-    # --------------------------------------------------------
-    # CUPOM % OFF
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"cupom"
-        r".{0,100}?"
-        r"(\d+(?:[.,]\d+)?)"
-        r"\s*%\s*off",
-        text,
-        re.I
-    )
-
-    if not match:
-
-        match = re.search(
-            r"(\d+(?:[.,]\d+)?)"
-            r"\s*%\s*off"
-            r".{0,100}?"
-            r"cupom",
-            text,
-            re.I
-        )
-
-    if match:
-
-        value = float(
-            match.group(1).replace(
-                ",",
-                "."
-            )
-        )
-
-        if 0 < value <= 100:
-
-            return {
-
-                "type":
-                    "percent",
-
-                "value":
-                    value,
-
-                "label":
-                    f"Cupom {value:g}% OFF",
-            }
-
-    # --------------------------------------------------------
-    # CUPOM R$ FIXO
-    # --------------------------------------------------------
-
-    match = re.search(
-        r"cupom"
-        r".{0,100}?"
-        r"R\s*\$\s*"
-        r"(\d+(?:[.,]\d+)?)"
-        r".{0,30}?"
-        r"(?:off|$)",
-        text,
-        re.I
-    )
-
-    if match:
-
-        value = parse_money(
-            match.group(1)
-        )
-
-        if (
-            value is not None
-            and 0 < value <= 1000
-        ):
-
-            return {
-
-                "type":
-                    "fixed",
-
-                "value":
-                    value,
-
-                "label":
-                    f"Cupom {money_br(value)} OFF",
-            }
-
-    return None
+    return text[:280]
 
 
 # ============================================================
-# CALCULAR
+# TITULO VÁLIDO
+# ============================================================
+
+def looks_like_title(
+    text
+):
+
+    text = clean_product_title(
+        text
+    )
+
+    if len(text) < 12:
+        return False
+
+    low = normalize_text(
+        text
+    )
+
+    bad = [
+
+        "cupom",
+
+        "frete",
+
+        "chegara",
+
+        "vendidos",
+
+        "vendido",
+
+        "sem juros",
+
+        "pix",
+
+        "oferta do dia",
+
+        "oferta relampago",
+
+        "mais vendido",
+
+        "por ser sua primeira compra",
+
+    ]
+
+    for word in bad:
+
+        if word in low:
+
+            return False
+
+    if not re.search(
+        r"[a-záàãâéêíóôõúç]",
+        text,
+        re.I
+    ):
+
+        return False
+
+    return True
+
+
+# ============================================================
+# CALCULO
 # ============================================================
 
 def calculate_offer(
@@ -1590,399 +1762,112 @@ def calculate_offer(
 
 
 # ============================================================
-# TITULO
+# EXTRAI UMA OFERTA
+#
+# Aqui está a principal correção.
 # ============================================================
 
-def clean_product_title(
-    text
+def parse_one_coupon(
+    text,
+    coupon_match
 ):
 
-    text = clean_text(
-        text
+    coupon_start = (
+        coupon_match.start()
     )
 
-    # Remove preços.
-    text = re.sub(
-        r"R\s*\$\s*[\d.,]+",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    # Remove percentuais.
-    text = re.sub(
-        r"\d+(?:[.,]\d+)?\s*%\s*off",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    # Remove cupom.
-    text = re.sub(
-        r"cupom.*?(?:off|$)",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    # Remove parcelas.
-    text = re.sub(
-        r"\d+x\s*R?\$?\s*[\d.,]+",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"sem juros",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"frete grátis.*",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"por ser sua primeira compra.*",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"chegará.*",
-        " ",
-        text,
-        flags=re.I
-    )
-
-    text = clean_text(
-        text
-    )
-
-    return text[:280]
-
-
-def looks_like_title(
-    text
-):
-
-    text = clean_product_title(
-        text
-    )
-
-    if len(text) < 12:
-        return False
-
-    low = normalize_text(
-        text
-    )
-
-    bad = [
-
-        "cupom",
-
-        "frete",
-
-        "chegara",
-
-        "vendidos",
-
-        "vendido",
-
-        "sem juros",
-
-        "pix",
-
-        "oferta do dia",
-
-        "oferta relampago",
-
-        "mais vendido",
-
-        "por ser sua primeira compra",
-
-    ]
-
-    for word in bad:
-
-        if word in low:
-
-            return False
-
-    # Precisa ter letras.
-    if not re.search(
-        r"[a-záàãâéêíóôõúç]",
-        text,
-        re.I
-    ):
-
-        return False
-
-    return True
-
-
-# ============================================================
-# ENCONTRAR TITULO NO CONTEXTO
-# ============================================================
-
-def find_title_from_context(
-    before_text,
-    price_position
-):
-
-    if not before_text:
-        return ""
-
-    # Pega os últimos ~500 caracteres antes
-    # do preço.
-    chunk_start = max(
+    # Pega até 1.000 caracteres antes
+    # do cupom.
+    before_start = max(
         0,
-        price_position - 600
+        coupon_start - 1200
     )
 
-    chunk = before_text[
-        chunk_start:
-        price_position
+    before = text[
+        before_start:
+        coupon_start
     ]
 
-    chunk = clean_text(
-        chunk
-    )
-
-    # Remove lixo comum.
-    chunk = re.sub(
-        r"^\s*[\d.,]+\s*$",
-        "",
-        chunk
-    )
-
-    # Divide em possíveis blocos.
-    parts = re.split(
-        r"\n|•|\|",
-        chunk
-    )
-
-    candidates = []
-
-    for part in parts:
-
-        part = clean_product_title(
-            part
-        )
-
-        if looks_like_title(
-            part
-        ):
-
-            candidates.append(
-                part
+    coupon_context = (
+        before
+        + " "
+        + text[
+            coupon_start:
+            min(
+                len(text),
+                coupon_start + 250
             )
-
-    if candidates:
-
-        # Normalmente o título mais próximo
-        # do preço é o último.
-        return candidates[-1]
-
-    # Fallback:
-    # tenta frases maiores.
-    chunk = clean_product_title(
-        chunk
-    )
-
-    if looks_like_title(
-        chunk
-    ):
-
-        return chunk
-
-    return ""
-
-
-# ============================================================
-# PARSER PRINCIPAL
-# ============================================================
-
-def parse_coupon_cards(
-    source
-):
-
-    text = normalize_visible_text(
-        source
-    )
-
-    # --------------------------------------------------------
-    # IMPORTANTE:
-    #
-    # Não usa mais "linhas" para localizar preço.
-    #
-    # O Mercado Livre separa:
-    #
-    # R$
-    # 85
-    # ,
-    # 99
-    #
-    # em vários elementos HTML.
-    #
-    # Aqui reconstruímos tudo.
-    # --------------------------------------------------------
-
-    text = rebuild_money_fragments(
-        text
-    )
-
-    # Junta quebras para permitir:
-    #
-    # Cupom R$
-    # 15
-    # OFF
-    #
-    # virar:
-    #
-    # Cupom R$ 15 OFF
-    flat = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    print(
-        "[PARSER] tamanho texto:",
-        len(flat)
-    )
-
-    # --------------------------------------------------------
-    # Localiza TODAS as palavras cupom.
-    # --------------------------------------------------------
-
-    coupon_positions = [
-        match.start()
-        for match in re.finditer(
-            r"\bcupom\b",
-            flat,
-            re.I
-        )
-    ]
-
-    print(
-        "[PARSER] cupons encontrados:",
-        len(coupon_positions)
-    )
-
-    offers = []
-
-    for coupon_position in coupon_positions:
-
-        # ----------------------------------------------------
-        # Contexto do card.
-        #
-        # Produto e preço ficam antes.
-        # Condições ficam depois.
-        # ----------------------------------------------------
-
-        before_start = max(
-            0,
-            coupon_position - 900
-        )
-
-        after_end = min(
-            len(flat),
-            coupon_position + 500
-        )
-
-        before = flat[
-            before_start:
-            coupon_position
         ]
+    )
 
-        after = flat[
-            coupon_position:
-            after_end
-        ]
+    coupon = detect_coupon(
+        coupon_context
+    )
 
-        context = (
+    if not coupon:
+        return None
+
+    # ========================================================
+    # 1. ENCONTRAR O PREÇO ATUAL
+    #
+    # O Mercado Livre normalmente entrega:
+    #
+    # R$ 229,99
+    # R$ 85,99
+    # 62% OFF
+    #
+    # O segundo preço é o preço atual.
+    # ========================================================
+
+    discount_price_pattern = re.compile(
+
+        r"R\s*\$\s*"
+        r"([\d.,]+)"
+        r"\s+"
+        r"\d+(?:[.,]\d+)?"
+        r"\s*%\s*OFF",
+
+        re.I
+    )
+
+    price_matches = list(
+        discount_price_pattern.finditer(
             before
-            + " "
-            + after
+        )
+    )
+
+    current_price = None
+
+    current_price_match = None
+
+    if price_matches:
+
+        current_price_match = (
+            price_matches[-1]
         )
 
-        # ----------------------------------------------------
-        # Cupom.
-        # ----------------------------------------------------
-
-        coupon = detect_coupon(
-            context
+        current_price = parse_money(
+            current_price_match.group(1)
         )
 
-        if not coupon:
+    # ========================================================
+    # 2. FALLBACK
+    #
+    # Se não houver "% OFF" associado,
+    # procura os preços próximos.
+    # ========================================================
 
-            print(
-                "[IGNORADO] cupom sem regra:",
-                clean_text(
-                    after[:150]
-                )
-            )
+    if current_price is None:
 
-            continue
-
-        # ----------------------------------------------------
-        # Preços ANTES do cupom.
-        # ----------------------------------------------------
-
-        price_matches = list(
+        all_prices = list(
             PRICE_RE.finditer(
                 before
             )
         )
 
-        if not price_matches:
+        valid_prices = []
 
-            # Segunda tentativa:
-            # às vezes o preço foi fragmentado
-            # e não foi reconstruído.
-            before_fixed = (
-                rebuild_money_fragments(
-                    before
-                )
-            )
-
-            price_matches = list(
-                PRICE_RE.finditer(
-                    before_fixed
-                )
-            )
-
-            before = before_fixed
-
-        if not price_matches:
-
-            print(
-                "[IGNORADO] sem preço:",
-                clean_text(
-                    after[:150]
-                )
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # Último preço antes do cupom.
-        # Normalmente é o preço atual do produto.
-        # ----------------------------------------------------
-
-        selected_match = None
-        selected_price = None
-
-        for match in reversed(
-            price_matches
-        ):
+        for match in all_prices:
 
             value = parse_money(
                 match.group(1)
@@ -1991,120 +1876,356 @@ def parse_coupon_cards(
             if value is None:
                 continue
 
-            # Ignora parcelas muito pequenas.
-            if value < 10:
+            if value < MIN_PRICE:
                 continue
 
-            selected_match = match
-
-            selected_price = value
-
-            break
-
-        if not valid_price(
-            selected_price
-        ):
-
-            print(
-                "[IGNORADO] preço abaixo do mínimo:",
-                selected_price
+            valid_prices.append(
+                (
+                    value,
+                    match
+                )
             )
 
-            continue
+        if valid_prices:
 
-        # ----------------------------------------------------
-        # IMPORTANTE:
-        #
-        # Se houver:
-        #
-        # R$ 229,99
-        # R$ 85,99
-        # 62% OFF
-        # Cupom R$15 OFF
-        #
-        # selecionamos R$85,99.
-        #
-        # O 62% OFF NÃO entra no cálculo.
-        # ----------------------------------------------------
-
-        title = find_title_from_context(
-            before,
-            selected_match.start()
-            if selected_match
-            else len(before)
-        )
-
-        if not title:
-
-            print(
-                "[IGNORADO] título não identificado"
+            current_price, current_price_match = (
+                valid_prices[-1]
             )
 
-            continue
-
-        offer = calculate_offer(
-            selected_price,
-            coupon
-        )
-
-        if not offer:
-            continue
-
-        item = {
-
-            **offer,
-
-            "title":
-                title,
-
-            "product_id":
-                None,
-
-            "url":
-                "",
-
-            "source":
-                "descontaco-cupons",
-
-            "coupon_confirmed":
-                True,
-
-            "coupon_type":
-                coupon["type"],
-
-            "coupon_value":
-                coupon["value"],
-
-            "raw_context":
-                clean_text(
-                    context
-                )[:1200],
-        }
-
-        offers.append(
-            item
-        )
+    if not valid_price(
+        current_price
+    ):
 
         print(
-            "[CUPOM OK]",
-            title[:100],
-            "| preço:",
-            money_br(
-                selected_price
-            ),
-            "| cupom:",
-            coupon["label"],
-            "| final:",
-            money_br(
-                offer["final_price"]
+            "[IGNORADO PREÇO]",
+            current_price,
+            coupon["label"]
+        )
+
+        return None
+
+    # ========================================================
+    # 3. ENCONTRAR O PREÇO ORIGINAL
+    # ========================================================
+
+    original_price = None
+
+    original_match = None
+
+    if current_price_match:
+
+        prices_before_current = list(
+            PRICE_RE.finditer(
+                before[
+                    :current_price_match.start()
+                ]
             )
         )
+
+        if prices_before_current:
+
+            original_match = (
+                prices_before_current[-1]
+            )
+
+            original_price = parse_money(
+                original_match.group(1)
+            )
+
+    # ========================================================
+    # 4. TITULO
+    #
+    # Pega o texto entre o desconto do
+    # produto anterior e o preço original.
+    # ========================================================
+
+    title = ""
+
+    if original_match:
+
+        title_start = 0
+
+        previous_offs = list(
+            re.finditer(
+                r"\d+(?:[.,]\d+)?"
+                r"\s*%\s*OFF",
+                before[
+                    :original_match.start()
+                ],
+                re.I
+            )
+        )
+
+        if previous_offs:
+
+            title_start = (
+                previous_offs[-1].end()
+            )
+
+        title_raw = before[
+            title_start:
+            original_match.start()
+        ]
+
+        title = clean_product_title(
+            title_raw
+        )
+
+    # ========================================================
+    # 5. FALLBACK DO TITULO
+    # ========================================================
+
+    if not looks_like_title(
+        title
+    ):
+
+        # Procura um trecho menor
+        # imediatamente antes do preço.
+        if original_match:
+
+            start = max(
+                0,
+                original_match.start() - 450
+            )
+
+            title_raw = before[
+                start:
+                original_match.start()
+            ]
+
+            # Pega a última frase
+            # razoavelmente longa.
+            parts = re.split(
+                r"(?<=[.!?])\s+",
+                title_raw
+            )
+
+            candidates = []
+
+            for part in parts:
+
+                cleaned = clean_product_title(
+                    part
+                )
+
+                if looks_like_title(
+                    cleaned
+                ):
+
+                    candidates.append(
+                        cleaned
+                    )
+
+            if candidates:
+
+                title = candidates[-1]
+
+            else:
+
+                title = clean_product_title(
+                    title_raw
+                )
+
+    if not looks_like_title(
+        title
+    ):
+
+        print(
+            "[IGNORADO TITULO]",
+            title
+        )
+
+        return None
+
+    # ========================================================
+    # 6. CALCULAR CUPOM
+    # ========================================================
+
+    offer = calculate_offer(
+        current_price,
+        coupon
+    )
+
+    if not offer:
+        return None
+
+    # ========================================================
+    # 7. RESULTADO
+    # ========================================================
+
+    return {
+
+        **offer,
+
+        "title":
+            title,
+
+        "product_id":
+            None,
+
+        "url":
+            "",
+
+        "source":
+            "descontaco-cupons",
+
+        "coupon_confirmed":
+            True,
+
+        "coupon_type":
+            coupon["type"],
+
+        "coupon_value":
+            coupon["value"],
+
+        "original_price":
+            (
+                round(
+                    original_price,
+                    2
+                )
+                if original_price
+                is not None
+                else None
+            ),
+    }
+
+
+# ============================================================
+# PARSER DOS CUPONS
+# ============================================================
+
+def parse_coupon_cards(
+    source
+):
+
+    text = normalize_public_text(
+        source
+    )
+
+    print(
+        "[PARSER] texto:",
+        len(text)
+    )
+
+    # ========================================================
+    # LOCALIZA SOMENTE CUPONS REAIS
+    #
+    # Não procura simplesmente "cupom".
+    # Procura a estrutura do cupom.
+    # ========================================================
+
+    coupon_regexes = [
+
+        re.compile(
+            r"cupom\s+"
+            r"r\s*\$\s*"
+            r"[\d.,]+\s*"
+            r"off",
+            re.I
+        ),
+
+        re.compile(
+            r"r\s*\$\s*"
+            r"[\d.,]+\s*"
+            r"off\s+"
+            r"com\s+cupom",
+            re.I
+        ),
+
+        re.compile(
+            r"cupom\s+"
+            r"\d+(?:[.,]\d+)?"
+            r"\s*%\s*off",
+            re.I
+        ),
+
+        re.compile(
+            r"\d+(?:[.,]\d+)?"
+            r"\s*%\s*off\s+"
+            r"com\s+cupom",
+            re.I
+        ),
+    ]
+
+    coupon_matches = []
+
+    for regex in coupon_regexes:
+
+        coupon_matches.extend(
+            regex.finditer(
+                text
+            )
+        )
+
+    # Ordena pela posição.
+    coupon_matches.sort(
+        key=lambda x:
+            x.start()
+    )
+
+    print(
+        "[PARSER] cupons reais:",
+        len(coupon_matches)
+    )
+
+    offers = []
+
+    seen_positions = set()
+
+    for match in coupon_matches:
+
+        position = (
+            match.start()
+        )
+
+        if position in seen_positions:
+            continue
+
+        seen_positions.add(
+            position
+        )
+
+        try:
+
+            item = parse_one_coupon(
+                text,
+                match
+            )
+
+            if item:
+
+                offers.append(
+                    item
+                )
+
+                print(
+                    "[CUPOM OK]",
+                    item["title"][:100],
+                    "|",
+                    item["coupon_label"],
+                    "|",
+                    money_br(
+                        item["price"]
+                    ),
+                    "=>",
+                    money_br(
+                        item["final_price"]
+                    )
+                )
+
+        except Exception as e:
+
+            print(
+                "[CUPOM PARSE ERRO]",
+                e
+            )
 
     return offers
 
 
 # ============================================================
-# RESOLVER PRODUTO PELA API
+# RESOLVER PRODUTO
 # ============================================================
 
 def resolve_product(
@@ -2177,33 +2298,20 @@ def resolve_product(
                         "permalink"
                     )
 
-            if not offer.get(
-                "url"
-            ):
-
-                offer[
-                    "url"
-                ] = (
-                    "https://www.mercadolivre.com.br/p/"
-                    + product_id
-                )
-
-            return offer
-
-    # --------------------------------------------------------
-    # Mesmo sem conseguir resolver o catálogo,
-    # não perde a oferta.
-    # --------------------------------------------------------
-
-    offer[
+    # Fallback.
+    if not offer.get(
         "url"
-    ] = (
-        "https://lista.mercadolivre.com.br/"
-        + quote(
-            title,
-            safe=""
+    ):
+
+        offer[
+            "url"
+        ] = (
+            "https://lista.mercadolivre.com.br/"
+            + quote(
+                title,
+                safe=""
+            )
         )
-    )
 
     return offer
 
@@ -2379,15 +2487,15 @@ def hunt_offers():
     )
 
     print(
-        "[HUB CUPONS]",
+        "[HUB CUPOM TEXTUAL]",
         source.lower().count(
             "cupom"
         )
     )
 
-    # --------------------------------------------------------
-    # PARSE REAL DOS CARDS.
-    # --------------------------------------------------------
+    # ========================================================
+    # EXTRAI SOMENTE CUPONS REAIS
+    # ========================================================
 
     offers = parse_coupon_cards(
         source
@@ -2398,9 +2506,9 @@ def hunt_offers():
         len(offers)
     )
 
-    # --------------------------------------------------------
-    # Resolve título para produto ML.
-    # --------------------------------------------------------
+    # ========================================================
+    # RESOLVE OS PRODUTOS
+    # ========================================================
 
     resolved = []
 
@@ -2431,21 +2539,21 @@ def hunt_offers():
             0.08
         )
 
-    # --------------------------------------------------------
-    # Agrupa mesmo produto.
-    # --------------------------------------------------------
+    # ========================================================
+    # UM PRODUTO = UMA OPORTUNIDADE
+    # ========================================================
 
     offers = deduplicate_offers(
         resolved
     )
 
-    # --------------------------------------------------------
-    # Ranking:
+    # ========================================================
+    # RANKING
     #
-    # 1. maior economia em R$
+    # 1. maior economia real em R$
     # 2. maior percentual
-    # 3. menor final
-    # --------------------------------------------------------
+    # 3. menor preço final
+    # ========================================================
 
     offers.sort(
         key=lambda x: (
@@ -2505,6 +2613,7 @@ def api_status():
 
     return jsonify(
         {
+
             "connected":
                 True,
 
@@ -2534,22 +2643,26 @@ def api_hunt():
         offers = hunt_offers()
 
         total_discount = sum(
+
             float(
                 item.get(
                     "discount",
                     0
                 )
             )
+
             for item in offers
         )
 
         total_final = sum(
+
             float(
                 item.get(
                     "final_price",
                     0
                 )
             )
+
             for item in offers
         )
 
@@ -2591,6 +2704,7 @@ def api_hunt():
 
         return jsonify(
             {
+
                 "ok":
                     False,
 
@@ -2601,7 +2715,7 @@ def api_hunt():
 
 
 # ============================================================
-# DEBUG
+# DEBUG PÚBLICO
 # ============================================================
 
 @app.route(
@@ -2619,6 +2733,7 @@ def api_debug_public():
 
         return jsonify(
             {
+
                 "ok":
                     False,
 
@@ -2639,14 +2754,8 @@ def api_debug_public():
         ""
     )
 
-    visible = normalize_visible_text(
+    visible = normalize_public_text(
         source
-    )
-
-    flat = re.sub(
-        r"\s+",
-        " ",
-        visible
     )
 
     offers = parse_coupon_cards(
@@ -2657,35 +2766,50 @@ def api_debug_public():
         source
     )
 
-    coupon_positions = [
-        m.start()
-        for m in re.finditer(
-            r"\bcupom\b",
-            flat,
-            re.I
+    # ========================================================
+    # MOSTRA CONTEXTOS DOS CUPONS
+    # ========================================================
+
+    coupon_regex = re.compile(
+
+        r"cupom\s+"
+        r"(?:r\s*\$\s*[\d.,]+"
+        r"|[\d.,]+\s*%\s*)"
+        r"off",
+
+        re.I
+    )
+
+    matches = list(
+        coupon_regex.finditer(
+            visible
         )
-    ]
+    )
 
     samples = []
 
-    for position in coupon_positions[:10]:
+    for match in matches[:10]:
 
         start = max(
             0,
-            position - 300
+            match.start() - 350
         )
 
         end = min(
-            len(flat),
-            position + 350
+            len(visible),
+            match.end() + 350
         )
 
         samples.append(
             {
+
+                "coupon":
+                    match.group(0),
+
                 "text":
-                    flat[
+                    visible[
                         start:end
-                    ]
+                    ],
             }
         )
 
@@ -2708,6 +2832,9 @@ def api_debug_public():
                     "cupom"
                 ),
 
+            "coupon_occurrences":
+                len(matches),
+
             "produto_count":
                 len(product_ids),
 
@@ -2718,11 +2845,6 @@ def api_debug_public():
                     )
                 ),
 
-            "coupon_occurrences":
-                len(
-                    coupon_positions
-                ),
-
             "offers_detected":
                 len(offers),
 
@@ -2731,34 +2853,36 @@ def api_debug_public():
 
             "sample_offers":
                 [
+
                     {
+
                         "title":
-                            x.get(
+                            item.get(
                                 "title"
                             ),
 
                         "price":
-                            x.get(
+                            item.get(
                                 "price"
                             ),
 
                         "coupon":
-                            x.get(
+                            item.get(
                                 "coupon_label"
                             ),
 
-                        "final":
-                            x.get(
-                                "final_price"
+                        "discount":
+                            item.get(
+                                "discount"
                             ),
 
-                        "discount":
-                            x.get(
-                                "discount"
+                        "final":
+                            item.get(
+                                "final_price"
                             ),
                     }
 
-                    for x in offers[:10]
+                    for item in offers[:20]
                 ],
 
             "sample_product_ids":
@@ -2812,6 +2936,7 @@ def ml_diagnostic():
         result[
             "auth"
         ] = {
+
             "connected":
                 False
         }
@@ -2866,9 +2991,11 @@ def ml_diagnostic():
     )
 
     response, data = ml_get(
+
         "/products/search",
 
         params={
+
             "site_id":
                 "MLB",
 
@@ -2904,7 +3031,9 @@ def ml_diagnostic():
 
             "data":
                 (
+
                     {
+
                         "paging":
                             data.get(
                                 "paging"
@@ -3131,6 +3260,10 @@ body {
     margin-bottom: 18px;
 
     font-size: 15px;
+
+    box-shadow:
+        0 3px 12px
+        rgba(0,0,0,.04);
 }
 
 .grid {
@@ -3180,6 +3313,16 @@ body {
     font-weight: 800;
 
     margin-bottom: 12px;
+}
+
+.original {
+    color: #999;
+
+    font-size: 13px;
+
+    text-decoration: line-through;
+
+    margin-bottom: 2px;
 }
 
 .price-old {
@@ -3294,7 +3437,7 @@ body {
 </h1>
 
 <p>
-🎟️ Cupons + produtos acima de R$69,90
+🎟️ Cupons reais + produtos acima de R$69,90
 </p>
 
 </div>
@@ -3528,7 +3671,7 @@ function renderOffers(
 
                 O sistema encontrou os cupons,
                 mas nenhum produto passou pelos
-                filtros de preço e identificação.
+                filtros atuais.
 
                 <br><br>
 
@@ -3562,8 +3705,21 @@ function renderOffers(
                 </div>
 
 
+                ${
+                    item.original_price
+                    ? `
+                        <div class="original">
+                            ${money(
+                                item.original_price
+                            )}
+                        </div>
+                      `
+                    : ""
+                }
+
+
                 <div class="price-old">
-                    Preço antes do cupom:
+                    Preço atual antes do cupom:
                 </div>
 
 
@@ -3636,7 +3792,7 @@ async function hunt() {
         "⏳ CAÇANDO CUPONS...";
 
     status.innerText =
-        "Lendo produtos e cupons do Mercado Livre...";
+        "Lendo ofertas e identificando cupons reais...";
 
 
     try {
@@ -3770,6 +3926,7 @@ def health():
 
     return jsonify(
         {
+
             "status":
                 "ok",
 
