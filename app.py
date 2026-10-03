@@ -4,10 +4,20 @@ import secrets
 import hashlib
 import base64
 import time
+import re
+
 from urllib.parse import urlencode
 
 import requests
-from flask import Flask, request, redirect, session, jsonify, render_template_string
+
+from flask import (
+    Flask,
+    request,
+    redirect,
+    session,
+    jsonify,
+    render_template_string
+)
 
 
 # ============================================================
@@ -21,12 +31,20 @@ app.secret_key = os.getenv(
     "chave-caçador-ofertas"
 )
 
+
 # ============================================================
 # MERCADO LIVRE
 # ============================================================
 
-ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
-ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+ML_CLIENT_ID = os.getenv(
+    "ML_CLIENT_ID",
+    ""
+).strip()
+
+ML_CLIENT_SECRET = os.getenv(
+    "ML_CLIENT_SECRET",
+    ""
+).strip()
 
 ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
@@ -35,8 +53,13 @@ ML_REDIRECT_URI = os.getenv(
 
 ML_API = "https://api.mercadolibre.com"
 
-ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
-ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
+ML_AUTH = (
+    "https://auth.mercadolivre.com.br/authorization"
+)
+
+ML_TOKEN = (
+    "https://api.mercadolibre.com/oauth/token"
+)
 
 SITE_ID = "MLB"
 
@@ -48,12 +71,16 @@ DB_FILE = "ofertas.db"
 # ============================================================
 
 def get_db():
+
     conn = sqlite3.connect(DB_FILE)
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
 def init_db():
+
     conn = get_db()
 
     conn.execute("""
@@ -86,19 +113,28 @@ def init_db():
             free_shipping INTEGER DEFAULT 0,
             shipping_cost REAL,
             total_price REAL,
+            relevance_score REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Caso a tabela já exista da versão anterior
-    try:
-        conn.execute(
-            "ALTER TABLE ofertas ADD COLUMN total_price REAL"
-        )
-    except sqlite3.OperationalError:
-        pass
+    # Compatibilidade com banco antigo
+    for column, definition in [
+        ("total_price", "REAL"),
+        ("relevance_score", "REAL DEFAULT 0")
+    ]:
+
+        try:
+
+            conn.execute(
+                f"ALTER TABLE ofertas ADD COLUMN {column} {definition}"
+            )
+
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
+
     conn.close()
 
 
@@ -114,16 +150,21 @@ def json_safe(value):
     if value is None:
         return None
 
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(
+        value,
+        (str, int, float, bool)
+    ):
         return value
 
     if isinstance(value, dict):
+
         return {
             str(k): json_safe(v)
             for k, v in value.items()
         }
 
     if isinstance(value, list):
+
         return [
             json_safe(v)
             for v in value
@@ -134,7 +175,9 @@ def json_safe(value):
 
 def gerar_pkce():
 
-    verifier = secrets.token_urlsafe(64)
+    verifier = secrets.token_urlsafe(
+        64
+    )
 
     digest = hashlib.sha256(
         verifier.encode("utf-8")
@@ -142,22 +185,33 @@ def gerar_pkce():
 
     challenge = base64.urlsafe_b64encode(
         digest
-    ).decode("utf-8").rstrip("=")
+    ).decode(
+        "utf-8"
+    ).rstrip("=")
 
     return verifier, challenge
 
 
-def calcular_desconto(preco, original):
+def calcular_desconto(
+    preco,
+    original
+):
 
     try:
 
         preco = float(preco)
-        original = float(original)
+
+        original = float(
+            original
+        )
 
         if original > preco > 0:
 
             return round(
-                (1 - preco / original) * 100,
+                (
+                    1
+                    - preco / original
+                ) * 100,
                 2
             )
 
@@ -167,24 +221,669 @@ def calcular_desconto(preco, original):
     return 0
 
 
-def calcular_preco_total(price, shipping_cost):
+def calcular_preco_total(
+    price,
+    shipping_cost
+):
 
     try:
+
         price = float(price)
+
     except Exception:
+
         return None
 
     try:
+
         shipping_cost = float(
             shipping_cost or 0
         )
+
     except Exception:
+
         shipping_cost = 0
 
     return round(
         price + shipping_cost,
         2
     )
+
+
+def normalizar_texto(texto):
+
+    if not texto:
+        return ""
+
+    texto = str(texto).lower()
+
+    substituicoes = {
+        "á": "a",
+        "à": "a",
+        "ã": "a",
+        "â": "a",
+        "ä": "a",
+        "é": "e",
+        "è": "e",
+        "ê": "e",
+        "ë": "e",
+        "í": "i",
+        "ì": "i",
+        "î": "i",
+        "ï": "i",
+        "ó": "o",
+        "ò": "o",
+        "õ": "o",
+        "ô": "o",
+        "ö": "o",
+        "ú": "u",
+        "ù": "u",
+        "û": "u",
+        "ü": "u",
+        "ç": "c"
+    }
+
+    for antigo, novo in substituicoes.items():
+
+        texto = texto.replace(
+            antigo,
+            novo
+        )
+
+    texto = re.sub(
+        r"[^a-z0-9\s]+",
+        " ",
+        texto
+    )
+
+    texto = re.sub(
+        r"\s+",
+        " ",
+        texto
+    )
+
+    return texto.strip()
+
+
+# ============================================================
+# INTENÇÃO DA BUSCA
+# ============================================================
+
+PERFIS_BUSCA = {
+
+    "celular": {
+
+        "termos": [
+            "celular",
+            "smartphone",
+            "iphone",
+            "galaxy",
+            "motorola",
+            "xiaomi",
+            "redmi",
+            "poco",
+            "realme",
+            "oppo",
+            "asus",
+            "zenfone",
+            "samsung"
+        ],
+
+        "fortes": [
+            "smartphone",
+            "iphone",
+            "galaxy",
+            "motorola",
+            "xiaomi",
+            "redmi",
+            "poco",
+            "realme",
+            "samsung",
+            "zenfone"
+        ],
+
+        "negativos": [
+            "capa",
+            "capinha",
+            "pelicula",
+            "película",
+            "suporte",
+            "suporte veicular",
+            "ventosa",
+            "carregador",
+            "cabo",
+            "adaptador",
+            "peliculas",
+            "bateria",
+            "case",
+            "tripé",
+            "tripe",
+            "holder",
+            "bolsa",
+            "carteira",
+            "mouse",
+            "teclado"
+        ]
+    },
+
+    "fone": {
+
+        "termos": [
+            "fone",
+            "fone de ouvido",
+            "headphone",
+            "headset",
+            "earphone",
+            "earbud",
+            "bluetooth",
+            "tws"
+        ],
+
+        "fortes": [
+            "fone de ouvido",
+            "headphone",
+            "headset",
+            "earbud",
+            "tws"
+        ],
+
+        "negativos": [
+            "suporte para fone",
+            "case para fone",
+            "capa para fone",
+            "cabo para fone",
+            "peca",
+            "peça"
+        ]
+    },
+
+    "notebook": {
+
+        "termos": [
+            "notebook",
+            "laptop",
+            "computador"
+        ],
+
+        "fortes": [
+            "notebook",
+            "laptop"
+        ],
+
+        "negativos": [
+            "capa",
+            "case",
+            "suporte",
+            "mesa",
+            "base",
+            "mochila",
+            "carregador",
+            "fonte",
+            "teclado",
+            "mouse"
+        ]
+    },
+
+    "tv": {
+
+        "termos": [
+            "smart tv",
+            "smart",
+            "televisao",
+            "televisão",
+            "tv",
+            "televisor"
+        ],
+
+        "fortes": [
+            "smart tv",
+            "televisao",
+            "televisão",
+            "televisor"
+        ],
+
+        "negativos": [
+            "suporte",
+            "suporte tv",
+            "controle remoto",
+            "controle",
+            "cabo",
+            "antena",
+            "painel",
+            "rack"
+        ]
+    },
+
+    "geladeira": {
+
+        "termos": [
+            "geladeira",
+            "refrigerador",
+            "freezer"
+        ],
+
+        "fortes": [
+            "geladeira",
+            "refrigerador"
+        ],
+
+        "negativos": [
+            "peca",
+            "peça",
+            "borracha",
+            "prateleira",
+            "filtro",
+            "suporte"
+        ]
+    },
+
+    "air fryer": {
+
+        "termos": [
+            "air fryer",
+            "airfryer",
+            "fritadeira"
+        ],
+
+        "fortes": [
+            "air fryer",
+            "airfryer",
+            "fritadeira"
+        ],
+
+        "negativos": [
+            "cesta",
+            "forma",
+            "forma para air fryer",
+            "papel",
+            "forro",
+            "suporte"
+        ]
+    },
+
+    "smartwatch": {
+
+        "termos": [
+            "smartwatch",
+            "smart watch",
+            "relogio inteligente",
+            "relógio inteligente",
+            "apple watch",
+            "galaxy watch"
+        ],
+
+        "fortes": [
+            "smartwatch",
+            "smart watch",
+            "apple watch",
+            "galaxy watch"
+        ],
+
+        "negativos": [
+            "pulseira",
+            "pelicula",
+            "película",
+            "capa",
+            "case",
+            "carregador",
+            "suporte"
+        ]
+    },
+
+    "tablet": {
+
+        "termos": [
+            "tablet",
+            "ipad",
+            "galaxy tab"
+        ],
+
+        "fortes": [
+            "tablet",
+            "ipad",
+            "galaxy tab"
+        ],
+
+        "negativos": [
+            "capa",
+            "capinha",
+            "pelicula",
+            "película",
+            "suporte",
+            "teclado",
+            "carregador"
+        ]
+    },
+
+    "camera": {
+
+        "termos": [
+            "camera",
+            "câmera",
+            "camera digital",
+            "camera fotografica",
+            "câmera fotográfica",
+            "gopro",
+            "action cam"
+        ],
+
+        "fortes": [
+            "camera",
+            "câmera",
+            "gopro",
+            "action cam"
+        ],
+
+        "negativos": [
+            "capa",
+            "case",
+            "bolsa",
+            "suporte",
+            "tripé",
+            "tripe",
+            "bateria",
+            "cartao",
+            "cartão"
+        ]
+    }
+}
+
+
+def detectar_perfil_busca(query):
+
+    texto = normalizar_texto(
+        query
+    )
+
+    # Primeiro verifica expressões específicas
+    if (
+        "iphone" in texto
+        or "ipad" in texto
+        or "galaxy" in texto
+        or "samsung" in texto
+        or "motorola" in texto
+        or "xiaomi" in texto
+        or "redmi" in texto
+        or "poco" in texto
+        or "realme" in texto
+    ):
+
+        return "celular"
+
+    if (
+        "fone" in texto
+        or "headphone" in texto
+        or "headset" in texto
+        or "earbud" in texto
+        or "tws" in texto
+    ):
+
+        return "fone"
+
+    if (
+        "notebook" in texto
+        or "laptop" in texto
+    ):
+
+        return "notebook"
+
+    if (
+        texto == "tv"
+        or "televisao" in texto
+        or "televisao" in texto
+        or "smart tv" in texto
+    ):
+
+        return "tv"
+
+    if (
+        "geladeira" in texto
+        or "refrigerador" in texto
+    ):
+
+        return "geladeira"
+
+    if (
+        "air fryer" in texto
+        or "airfryer" in texto
+    ):
+
+        return "air fryer"
+
+    if (
+        "smartwatch" in texto
+        or "smart watch" in texto
+        or "apple watch" in texto
+        or "galaxy watch" in texto
+    ):
+
+        return "smartwatch"
+
+    if (
+        "tablet" in texto
+        or "ipad" in texto
+    ):
+
+        return "tablet"
+
+    if (
+        "camera" in texto
+        or "gopro" in texto
+        or "action cam" in texto
+    ):
+
+        return "camera"
+
+    if (
+        "celular" in texto
+        or "smartphone" in texto
+    ):
+
+        return "celular"
+
+    return None
+
+
+def obter_perfil_busca(query):
+
+    perfil = detectar_perfil_busca(
+        query
+    )
+
+    if perfil:
+        return perfil, PERFIS_BUSCA[
+            perfil
+        ]
+
+    return None, None
+
+
+def calcular_relevancia(
+    title,
+    query
+):
+
+    texto = normalizar_texto(
+        title
+    )
+
+    busca = normalizar_texto(
+        query
+    )
+
+    perfil_nome, perfil = (
+        obter_perfil_busca(
+            query
+        )
+    )
+
+    # Busca genérica sem perfil
+    if not perfil:
+
+        palavras = [
+            p
+            for p in busca.split()
+            if len(p) >= 3
+        ]
+
+        if not palavras:
+            return 0
+
+        pontos = 0
+
+        for palavra in palavras:
+
+            if palavra in texto:
+                pontos += 20
+
+        return pontos
+
+    score = 0
+
+    # --------------------------------------------------------
+    # TERMOS PRINCIPAIS
+    # --------------------------------------------------------
+
+    for termo in perfil[
+        "termos"
+    ]:
+
+        termo_normalizado = (
+            normalizar_texto(
+                termo
+            )
+        )
+
+        if termo_normalizado in texto:
+
+            if termo_normalizado in [
+                normalizar_texto(x)
+                for x in perfil[
+                    "fortes"
+                ]
+            ]:
+
+                score += 40
+
+            else:
+
+                score += 20
+
+    # --------------------------------------------------------
+    # TERMOS FORTES
+    # --------------------------------------------------------
+
+    for termo in perfil[
+        "fortes"
+    ]:
+
+        termo_normalizado = (
+            normalizar_texto(
+                termo
+            )
+        )
+
+        if termo_normalizado in texto:
+
+            score += 25
+
+    # --------------------------------------------------------
+    # TERMOS NEGATIVOS
+    # --------------------------------------------------------
+
+    for termo in perfil[
+        "negativos"
+    ]:
+
+        termo_normalizado = (
+            normalizar_texto(
+                termo
+            )
+        )
+
+        if termo_normalizado in texto:
+
+            score -= 80
+
+    # --------------------------------------------------------
+    # PALAVRAS DA BUSCA ORIGINAL
+    # --------------------------------------------------------
+
+    palavras_busca = [
+        p
+        for p in busca.split()
+        if len(p) >= 3
+    ]
+
+    for palavra in palavras_busca:
+
+        if palavra in texto:
+
+            score += 10
+
+    # --------------------------------------------------------
+    # PENALIZA PRODUTOS MUITO GENÉRICOS
+    # --------------------------------------------------------
+
+    if perfil_nome == "celular":
+
+        acessorio = any(
+            termo in texto
+            for termo in [
+                "capa",
+                "capinha",
+                "pelicula",
+                "suporte",
+                "ventosa",
+                "carregador",
+                "cabo",
+                "adaptador",
+                "case",
+                "holder",
+                "tripe",
+                "tripé"
+            ]
+        )
+
+        celular_real = any(
+            termo in texto
+            for termo in [
+                "smartphone",
+                "iphone",
+                "galaxy",
+                "samsung",
+                "motorola",
+                "xiaomi",
+                "redmi",
+                "poco",
+                "realme",
+                "zenfone"
+            ]
+        )
+
+        if acessorio and not celular_real:
+
+            score -= 150
+
+        if celular_real:
+
+            score += 100
+
+    return score
+
+
+def produto_relevante(
+    title,
+    query,
+    minimo=20
+):
+
+    score = calcular_relevancia(
+        title,
+        query
+    )
+
+    return score >= minimo, score
 
 
 # ============================================================
@@ -209,10 +908,18 @@ def obter_tokens():
     return None
 
 
-def salvar_tokens(data, user=None):
+def salvar_tokens(
+    data,
+    user=None
+):
 
-    access_token = data.get("access_token")
-    refresh_token = data.get("refresh_token")
+    access_token = data.get(
+        "access_token"
+    )
+
+    refresh_token = data.get(
+        "refresh_token"
+    )
 
     expires_in = int(
         data.get(
@@ -232,11 +939,14 @@ def salvar_tokens(data, user=None):
     if user:
 
         if user.get("id") is not None:
+
             user_id = str(
                 user.get("id")
             )
 
-        nickname = user.get("nickname")
+        nickname = user.get(
+            "nickname"
+        )
 
     conn = get_db()
 
@@ -294,10 +1004,13 @@ def salvar_tokens(data, user=None):
     ))
 
     conn.commit()
+
     conn.close()
 
 
-def renovar_token(refresh_token):
+def renovar_token(
+    refresh_token
+):
 
     if not refresh_token:
         return None
@@ -307,10 +1020,17 @@ def renovar_token(refresh_token):
         response = requests.post(
             ML_TOKEN,
             data={
-                "grant_type": "refresh_token",
-                "client_id": ML_CLIENT_ID,
-                "client_secret": ML_CLIENT_SECRET,
-                "refresh_token": refresh_token
+                "grant_type":
+                    "refresh_token",
+
+                "client_id":
+                    ML_CLIENT_ID,
+
+                "client_secret":
+                    ML_CLIENT_SECRET,
+
+                "refresh_token":
+                    refresh_token
             },
             timeout=30
         )
@@ -334,8 +1054,15 @@ def renovar_token(refresh_token):
         if antigos:
 
             user = {
-                "id": antigos.get("user_id"),
-                "nickname": antigos.get("nickname")
+                "id":
+                    antigos.get(
+                        "user_id"
+                    ),
+
+                "nickname":
+                    antigos.get(
+                        "nickname"
+                    )
             }
 
         salvar_tokens(
@@ -343,7 +1070,9 @@ def renovar_token(refresh_token):
             user
         )
 
-        return data.get("access_token")
+        return data.get(
+            "access_token"
+        )
 
     except Exception as e:
 
@@ -362,7 +1091,9 @@ def get_access_token():
     if not tokens:
         return None
 
-    access_token = tokens.get("access_token")
+    access_token = tokens.get(
+        "access_token"
+    )
 
     expires_at = tokens.get(
         "expires_at"
@@ -370,8 +1101,10 @@ def get_access_token():
 
     if (
         access_token
-        and time.time() < expires_at - 120
+        and time.time()
+        < expires_at - 120
     ):
+
         return access_token
 
     refresh_token = tokens.get(
@@ -394,23 +1127,34 @@ def get_access_token():
 # API MERCADO LIVRE
 # ============================================================
 
-def ml_get(path, params=None):
+def ml_get(
+    path,
+    params=None
+):
 
     token = get_access_token()
 
     if not token:
 
-        return None, 401, {}
+        return (
+            None,
+            401,
+            {}
+        )
 
     if path.startswith("http"):
+
         url = path
+
     else:
+
         url = ML_API + path
 
     try:
 
         response = requests.get(
             url,
+
             headers={
                 "Authorization":
                     f"Bearer {token}",
@@ -418,15 +1162,21 @@ def ml_get(path, params=None):
                 "Accept":
                     "application/json"
             },
+
             params=params,
+
             timeout=30
         )
 
         try:
+
             data = response.json()
+
         except Exception:
+
             data = {
-                "message": response.text
+                "message":
+                    response.text
             }
 
         return (
@@ -439,9 +1189,12 @@ def ml_get(path, params=None):
 
         return (
             {
-                "error": str(e)
+                "error":
+                    str(e)
             },
+
             500,
+
             {}
         )
 
@@ -450,7 +1203,9 @@ def ml_get(path, params=None):
 # LOGIN
 # ============================================================
 
-@app.route("/mercadolivre/login")
+@app.route(
+    "/mercadolivre/login"
+)
 def mercadolivre_login():
 
     if not ML_CLIENT_ID:
@@ -460,20 +1215,41 @@ def mercadolivre_login():
                 "ML_CLIENT_ID não configurado."
         }), 500
 
-    verifier, challenge = gerar_pkce()
+    verifier, challenge = (
+        gerar_pkce()
+    )
 
-    state = secrets.token_urlsafe(32)
+    state = secrets.token_urlsafe(
+        32
+    )
 
-    session["ml_state"] = state
-    session["ml_code_verifier"] = verifier
+    session[
+        "ml_state"
+    ] = state
+
+    session[
+        "ml_code_verifier"
+    ] = verifier
 
     params = {
-        "response_type": "code",
-        "client_id": ML_CLIENT_ID,
-        "redirect_uri": ML_REDIRECT_URI,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256"
+
+        "response_type":
+            "code",
+
+        "client_id":
+            ML_CLIENT_ID,
+
+        "redirect_uri":
+            ML_REDIRECT_URI,
+
+        "state":
+            state,
+
+        "code_challenge":
+            challenge,
+
+        "code_challenge_method":
+            "S256"
     }
 
     url = (
@@ -489,23 +1265,35 @@ def mercadolivre_login():
 # CALLBACK
 # ============================================================
 
-@app.route("/mercadolivre/callback")
+@app.route(
+    "/mercadolivre/callback"
+)
 def mercadolivre_callback():
 
-    error = request.args.get("error")
+    error = request.args.get(
+        "error"
+    )
 
     if error:
 
         return jsonify({
-            "erro": error,
+
+            "erro":
+                error,
+
             "descricao":
                 request.args.get(
                     "error_description"
                 )
         }), 400
 
-    code = request.args.get("code")
-    state = request.args.get("state")
+    code = request.args.get(
+        "code"
+    )
+
+    state = request.args.get(
+        "state"
+    )
 
     if not code:
 
@@ -514,7 +1302,9 @@ def mercadolivre_callback():
                 "Código não recebido."
         }), 400
 
-    if state != session.get("ml_state"):
+    if state != session.get(
+        "ml_state"
+    ):
 
         return jsonify({
             "erro":
@@ -535,8 +1325,11 @@ def mercadolivre_callback():
     try:
 
         response = requests.post(
+
             ML_TOKEN,
+
             data={
+
                 "grant_type":
                     "authorization_code",
 
@@ -555,12 +1348,14 @@ def mercadolivre_callback():
                 "code_verifier":
                     verifier
             },
+
             timeout=30
         )
 
         if response.status_code != 200:
 
             return jsonify({
+
                 "erro":
                     "Falha ao obter token.",
 
@@ -571,10 +1366,14 @@ def mercadolivre_callback():
                     response.text
             }), response.status_code
 
-        token_data = response.json()
+        token_data = (
+            response.json()
+        )
 
-        access_token = token_data.get(
-            "access_token"
+        access_token = (
+            token_data.get(
+                "access_token"
+            )
         )
 
         user = None
@@ -584,15 +1383,19 @@ def mercadolivre_callback():
             try:
 
                 me = requests.get(
+
                     f"{ML_API}/users/me",
+
                     headers={
                         "Authorization":
                             f"Bearer {access_token}"
                     },
+
                     timeout=30
                 )
 
                 if me.status_code == 200:
+
                     user = me.json()
 
             except Exception as e:
@@ -624,7 +1427,8 @@ def mercadolivre_callback():
     except Exception as e:
 
         return jsonify({
-            "erro": str(e)
+            "erro":
+                str(e)
         }), 500
 
 
@@ -632,7 +1436,9 @@ def mercadolivre_callback():
 # LOGOUT
 # ============================================================
 
-@app.route("/mercadolivre/logout")
+@app.route(
+    "/mercadolivre/logout"
+)
 def mercadolivre_logout():
 
     conn = get_db()
@@ -643,6 +1449,7 @@ def mercadolivre_logout():
     """)
 
     conn.commit()
+
     conn.close()
 
     session.clear()
@@ -651,7 +1458,7 @@ def mercadolivre_logout():
 
 
 # ============================================================
-# PRODUTO -> ITENS
+# TESTE PRODUTO -> ITENS
 # ============================================================
 
 @app.route(
@@ -667,6 +1474,7 @@ def teste_produto_itens():
     if not product_id:
 
         return jsonify({
+
             "erro":
                 "Informe product_id."
         }), 400
@@ -676,6 +1484,7 @@ def teste_produto_itens():
     if not token:
 
         return jsonify({
+
             "endpoint":
                 f"/products/{product_id}/items",
 
@@ -697,6 +1506,7 @@ def teste_produto_itens():
     )
 
     return jsonify({
+
         "endpoint":
             f"/products/{product_id}/items",
 
@@ -730,6 +1540,7 @@ def teste_produto():
     )
 
     return jsonify({
+
         "product_id":
             product_id,
 
@@ -756,11 +1567,17 @@ def teste_categoria():
     ).strip()
 
     data, status, _ = ml_get(
+
         f"/sites/{SITE_ID}/domain_discovery/search",
-        {"q": q}
+
+        {
+            "q":
+                q
+        }
     )
 
     return jsonify({
+
         "query":
             q,
 
@@ -787,10 +1604,12 @@ def teste_highlights():
     ).strip()
 
     data, status, _ = ml_get(
+
         f"/highlights/{SITE_ID}/category/{category_id}"
     )
 
     return jsonify({
+
         "category_id":
             category_id,
 
@@ -814,7 +1633,9 @@ def diagnostico():
     token = get_access_token()
 
     resultado = {
+
         "configuracao": {
+
             "client_id_configurado":
                 bool(ML_CLIENT_ID),
 
@@ -826,6 +1647,7 @@ def diagnostico():
         },
 
         "token": {
+
             "disponivel":
                 bool(token)
         }
@@ -833,18 +1655,26 @@ def diagnostico():
 
     if not token:
 
-        resultado["usuario"] = {
+        resultado[
+            "usuario"
+        ] = {
+
             "status":
                 "não conectado"
         }
 
-        return jsonify(resultado)
+        return jsonify(
+            resultado
+        )
 
     me, status, _ = ml_get(
         "/users/me"
     )
 
-    resultado["users_me"] = {
+    resultado[
+        "users_me"
+    ] = {
+
         "status_http":
             status,
 
@@ -856,12 +1686,19 @@ def diagnostico():
 
     if tokens:
 
-        resultado["token_local"] = {
+        resultado[
+            "token_local"
+        ] = {
+
             "user_id":
-                tokens.get("user_id"),
+                tokens.get(
+                    "user_id"
+                ),
 
             "nickname":
-                tokens.get("nickname"),
+                tokens.get(
+                    "nickname"
+                ),
 
             "tem_access_token":
                 bool(
@@ -878,26 +1715,38 @@ def diagnostico():
                 ),
 
             "expires_at":
-                tokens.get("expires_at")
+                tokens.get(
+                    "expires_at"
+                )
         }
 
-    return jsonify(resultado)
+    return jsonify(
+        resultado
+    )
 
 
 # ============================================================
-# CATEGORIAS
+# DESCOBRIR CATEGORIAS
 # ============================================================
 
-def descobrir_categorias(query):
+def descobrir_categorias(
+    query
+):
 
     data, status, _ = ml_get(
+
         f"/sites/{SITE_ID}/domain_discovery/search",
-        {"q": query}
+
+        {
+            "q":
+                query
+        }
     )
 
     if status != 200:
 
         return [], {
+
             "status":
                 status,
 
@@ -907,9 +1756,13 @@ def descobrir_categorias(query):
 
     categorias = []
 
-    if not isinstance(data, list):
+    if not isinstance(
+        data,
+        list
+    ):
 
         return categorias, {
+
             "status":
                 status,
 
@@ -920,19 +1773,30 @@ def descobrir_categorias(query):
     for item in data:
 
         category_id = (
-            item.get("category_id")
-            or item.get("id")
+            item.get(
+                "category_id"
+            )
+            or
+            item.get(
+                "id"
+            )
         )
 
         category_name = (
-            item.get("category_name")
-            or item.get("name")
+            item.get(
+                "category_name"
+            )
+            or
+            item.get(
+                "name"
+            )
         )
 
         if not category_id:
             continue
 
         categorias.append({
+
             "category_id":
                 category_id,
 
@@ -951,28 +1815,50 @@ def descobrir_categorias(query):
 # HIGHLIGHTS
 # ============================================================
 
-def buscar_highlights(category_id):
+def buscar_highlights(
+    category_id
+):
 
     data, status, _ = ml_get(
+
         f"/highlights/{SITE_ID}/category/{category_id}"
     )
 
     if status != 200:
         return []
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list
+    ):
+
         return data
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
-        content = data.get("content")
+        content = data.get(
+            "content"
+        )
 
-        if isinstance(content, list):
+        if isinstance(
+            content,
+            list
+        ):
+
             return content
 
-        results = data.get("results")
+        results = data.get(
+            "results"
+        )
 
-        if isinstance(results, list):
+        if isinstance(
+            results,
+            list
+        ):
+
             return results
 
     return []
@@ -982,7 +1868,9 @@ def buscar_highlights(category_id):
 # PRODUTO
 # ============================================================
 
-def obter_produto(product_id):
+def obter_produto(
+    product_id
+):
 
     data, status, _ = ml_get(
         f"/products/{product_id}"
@@ -990,8 +1878,13 @@ def obter_produto(product_id):
 
     if (
         status != 200
-        or not isinstance(data, dict)
+        or
+        not isinstance(
+            data,
+            dict
+        )
     ):
+
         return None
 
     return data
@@ -1001,9 +1894,12 @@ def obter_produto(product_id):
 # PRODUTO -> ANÚNCIOS
 # ============================================================
 
-def obter_itens_do_produto(product_id):
+def obter_itens_do_produto(
+    product_id
+):
 
     data, status, _ = ml_get(
+
         f"/products/{product_id}/items"
     )
 
@@ -1016,50 +1912,86 @@ def obter_itens_do_produto(product_id):
             status
         )
 
-        return [], status, data
+        return (
+            [],
+            status,
+            data
+        )
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list
+    ):
 
-        return data, status, data
+        return (
+            data,
+            status,
+            data
+        )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
-        results = data.get("results")
+        results = data.get(
+            "results"
+        )
 
-        if isinstance(results, list):
+        if isinstance(
+            results,
+            list
+        ):
 
-            return results, status, data
+            return (
+                results,
+                status,
+                data
+            )
 
-    return [], status, data
+    return (
+        [],
+        status,
+        data
+    )
 
 
 # ============================================================
-# NORMALIZAR ANÚNCIO
+# NORMALIZAR ITEM
 # ============================================================
 
-def normalizar_item(item):
+def normalizar_item(
+    item
+):
 
-    if not isinstance(item, dict):
+    if not isinstance(
+        item,
+        dict
+    ):
+
         return None
 
-    item_id = item.get("item_id")
+    item_id = item.get(
+        "item_id"
+    )
 
     if not item_id:
         return None
 
-    price = item.get("price")
+    price = item.get(
+        "price"
+    )
 
     original_price = item.get(
         "original_price"
     )
 
-    seller_id = item.get(
-        "seller_id"
-    )
-
     shipping = (
-        item.get("shipping")
-        or {}
+        item.get(
+            "shipping"
+        )
+        or
+        {}
     )
 
     free_shipping = bool(
@@ -1076,6 +2008,7 @@ def normalizar_item(item):
     try:
 
         if shipping_cost is not None:
+
             shipping_cost = float(
                 shipping_cost
             )
@@ -1084,8 +2017,8 @@ def normalizar_item(item):
 
         shipping_cost = None
 
-    # Frete grátis sempre conta como zero
     if free_shipping:
+
         shipping_cost = 0.0
 
     return {
@@ -1094,7 +2027,9 @@ def normalizar_item(item):
             item_id,
 
         "seller_id":
-            seller_id,
+            item.get(
+                "seller_id"
+            ),
 
         "price":
             price,
@@ -1103,10 +2038,14 @@ def normalizar_item(item):
             original_price,
 
         "condition":
-            item.get("condition"),
+            item.get(
+                "condition"
+            ),
 
         "listing_type_id":
-            item.get("listing_type_id"),
+            item.get(
+                "listing_type_id"
+            ),
 
         "free_shipping":
             free_shipping,
@@ -1115,10 +2054,14 @@ def normalizar_item(item):
             shipping_cost,
 
         "user_product_id":
-            item.get("user_product_id"),
+            item.get(
+                "user_product_id"
+            ),
 
         "permalink":
-            item.get("permalink"),
+            item.get(
+                "permalink"
+            ),
 
         "raw":
             item
@@ -1129,7 +2072,9 @@ def normalizar_item(item):
 # SALVAR OFERTA
 # ============================================================
 
-def salvar_oferta(oferta):
+def salvar_oferta(
+    oferta
+):
 
     conn = get_db()
 
@@ -1151,7 +2096,8 @@ def salvar_oferta(oferta):
             listing_type_id,
             free_shipping,
             shipping_cost,
-            total_price
+            total_price,
+            relevance_score
         )
 
         VALUES
@@ -1171,35 +2117,62 @@ def salvar_oferta(oferta):
             ?,
             ?,
             ?,
+            ?,
             ?
         )
     """, (
 
-        oferta.get("product_id"),
+        oferta.get(
+            "product_id"
+        ),
 
-        oferta.get("item_id"),
+        oferta.get(
+            "item_id"
+        ),
 
-        oferta.get("title"),
+        oferta.get(
+            "title"
+        ),
 
-        oferta.get("permalink"),
+        oferta.get(
+            "permalink"
+        ),
 
-        oferta.get("price"),
+        oferta.get(
+            "price"
+        ),
 
-        oferta.get("original_price"),
+        oferta.get(
+            "original_price"
+        ),
 
-        oferta.get("discount"),
+        oferta.get(
+            "discount"
+        ),
 
-        oferta.get("seller_id"),
+        oferta.get(
+            "seller_id"
+        ),
 
-        oferta.get("image"),
+        oferta.get(
+            "image"
+        ),
 
-        oferta.get("category_id"),
+        oferta.get(
+            "category_id"
+        ),
 
-        oferta.get("category_name"),
+        oferta.get(
+            "category_name"
+        ),
 
-        oferta.get("condition"),
+        oferta.get(
+            "condition"
+        ),
 
-        oferta.get("listing_type_id"),
+        oferta.get(
+            "listing_type_id"
+        ),
 
         1 if oferta.get(
             "free_shipping"
@@ -1211,10 +2184,15 @@ def salvar_oferta(oferta):
 
         oferta.get(
             "total_price"
+        ),
+
+        oferta.get(
+            "relevance_score"
         )
     ))
 
     conn.commit()
+
     conn.close()
 
 
@@ -1237,14 +2215,25 @@ def search_offers(
 
         desconto_minimo = 0
 
+    perfil_nome, perfil = (
+        obter_perfil_busca(
+            query
+        )
+    )
+
     categorias, _ = (
-        descobrir_categorias(query)
+        descobrir_categorias(
+            query
+        )
     )
 
     stats = {
 
         "query":
             query,
+
+        "perfil_detectado":
+            perfil_nome,
 
         "categorias_encontradas":
             len(categorias),
@@ -1259,6 +2248,9 @@ def search_offers(
             0,
 
         "anuncios_encontrados":
+            0,
+
+        "anuncios_relevantes":
             0,
 
         "anuncios_com_preco":
@@ -1276,9 +2268,9 @@ def search_offers(
 
     produtos = {}
 
-    # --------------------------------------------------------
-    # PRODUTOS DO CATÁLOGO
-    # --------------------------------------------------------
+    # ========================================================
+    # PRODUTOS
+    # ========================================================
 
     for categoria in categorias:
 
@@ -1286,22 +2278,34 @@ def search_offers(
             "category_id"
         ]
 
-        highlights = buscar_highlights(
-            category_id
+        highlights = (
+            buscar_highlights(
+                category_id
+            )
         )
 
         stats[
             "produtos_highlights"
-        ] += len(highlights)
+        ] += len(
+            highlights
+        )
 
         for h in highlights:
 
-            if h.get("type") != "PRODUCT":
+            if h.get(
+                "type"
+            ) != "PRODUCT":
+
                 continue
 
             product_id = (
-                h.get("id")
-                or h.get("product_id")
+                h.get(
+                    "id"
+                )
+                or
+                h.get(
+                    "product_id"
+                )
             )
 
             if not product_id:
@@ -1309,7 +2313,9 @@ def search_offers(
 
             if product_id not in produtos:
 
-                produtos[product_id] = {
+                produtos[
+                    product_id
+                ] = {
 
                     "product_id":
                         product_id,
@@ -1325,14 +2331,16 @@ def search_offers(
 
     stats[
         "produtos_unicos"
-    ] = len(produtos)
+    ] = len(
+        produtos
+    )
 
     ofertas = []
 
     itens_processados = set()
 
     # ========================================================
-    # PRODUTOS
+    # CONSULTA PRODUTOS
     # ========================================================
 
     for product_id, base in produtos.items():
@@ -1347,18 +2355,43 @@ def search_offers(
 
         if not produto:
 
-            stats["erros"] += 1
+            stats[
+                "erros"
+            ] += 1
 
             continue
 
         title = (
-            produto.get("name")
-            or produto.get("title")
-            or product_id
+            produto.get(
+                "name"
+            )
+            or
+            produto.get(
+                "title"
+            )
+            or
+            product_id
         )
 
+        # ====================================================
+        # FILTRO DE RELEVÂNCIA
+        # ====================================================
+
+        relevante, score = (
+            produto_relevante(
+                title,
+                query
+            )
+        )
+
+        if not relevante:
+
+            continue
+
         product_permalink = (
-            produto.get("permalink")
+            produto.get(
+                "permalink"
+            )
             or
             f"https://www.mercadolivre.com.br/p/{product_id}"
         )
@@ -1366,8 +2399,11 @@ def search_offers(
         image = None
 
         pictures = (
-            produto.get("pictures")
-            or []
+            produto.get(
+                "pictures"
+            )
+            or
+            []
         )
 
         if pictures:
@@ -1380,14 +2416,18 @@ def search_offers(
             ):
 
                 image = (
-                    primeira.get("url")
+                    primeira.get(
+                        "url"
+                    )
                     or
-                    primeira.get("secure_url")
+                    primeira.get(
+                        "secure_url"
+                    )
                 )
 
-        # ----------------------------------------------------
+        # ====================================================
         # ANÚNCIOS REAIS
-        # ----------------------------------------------------
+        # ====================================================
 
         itens, status, _ = (
             obter_itens_do_produto(
@@ -1397,7 +2437,9 @@ def search_offers(
 
         if status != 200:
 
-            stats["erros"] += 1
+            stats[
+                "erros"
+            ] += 1
 
             continue
 
@@ -1409,9 +2451,9 @@ def search_offers(
 
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # CADA ANÚNCIO
-        # ----------------------------------------------------
+        # ====================================================
 
         for item_raw in itens:
 
@@ -1427,6 +2469,7 @@ def search_offers(
             ]
 
             if item_id in itens_processados:
+
                 continue
 
             itens_processados.add(
@@ -1453,12 +2496,18 @@ def search_offers(
                 ):
 
                     price = (
-                        price.get("amount")
+                        price.get(
+                            "amount"
+                        )
                         or
-                        price.get("value")
+                        price.get(
+                            "value"
+                        )
                     )
 
-                price = float(price)
+                price = float(
+                    price
+                )
 
             except Exception:
 
@@ -1482,9 +2531,13 @@ def search_offers(
                     ):
 
                         original_price = (
-                            original_price.get("amount")
+                            original_price.get(
+                                "amount"
+                            )
                             or
-                            original_price.get("value")
+                            original_price.get(
+                                "value"
+                            )
                         )
 
                     original_price = float(
@@ -1511,9 +2564,8 @@ def search_offers(
 
             if shipping_cost is None:
 
-                # Se a API não informar frete,
-                # não inventamos valor.
                 shipping_known = False
+
                 total_price = price
 
             else:
@@ -1541,15 +2593,20 @@ def search_offers(
             ] += 1
 
             # ------------------------------------------------
-            # FILTRO
+            # FILTRO DESCONTO
             # ------------------------------------------------
 
             if (
                 desconto_minimo > 0
-                and desconto < desconto_minimo
+                and
+                desconto < desconto_minimo
             ):
 
                 continue
+
+            stats[
+                "anuncios_relevantes"
+            ] += 1
 
             # ------------------------------------------------
             # LINK
@@ -1630,23 +2687,33 @@ def search_offers(
                     shipping_known,
 
                 "total_price":
-                    total_price
+                    total_price,
+
+                "relevance_score":
+                    score
             }
 
             ofertas.append(
                 oferta
             )
 
-            salvar_oferta(
-                oferta
-            )
-
     # ========================================================
-    # ORDENA PELO PREÇO TOTAL
+    # ORDENAÇÃO
+    #
+    # Primeiro relevância.
+    # Dentro da mesma relevância:
+    # menor preço total.
     # ========================================================
 
     ofertas.sort(
-        key=lambda x:
+        key=lambda x: (
+            -float(
+                x.get(
+                    "relevance_score"
+                )
+                or 0
+            ),
+
             float(
                 x.get(
                     "total_price"
@@ -1658,11 +2725,14 @@ def search_offers(
                 or
                 999999999
             )
+        )
     )
 
     stats[
         "ofertas"
-    ] = len(ofertas)
+    ] = len(
+        ofertas
+    )
 
     return {
 
@@ -1678,10 +2748,12 @@ def search_offers(
 
 
 # ============================================================
-# API
+# API BUSCAR
 # ============================================================
 
-@app.route("/api/buscar")
+@app.route(
+    "/api/buscar"
+)
 def api_buscar():
 
     query = request.args.get(
@@ -1697,11 +2769,12 @@ def api_buscar():
     if not query:
 
         return jsonify({
+
             "erro":
                 "Informe uma busca.",
 
             "exemplo":
-                "/api/buscar?q=fone&desconto=0"
+                "/api/buscar?q=celular&desconto=0"
         }), 400
 
     resultado = search_offers(
@@ -1710,7 +2783,9 @@ def api_buscar():
     )
 
     return jsonify(
-        json_safe(resultado)
+        json_safe(
+            resultado
+        )
     )
 
 
@@ -1739,15 +2814,19 @@ def teste_busca():
     )
 
     return jsonify(
-        json_safe(resultado)
+        json_safe(
+            resultado
+        )
     )
 
 
 # ============================================================
-# SALVOS
+# OFERTAS SALVAS
 # ============================================================
 
-@app.route("/api/salvos")
+@app.route(
+    "/api/salvos"
+)
 def api_salvos():
 
     conn = get_db()
@@ -1755,7 +2834,9 @@ def api_salvos():
     rows = conn.execute("""
         SELECT *
         FROM ofertas
-        ORDER BY total_price ASC
+        ORDER BY
+            relevance_score DESC,
+            total_price ASC
         LIMIT 100
     """).fetchall()
 
@@ -1772,6 +2853,7 @@ def api_salvos():
 # ============================================================
 
 HTML = """
+
 <!DOCTYPE html>
 
 <html lang="pt-BR">
@@ -1799,34 +2881,43 @@ body {
 
     margin: 0;
 
-    background: #f4f5f7;
+    background:
+        #f4f5f7;
 
     font-family:
         Arial,
         Helvetica,
         sans-serif;
 
-    color: #222;
+    color:
+        #222;
 }
 
 .container {
 
-    max-width: 1100px;
+    max-width:
+        1100px;
 
-    margin: auto;
+    margin:
+        auto;
 
-    padding: 20px;
+    padding:
+        20px;
 }
 
 .card {
 
-    background: white;
+    background:
+        white;
 
-    border-radius: 16px;
+    border-radius:
+        16px;
 
-    padding: 20px;
+    padding:
+        20px;
 
-    margin-bottom: 20px;
+    margin-bottom:
+        20px;
 
     box-shadow:
         0 5px 20px
@@ -1840,48 +2931,64 @@ h1 {
 input,
 button {
 
-    width: 100%;
+    width:
+        100%;
 
-    padding: 13px;
+    padding:
+        13px;
 
-    border-radius: 10px;
+    border-radius:
+        10px;
 
-    border: 1px solid #ddd;
+    border:
+        1px solid #ddd;
 
-    font-size: 16px;
+    font-size:
+        16px;
 }
 
 input {
-    margin-bottom: 10px;
+
+    margin-bottom:
+        10px;
 }
 
 button {
 
-    background: #3483fa;
+    background:
+        #3483fa;
 
-    color: white;
+    color:
+        white;
 
-    border: 0;
+    border:
+        0;
 
-    cursor: pointer;
+    cursor:
+        pointer;
 
-    margin-top: 5px;
+    margin-top:
+        5px;
 }
 
 .login {
 
-    background: #ffe600;
+    background:
+        #ffe600;
 
-    color: #222;
+    color:
+        #222;
 }
 
 .logout {
-    background: #555;
+    background:
+        #555;
 }
 
 .stats {
 
-    display: grid;
+    display:
+        grid;
 
     grid-template-columns:
         repeat(
@@ -1889,55 +2996,74 @@ button {
             minmax(145px, 1fr)
         );
 
-    gap: 10px;
+    gap:
+        10px;
 }
 
 .stat {
 
-    background: #f4f4f4;
+    background:
+        #f4f4f4;
 
-    border-radius: 12px;
+    border-radius:
+        12px;
 
-    padding: 15px;
+    padding:
+        15px;
 }
 
 .stat strong {
 
-    display: block;
+    display:
+        block;
 
-    font-size: 24px;
+    font-size:
+        24px;
 
-    margin-top: 5px;
+    margin-top:
+        5px;
 }
 
 .oferta {
 
-    border: 1px solid #eee;
+    border:
+        1px solid #eee;
 
-    border-radius: 14px;
+    border-radius:
+        14px;
 
-    padding: 15px;
+    padding:
+        15px;
 
-    margin-top: 12px;
+    margin-top:
+        12px;
 
-    display: flex;
+    display:
+        flex;
 
-    gap: 15px;
+    gap:
+        15px;
 
-    background: white;
+    background:
+        white;
 }
 
 .oferta img {
 
-    width: 105px;
+    width:
+        105px;
 
-    height: 105px;
+    height:
+        105px;
 
-    object-fit: contain;
+    object-fit:
+        contain;
 
-    border-radius: 10px;
+    border-radius:
+        10px;
 
-    background: #fafafa;
+    background:
+        #fafafa;
 }
 
 .oferta-info {
@@ -1946,129 +3072,212 @@ button {
 
 .preco {
 
-    font-size: 23px;
+    font-size:
+        23px;
 
-    font-weight: bold;
+    font-weight:
+        bold;
 
-    margin-top: 8px;
+    margin-top:
+        8px;
 }
 
 .preco-total {
 
-    font-size: 25px;
+    font-size:
+        25px;
 
-    font-weight: bold;
+    font-weight:
+        bold;
 
-    color: #008000;
+    color:
+        #008000;
 
-    margin-top: 8px;
+    margin-top:
+        8px;
 }
 
 .preco-original {
 
-    color: #777;
+    color:
+        #777;
 
-    text-decoration: line-through;
+    text-decoration:
+        line-through;
 
-    margin-top: 3px;
+    margin-top:
+        3px;
 }
 
 .desconto {
 
-    color: #00a650;
+    color:
+        #00a650;
 
-    font-weight: bold;
+    font-weight:
+        bold;
 
-    margin-top: 5px;
+    margin-top:
+        5px;
 }
 
 .frete {
 
-    color: #008000;
+    color:
+        #008000;
 
-    font-weight: bold;
+    font-weight:
+        bold;
 
-    margin-top: 5px;
+    margin-top:
+        5px;
 }
 
 .menor {
 
-    display: inline-block;
+    display:
+        inline-block;
 
-    background: #00a650;
+    background:
+        #00a650;
 
-    color: white;
+    color:
+        white;
 
-    border-radius: 7px;
+    border-radius:
+        7px;
 
-    padding: 5px 9px;
+    padding:
+        5px 9px;
 
-    font-size: 12px;
+    font-size:
+        12px;
 
-    font-weight: bold;
+    font-weight:
+        bold;
 
-    margin-bottom: 5px;
+    margin-bottom:
+        5px;
+}
+
+.perfil {
+
+    display:
+        inline-block;
+
+    background:
+        #eef4ff;
+
+    color:
+        #3483fa;
+
+    border-radius:
+        8px;
+
+    padding:
+        5px 9px;
+
+    font-size:
+        12px;
+
+    font-weight:
+        bold;
+
+    margin-bottom:
+        10px;
 }
 
 a {
 
-    color: #3483fa;
+    color:
+        #3483fa;
 
-    text-decoration: none;
+    text-decoration:
+        none;
 }
 
 .small {
 
-    color: #666;
+    color:
+        #666;
 
-    font-size: 13px;
+    font-size:
+        13px;
 }
 
 .status {
 
-    background: #eef8f0;
+    background:
+        #eef8f0;
 
-    border-radius: 10px;
+    border-radius:
+        10px;
 
-    padding: 10px;
+    padding:
+        10px;
 
-    margin-bottom: 10px;
+    margin-bottom:
+        10px;
 }
 
 .aviso-frete {
 
-    color: #777;
+    color:
+        #777;
 
-    font-size: 12px;
+    font-size:
+        12px;
 
-    margin-top: 4px;
+    margin-top:
+        4px;
+}
+
+.relevancia {
+
+    color:
+        #777;
+
+    font-size:
+        11px;
+
+    margin-top:
+        5px;
 }
 
 @media(max-width:600px) {
 
     .oferta {
-        align-items: flex-start;
+
+        align-items:
+            flex-start;
     }
 
     .oferta img {
 
-        width: 80px;
+        width:
+            80px;
 
-        height: 80px;
+        height:
+            80px;
     }
 
     .preco {
-        font-size: 20px;
+
+        font-size:
+            20px;
     }
 
     .preco-total {
-        font-size: 22px;
+
+        font-size:
+            22px;
     }
 }
 
 </style>
 
 </head>
+
 
 <body>
 
@@ -2082,8 +3291,9 @@ a {
 </h1>
 
 <p>
-Encontre anúncios reais do Mercado Livre
-e compare o preço final.
+Encontre produtos relevantes,
+compare anúncios e encontre o menor
+preço total.
 </p>
 
 
@@ -2104,6 +3314,7 @@ e compare o preço final.
 {% endif %}
 
 </div>
+
 
 <a href="/mercadolivre/logout">
 
@@ -2141,7 +3352,7 @@ Desconectar Mercado Livre
 
 <input
     name="q"
-    placeholder="Ex: fone, celular, televisão..."
+    placeholder="Ex: celular, iPhone, Samsung, notebook..."
     required
 >
 
@@ -2161,10 +3372,12 @@ Desconectar Mercado Livre
 
 </form>
 
+
 <p class="small">
 
-💡 O resultado agora é ordenado pelo
-<strong>preço total</strong> quando o frete é informado.
+💡 O sistema identifica automaticamente
+o tipo de produto e elimina acessórios
+quando a busca for específica.
 
 </p>
 
@@ -2178,6 +3391,19 @@ Desconectar Mercado Livre
 <h2>
 📊 Resultado
 </h2>
+
+
+{% if resultado.stats.perfil_detectado %}
+
+<div class="perfil">
+
+🎯 Perfil detectado:
+{{ resultado.stats.perfil_detectado }}
+
+</div>
+
+{% endif %}
+
 
 <div class="stats">
 
@@ -2217,10 +3443,10 @@ Anúncios
 
 <div class="stat">
 
-Com preço
+Relevantes
 
 <strong>
-{{ resultado.stats.anuncios_com_preco }}
+{{ resultado.stats.anuncios_relevantes }}
 </strong>
 
 </div>
@@ -2247,11 +3473,15 @@ Ofertas
 🔥 Anúncios encontrados
 </h2>
 
+
 {% if resultado.ofertas %}
+
 
 {% for oferta in resultado.ofertas %}
 
+
 <div class="oferta">
+
 
 {% if oferta.image %}
 
@@ -2381,6 +3611,14 @@ R$
 </div>
 
 
+<div class="relevancia">
+
+🎯 Relevância:
+{{ oferta.relevance_score }}
+
+</div>
+
+
 <br>
 
 
@@ -2398,19 +3636,24 @@ R$
 
 </div>
 
+
 {% endfor %}
+
 
 {% else %}
 
+
 <p>
 
-Nenhuma oferta encontrada.
+Nenhuma oferta relevante encontrada.
 
 </p>
+
 
 {% endif %}
 
 </div>
+
 
 {% endif %}
 
@@ -2421,6 +3664,7 @@ Nenhuma oferta encontrada.
 🧪 Testes
 </h3>
 
+
 <a
 href="/mercadolivre/teste-produto-itens?product_id=MLB58793248"
 target="_blank"
@@ -2430,7 +3674,10 @@ Testar Produto → Anúncios
 
 </a>
 
-<br><br>
+
+<br>
+<br>
+
 
 <a
 href="/mercadolivre/diagnostico"
@@ -2449,6 +3696,7 @@ Diagnóstico
 </body>
 
 </html>
+
 """
 
 
@@ -2468,6 +3716,7 @@ def index():
     nickname = None
 
     if tokens:
+
         nickname = tokens.get(
             "nickname"
         )
@@ -2488,7 +3737,9 @@ def index():
 # BUSCA
 # ============================================================
 
-@app.route("/buscar")
+@app.route(
+    "/buscar"
+)
 def buscar():
 
     query = request.args.get(
@@ -2519,6 +3770,7 @@ def buscar():
     nickname = None
 
     if tokens:
+
         nickname = tokens.get(
             "nickname"
         )
@@ -2539,7 +3791,9 @@ def buscar():
 # HEALTH
 # ============================================================
 
-@app.route("/health")
+@app.route(
+    "/health"
+)
 def health():
 
     return jsonify({
@@ -2554,13 +3808,18 @@ def health():
             bool(ML_CLIENT_ID),
 
         "mercado_livre_conectado":
-            bool(get_access_token()),
+            bool(
+                get_access_token()
+            ),
 
         "fluxo":
             "products/{product_id}/items",
 
         "criterio_menor_preco":
-            "produto + frete"
+            "produto + frete",
+
+        "filtro_relevancia":
+            "ativo"
     })
 
 
@@ -2569,7 +3828,9 @@ def health():
 # ============================================================
 
 @app.errorhandler(404)
-def pagina_nao_encontrada(error):
+def pagina_nao_encontrada(
+    error
+):
 
     return jsonify({
 
@@ -2582,7 +3843,9 @@ def pagina_nao_encontrada(error):
 
 
 @app.errorhandler(500)
-def erro_interno(error):
+def erro_interno(
+    error
+):
 
     return jsonify({
 
@@ -2608,7 +3871,10 @@ if __name__ == "__main__":
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port,
+
         debug=False
     )
