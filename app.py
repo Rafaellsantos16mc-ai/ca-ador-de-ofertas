@@ -1191,230 +1191,232 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
-def search_products_direct(q, limit=20):
+def search_products_direct(q, limit=30):
+    """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
     data, status, _ = ml_get("/products/search", {
         "site_id": SITE_ID,
         "q": q,
         "status": "active",
-        "limit": limit,
+        "limit": min(int(limit or 30), 50),
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
+        print(f"[BUSCA] {q} -> HTTP {status}")
         return []
-    return data.get("results") or []
+    results = data.get("results") or []
+    print(f"[BUSCA] {q} -> {len(results)} candidatos")
+    return results
 
 
+def _candidate_fallback(pid, raw, query):
+    """Monta uma oferta a partir do próprio resultado de /products/search.
 
-def _build_item_from_buy_box(bb):
+    Alguns produtos não expõem /products/{id}/items para o token atual.
+    Nesses casos não descartamos o produto inteiro se a própria busca já
+    trouxe buy_box_winner ou dados suficientes.
+    """
+    if not isinstance(raw, dict):
+        return None
+    bb = raw.get("buy_box_winner") or raw.get("buy_box")
     if not isinstance(bb, dict):
         return None
-    item_id = bb.get("item_id") or bb.get("id")
-    if not item_id:
-        return None
-    shipping = bb.get("shipping") or {}
-    if isinstance(shipping, dict):
-        free = bool(shipping.get("free_shipping"))
-        cost = shipping.get("cost")
-    else:
-        free, cost = False, None
-    return {
-        "item_id": item_id,
-        "seller_id": bb.get("seller_id"),
-        "price": bb.get("price"),
-        "original_price": bb.get("original_price") or bb.get("regular_price"),
-        "condition": bb.get("condition") or bb.get("item_condition"),
-        "listing_type_id": bb.get("listing_type_id"),
-        "free_shipping": free,
-        "shipping_cost": 0 if free else cost,
-        "permalink": bb.get("permalink"),
-        "user_product_id": bb.get("user_product_id"),
-        "sold_quantity": bb.get("sold_quantity") or 0,
-    }
-
-
-def _fetch_product_fast(pid):
-    p = product(pid)
-    if not p:
-        return None
-    bb = p.get("buy_box_winner")
     item = _build_item_from_buy_box(bb)
-    # Only fall back to /products/{id}/items when the product detail does not
-    # expose a usable buy-box winner. This removes a large number of API calls.
-    if item is None:
-        items = product_items(pid)
-        for raw in items:
-            item = normalize_item(raw)
-            if item:
-                item["sold_quantity"] = raw.get("sold_quantity") or 0
-                break
-    if item is None:
+    if not item:
         return None
-    return pid, p, item
+    p = dict(raw)
+    p.setdefault("name", raw.get("title") or pid)
+    return pid, p, item, {"category_id": None, "category_name": None, "query": query}
+
+
+def _fetch_product_fast(pid, raw=None, base=None):
+    p = product(pid)
+    if p:
+        bb = p.get("buy_box_winner")
+        item = _build_item_from_buy_box(bb)
+        if item is None:
+            items = product_items(pid)
+            # Escolhe o primeiro item válido; não falha o produto por um seller
+            # específico sem acesso.
+            for candidate in items:
+                item = normalize_item(candidate)
+                if item:
+                    item["sold_quantity"] = candidate.get("sold_quantity") or 0
+                    break
+        if item is not None:
+            return pid, p, item, (base or {"category_id": None, "category_name": None, "query": ""})
+
+    # Fallback: aproveita o próprio resultado da busca.
+    if raw is not None:
+        return _candidate_fallback(pid, raw, (base or {}).get("query", ""))
+    return None
 
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    """
-    Fast product scan.
+    """Caça rápida e tolerante a falhas de catálogo.
 
-    IMPORTANT:
-    - Product discovery never scrapes Mercado Livre public pages.
-    - Coupon discovery is intentionally NOT part of this scan.
-    - Product details are fetched with a small controlled worker pool.
-    - /items/{id}/sale_price is used only for missing/suspicious prices.
-    This keeps the main hunt fast and avoids API request spikes.
+    A busca principal usa somente a API do Mercado Livre. Não abre páginas
+    públicas e não procura cupom durante a caça. O objetivo é entregar uma
+    lista consistente de produtos; cupons ficam em etapa separada.
     """
-    # Keep the automatic hunt independent from coupon scraping.
-    # Coupon work is handled separately by /api/cupons?atualizar=1.
-    apply_coupons = False
-    public_cards = []
-
     products = {}
+    target_candidates = 90
+
     for q in queries:
-        for item in search_products_direct(q, 10):
-            pid = item.get("id") or item.get("product_id")
-            if pid and pid not in products:
-                products[pid] = {"category_id": None, "category_name": None, "query": q}
-            if len(products) >= 36:
+        results = search_products_direct(q, 30)
+        for raw in results:
+            if not isinstance(raw, dict):
+                continue
+            pid = raw.get("id") or raw.get("product_id")
+            if not pid or pid in products:
+                continue
+            products[pid] = {
+                "raw": raw,
+                "category_id": None,
+                "category_name": None,
+                "query": q,
+            }
+            if len(products) >= target_candidates:
                 break
-        if len(products) >= 36:
+        if len(products) >= target_candidates:
             break
 
-    print("[PRODUTOS CANDIDATOS RÁPIDOS]", len(products))
+    print("[PRODUTOS CANDIDATOS]", len(products))
 
     fetched = []
-    # Controlled concurrency: enough to reduce latency, but not enough to
-    # create a request spike against the ML API.
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_map = {executor.submit(_fetch_product_fast, pid): (pid, base)
-                      for pid, base in list(products.items())[:36]}
+    # Quatro workers: suficiente para reduzir a espera sem criar pico grande.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_map = {}
+        for pid, base in list(products.items())[:target_candidates]:
+            future_map[executor.submit(
+                _fetch_product_fast, pid, base.get("raw"), base
+            )] = (pid, base)
+
         for fut in as_completed(future_map):
             try:
                 result = fut.result()
                 if result:
-                    fetched.append((result, future_map[fut][1]))
+                    fetched.append(result)
             except Exception as e:
                 print("[PRODUTO FAST ERRO]", repr(e))
 
+    print("[PRODUTOS APROVEITADOS]", len(fetched))
+
     offers = []
-    seen = set()
+    seen_products = set()
 
-    for (pid, p, item), base in fetched:
-        title = p.get("name") or p.get("title") or pid
-        score = relevance(title, base["query"])
-        if score < 5:
-            continue
-
-        item_id = item.get("item_id")
-        if not item_id or item_id in seen:
-            continue
-        seen.add(item_id)
-
+    for result in fetched:
         try:
-            price = float(item.get("price"))
-        except Exception:
-            price = None
+            pid, p, item, base = result
+            title = p.get("name") or p.get("title") or pid
+            score = relevance(title, base.get("query", ""))
 
-        # Only pay the cost of the current-sale endpoint when needed.
-        if price is None or price <= 0 or price > 100000:
-            sale_price, sale_original = get_current_sale_price(item_id)
-            if sale_price is not None:
-                price = sale_price
-            else:
-                sale_original = None
-        else:
-            sale_original = None
+            # Em buscas genéricas não descartamos produtos só porque o título
+            # não bateu com um perfil interno. Penalizamos apenas resultados
+            # claramente ruins para o termo pesquisado.
+            if score < -20:
+                continue
 
-        if not valid_catalog_price(price):
-            print("[PREÇO INVÁLIDO]", item_id, title, price)
-            continue
+            if pid in seen_products:
+                continue
+            seen_products.add(pid)
 
-        original = sale_original
-        if original is None:
+            item_id = item.get("item_id")
+            if not item_id:
+                continue
+
             try:
-                op = item.get("original_price")
-                original = float(op) if op is not None else None
+                price = float(item.get("price")) if item.get("price") is not None else None
             except Exception:
-                original = None
+                price = None
 
-        # Some buy-box responses expose regular price under other names.
-        if original is None and isinstance(p.get("buy_box_winner"), dict):
-            bb = p["buy_box_winner"]
-            for key in ("regular_price", "original_price"):
+            # Só consulta sale_price quando realmente necessário.
+            sale_original = None
+            if price is None or price <= 0 or price > 100000:
+                sale_price, sale_original = get_current_sale_price(item_id)
+                if sale_price is not None:
+                    price = sale_price
+
+            if not valid_catalog_price(price):
+                print("[PREÇO INVÁLIDO]", item_id, title, price)
+                continue
+
+            original = sale_original
+            if original is None:
                 try:
-                    if bb.get(key) is not None:
-                        original = float(bb[key])
-                        break
+                    op = item.get("original_price")
+                    original = float(op) if op is not None else None
                 except Exception:
-                    pass
+                    original = None
 
-        seller_disc = discount(price, original)
-        if seller_disc < float(min_discount or 0):
-            continue
+            if original is None and isinstance(p.get("buy_box_winner"), dict):
+                bb = p["buy_box_winner"]
+                for key in ("regular_price", "original_price"):
+                    try:
+                        if bb.get(key) is not None:
+                            original = float(bb[key])
+                            break
+                    except Exception:
+                        pass
 
-        shipping = item.get("shipping_cost")
-        shipping_known = shipping is not None
-        total_price = total(price, shipping) if shipping_known else price
+            seller_disc = discount(price, original)
+            if seller_disc < float(min_discount or 0):
+                continue
 
-        # Coupon intentionally stays out of the fast hunt.
-        cup = None
-        cup_disc = 0
-        coupon_final = None
+            shipping = item.get("shipping_cost")
+            shipping_known = shipping is not None
+            total_price = total(price, shipping) if shipping_known else price
 
-        cash_disc, cash_label = 0, None
+            sold_quantity = item.get("sold_quantity") or 0
+            try:
+                sold_quantity = float(sold_quantity)
+            except Exception:
+                sold_quantity = 0
+            giro_score = min(80, sold_quantity / 10) if sold_quantity > 0 else 0
 
-        best_final = None
-        best_mode = None
-        best_saving = 0
+            pictures = p.get("pictures") or []
+            image = None
+            if pictures and isinstance(pictures[0], dict):
+                image = pictures[0].get("url") or pictures[0].get("secure_url")
 
-        sold_quantity = item.get("sold_quantity") or 0
-        try:
-            sold_quantity = float(sold_quantity)
-        except Exception:
-            sold_quantity = 0
+            offers.append({
+                "product_id": pid,
+                "item_id": item_id,
+                "title": title,
+                "modelo_nome": model_name(title),
+                "especificacoes": specs(title),
+                "image": image,
+                "category_name": base.get("category_name") or "Produto",
+                "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
+                "price": price,
+                "original_price": original,
+                "discount": seller_disc,
+                "seller_id": item.get("seller_id"),
+                "condition": item.get("condition"),
+                "free_shipping": bool(item.get("free_shipping")),
+                "shipping_cost": shipping,
+                "shipping_known": shipping_known,
+                "total_price": total_price,
+                "relevance_score": score,
+                "sold_quantity": sold_quantity,
+                "giro_score": giro_score,
+                "cupom": None,
+                "desconto_cupom": 0,
+                "percentual_cupom_efetivo": 0,
+                "cupom_match": None,
+                "cupom_uso_limite": None,
+                "cash_discount": 0,
+                "cash_label": None,
+                "cash_final": None,
+                "melhor_forma": None,
+                "maior_desconto": 0,
+                "preco_com_cupom": None,
+                "preco_final_melhor": None,
+                "affiliate_link": "",
+                "extra_earnings": 0,
+            })
+        except Exception as e:
+            print("[OFERTA ERRO]", repr(e))
 
-        # Relevance + sales are used only as ranking signals; no fake
-        # "most sold" claim is shown unless the API actually supplies it.
-        giro_score = min(80, sold_quantity / 10) if sold_quantity > 0 else 0
-
-        offers.append({
-            "product_id": pid,
-            "item_id": item_id,
-            "title": title,
-            "modelo_nome": model_name(title),
-            "especificacoes": specs(title),
-            "image": (p.get("pictures") or [{}])[0].get("url") if (p.get("pictures") and isinstance((p.get("pictures") or [{}])[0], dict)) else None,
-            "category_name": base.get("category_name") or "Produto",
-            "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
-            "price": price,
-            "original_price": original,
-            "discount": seller_disc,
-            "seller_id": item.get("seller_id"),
-            "condition": item.get("condition"),
-            "free_shipping": item.get("free_shipping"),
-            "shipping_cost": shipping,
-            "shipping_known": shipping_known,
-            "total_price": total_price,
-            "relevance_score": score,
-            "sold_quantity": sold_quantity,
-            "giro_score": giro_score,
-            "cupom": cup,
-            "desconto_cupom": 0,
-            "percentual_cupom_efetivo": 0,
-            "cupom_match": None,
-            "cupom_uso_limite": None,
-            "cash_discount": cash_disc,
-            "cash_label": cash_label,
-            "cash_final": None,
-            "melhor_forma": best_mode,
-            "maior_desconto": best_saving,
-            "preco_com_cupom": coupon_final,
-            "preco_final_melhor": best_final,
-            "affiliate_link": "",
-            "extra_earnings": 0,
-        })
-
-    # Product hunt ranking: real total cost first, then free shipping,
-    # seller discount, giro signal and relevance.
     def ranking_oferta(o):
         total_real = float(o.get("total_price") or o.get("price") or 999999)
         return (
@@ -1429,6 +1431,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers.sort(key=ranking_oferta)
 
+    # Um produto de catálogo = uma oportunidade. Isso evita repetir o mesmo
+    # produto por sellers diferentes.
     groups = {}
     for o in offers:
         groups.setdefault(o["product_id"], {
@@ -1449,27 +1453,26 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             g["ofertas"][0]["menor_preco_modelo"] = True
             models.append(g)
 
-    models = sorted(models, key=lambda g: ranking_oferta(g["ofertas"][0]))[:30]
+    models.sort(key=lambda g: ranking_oferta(g["ofertas"][0]))
+    models = models[:30]
     flat = [o for g in models for o in g["ofertas"]]
-    with_coupon = [o for o in flat if o.get("cupom")]
+
     valores = [o.get("price") for o in flat if o.get("price") is not None]
-    totais_conhecidos = [o.get("total_price") for o in flat
-                         if o.get("shipping_known") and o.get("total_price") is not None]
-    finais = [o.get("preco_final_melhor") for o in with_coupon
-              if o.get("preco_final_melhor") is not None]
+    totais = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
 
     stats = {
         "ofertas": len(flat),
-        "cupom aplicável": len(with_coupon),
-        "produtos sem cupom": len(flat) - len(with_coupon),
-        "maior desconto": brl(max([o.get("desconto_cupom", 0) for o in with_coupon] or [0])),
-        "menor preço final": brl(min(finais)) if finais else "—",
+        "cupom aplicável": 0,
+        "produtos sem cupom": len(flat),
+        "maior desconto": brl(0),
+        "menor preço final": "—",
         "menor preço do produto": brl(min(valores or [0])),
-        "menor total com frete": brl(min(totais_conhecidos or [0])),
+        "menor total com frete": brl(min(totais or [0])),
         "cupons com limite de uso": 0,
         "modo": "busca rápida — cupons separados",
     }
     return {"stats": stats, "modelos": models, "ofertas": flat}
+
 
 def auto_scan(category=None, min_discount=0):
     if category:
@@ -1559,7 +1562,7 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
         result = scan_queries(queries, apply_coupons=False)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
-        update_job(job_id, status="done", progress=100, message=f"✅ Produtos + cupons atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas.", result=json_safe(result))
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons ficam separados.", result=json_safe(result))
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
