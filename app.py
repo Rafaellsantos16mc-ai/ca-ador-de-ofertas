@@ -30,10 +30,40 @@ ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
 DB_FILE = "ofertas.db"
 COUPONS_URL = "https://www.mercadolivre.com.br/l/promocoes"
-COUPON_SOURCE_URLS = [
-    "https://www.mercadolivre.com.br/l/promocoes",
-    "https://www.mercadolivre.com.br/l/descontaco-cupons",
-    "https://www.mercadolivre.com.br/ofertas/cupons",
+COUPON_SOURCE_URLS = [COUPONS_URL]
+
+# Cupons públicos atualmente divulgados pelo próprio Mercado Livre.
+# Eles são usados SOMENTE como candidatos por regras públicas; o app não
+# chama páginas do ML nem faz scraping durante a caça. A elegibilidade final
+# continua dependendo do checkout e dos itens elegíveis do ML.
+PUBLIC_COUPON_RULES = [
+    {"code":"1FRUIT", "discount_percent":10.0, "min_purchase":79.0, "max_discount":50.0, "usage_limit":1000},
+    {"code":"S5PRUNK", "discount_percent":15.0, "min_purchase":119.0, "max_discount":70.0, "usage_limit":1000},
+    {"code":"EC0LACOLA", "discount_percent":12.0, "min_purchase":99.0, "max_discount":60.0, "usage_limit":1000},
+    {"code":"CR3VI1S", "discount_percent":12.0, "min_purchase":129.0, "max_discount":50.0, "usage_limit":1000},
+    {"code":"N4GAS4K1", "discount_percent":10.0, "min_purchase":159.0, "max_discount":50.0, "usage_limit":1000},
+    {"code":"W33ENY1", "discount_percent":10.0, "min_purchase":99.0, "max_discount":60.0, "usage_limit":1000},
+    {"code":"P4NOR4M1C", "discount_percent":12.0, "min_purchase":129.0, "max_discount":60.0, "usage_limit":1000},
+]
+
+# Exclusões publicadas pelo ML para cupons divulgados por canais parceiros
+# de afiliados + restrições gerais atualmente publicadas.
+COUPON_EXCLUSION_TERMS = [
+    "fragrances", "perfume", "perfumes", "fragancia",
+    "videogame", "videogames", "console", "consoles",
+    "nintendo", "playstation", "xbox", "steam", "roblox",
+    "spotify", "uber", "digital goods", "digital",
+    "bola oficial copa do mundo", "camiseta oficial",
+    "adidas futebol", "puma", "pandora", "mizuno", "dream fitness",
+    "nike", "natura", "decathlon", "casas bahia", "vulcabras",
+    "olympikus", "under armour", "wct fitness", "converse", "pampers",
+    "hp", "max titanium", "probiotica", "epay", "anker", "assai",
+    "sony", "nespresso", "nestle", "principia", "rockstar games",
+    "stanley", "dewalt", "black decker", "cicampo", "dutra maquinas",
+    "inter level", "opcao parafusos", "growth", "web continental",
+    "gallant", "krw bikes", "ogm bikes", "south bikes", "boxer",
+    "menegotti", "deca", "esab", "vonder", "razr", "cjau",
+    "ferragens floresta", "tork tools"
 ]
 MIN_PRODUCT_PRICE = 69.90
 
@@ -888,6 +918,50 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None):
     x["match_type"] = "produto_publico"
     return x
 
+def product_coupon_excluded(title):
+    t = norm(title)
+    return any(norm(term) in t for term in COUPON_EXCLUSION_TERMS)
+
+
+def public_coupon_candidates(title, price):
+    """Calcula candidatos usando SOMENTE regras publicadas pelo ML.
+
+    Isso não transforma o cupom em "confirmado": o ML informa que os códigos
+    são válidos apenas para itens elegíveis. Como não há uma API pública de
+    cupons de afiliados que entregue produto->cupom, o app deixa explícito que
+    o resultado é uma estimativa e exige confirmação no checkout.
+    """
+    try:
+        p = float(price)
+    except Exception:
+        return []
+    if p <= 0 or product_coupon_excluded(title):
+        return []
+    out = []
+    for rule in PUBLIC_COUPON_RULES:
+        if p < float(rule["min_purchase"]):
+            continue
+        d = min(p * float(rule["discount_percent"]) / 100.0, float(rule["max_discount"]))
+        if d <= 0:
+            continue
+        x = dict(rule)
+        x.update({
+            "source_url": COUPONS_URL,
+            "conditions": "Regras públicas do Mercado Livre; item precisa ser elegível. Não confirmado no checkout.",
+            "desconto_estimado": round(d,2),
+            "percentual_efetivo": round(d / p * 100, 2),
+            "match_type": "candidato_regras_publicas",
+            "confirmed": False,
+        })
+        out.append(x)
+    out.sort(key=lambda x:(x["desconto_estimado"], x["percentual_efetivo"]), reverse=True)
+    return out
+
+
+def best_public_coupon_candidate(title, price):
+    xs = public_coupon_candidates(title, price)
+    return xs[0] if xs else None
+
 def detect_cash_discount(item, price):
     """Só aceita desconto à vista/Pix quando o próprio dado da API o informa.
     Não assume que todo Pix tem desconto e não soma com cupom sem indicação de cumulatividade.
@@ -1524,6 +1598,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "percentual_cupom_efetivo": 0,
                 "cupom_match": None,
                 "cupom_uso_limite": None,
+                "cupom_confirmado": False,
+                "cupom_status": "não verificado",
                 "cash_discount": 0,
                 "cash_label": None,
                 "cash_final": None,
@@ -1534,6 +1610,22 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "affiliate_link": "",
                 "extra_earnings": 0,
             })
+
+            # Cupom é uma etapa separada: aqui usamos apenas as regras
+            # públicas atuais como CANDIDATO, sem afirmar elegibilidade.
+            candidate = best_public_coupon_candidate(title, price)
+            if candidate:
+                o = offers[-1]
+                o["cupom"] = candidate
+                o["desconto_cupom"] = candidate["desconto_estimado"]
+                o["percentual_cupom_efetivo"] = candidate["percentual_efetivo"]
+                o["cupom_match"] = "candidato_regras_publicas"
+                o["cupom_uso_limite"] = candidate.get("usage_limit")
+                o["cupom_confirmado"] = False
+                o["cupom_status"] = "candidato — confirme no checkout"
+                o["preco_com_cupom"] = round(max(0, float(price) - candidate["desconto_estimado"]), 2)
+                o["preco_final_melhor"] = o["preco_com_cupom"]
+                o["maior_desconto"] = candidate["desconto_estimado"]
         except Exception as e:
             print("[OFERTA ERRO]", repr(e))
 
@@ -1580,16 +1672,20 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     valores = [o.get("price") for o in flat if o.get("price") is not None]
     totais = [o.get("total_price") for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
 
+    couponed = [o for o in flat if o.get("cupom")]
+    coupon_discounts = [float(o.get("desconto_cupom") or 0) for o in couponed if float(o.get("desconto_cupom") or 0) > 0]
+    final_coupon = [float(o.get("preco_com_cupom")) for o in couponed if o.get("preco_com_cupom") is not None]
+    usage = [o.get("cupom_uso_limite") for o in couponed if o.get("cupom_uso_limite")]
     stats = {
         "ofertas": len(flat),
-        "cupom aplicável": 0,
-        "produtos sem cupom": len(flat),
-        "maior desconto": brl(0),
-        "menor preço final": "—",
+        "cupom candidato": len(couponed),
+        "cupons com limite": len(usage),
+        "maior desconto estimado": brl(max(coupon_discounts or [0])),
+        "menor preço com cupom": brl(min(final_coupon)) if final_coupon else "—",
         "menor preço do produto": brl(min(valores or [0])),
         "menor total com frete": brl(min(totais or [0])),
-        "cupons com limite de uso": 0,
-        "modo": "busca rápida — cupons separados",
+        "produtos sem cupom": len(flat) - len(couponed),
+        "modo": "rápido — cupom candidato por regras públicas",
     }
     return {"stats": stats, "modelos": models, "ofertas": flat}
 
@@ -1624,14 +1720,14 @@ def ad_text(o, affiliate=""):
     if o.get("cupom"):
         c=o["cupom"]
         label = c.get("code") or c.get("label") or "Cupom confirmado"
-        lines += ["",f"🎟️ CUPOM: {label}"]
+        lines += ["",f"🎟️ CUPOM CANDIDATO: {label}"]
         if c.get("discount_percent") or (c.get("type") == "percent"): lines.append(f"🔥 Até {c.get('discount_percent') or c.get('value')}% OFF")
         if c.get("fixed_discount") or c.get("type") == "fixed": lines.append(f"💰 {brl(c.get('fixed_discount') or c.get('value'))} OFF")
         if c.get("max_discount"): lines.append(f"💰 Limite do cupom: {brl(c['max_discount'])}")
         if o.get("desconto_cupom") is not None: lines.append(f"💵 Desconto estimado: {brl(o.get('desconto_cupom'))}")
         if c.get("min_purchase"): lines.append(f"🛒 Compra mínima: {brl(c['min_purchase'])}")
         lines += ["",f"💥 PREÇO ESTIMADO COM CUPOM: {brl(o['preco_com_cupom'])}"]
-    lines += ["","⚠️ Consulte as condições e confirme o cupom no checkout.","","🛒 PEGAR OFERTA:",affiliate or "Gere o link pelo Gerador oficial do Mercado Livre."]
+    lines += ["","⚠️ Cupom é estimativa pelas regras públicas. Confirme a elegibilidade no checkout.","","🛒 PEGAR OFERTA:",affiliate or "Gere o link pelo Gerador oficial do Mercado Livre."]
     return "\n".join(lines)
 
 # ============================================================
@@ -1711,10 +1807,17 @@ def api_cacar_status(job_id):
 
 @app.route("/api/cupons")
 def api_cupons():
-    sync = None
-    if request.args.get("atualizar")=="1":
-        sync = sync_coupons()
-    return jsonify({"cupons":json_safe(coupons()),"fontes":COUPON_SOURCE_URLS,"sincronizacao":json_safe(sync)})
+    rows = []
+    for x in PUBLIC_COUPON_RULES:
+        y = dict(x)
+        y["source_url"] = COUPONS_URL
+        y["status"] = "candidato — confirmar no checkout"
+        rows.append(y)
+    return jsonify({
+        "cupons": json_safe(rows),
+        "fonte": COUPONS_URL,
+        "observacao": "Regras publicadas pelo Mercado Livre. Elegibilidade por item não é confirmada por API pública de afiliados.",
+    })
 
 @app.route("/api/gerar-anuncio")
 def api_anuncio():
@@ -1879,7 +1982,7 @@ function seller(o,mi,oi){
  ${o.discount>0?`<div class="green">🔥 ${o.discount}% OFF</div>`:''}
  ${o.free_shipping?'<div class="green">🚚 Frete grátis</div>':''}
  ${o.shipping_known ? (Number(o.shipping_cost||0)>0 ? `<div>🚚 Frete: ${brl(o.shipping_cost)}</div><div class="green"><b>💰 Total pago estimado: ${brl(o.total_price)}</b></div>` : `<div class="green"><b>💰 Total pago: ${brl(o.total_price)}</b></div>`) : '<div class="small">🚚 Frete não informado pelo Mercado Livre</div>'}
- ${cup?`<div class="coupon"><b>🎟️ CUPOM: ${esc(cup.code || cup.label || 'Cupom disponível')}</b>
+ ${cup?`<div class="coupon"><b>🎟️ CUPOM CANDIDATO: ${esc(cup.code || cup.label || 'Cupom disponível')}</b>
  ${cup.discount_percent?`<div>🔥 Até ${cup.discount_percent}% OFF</div>`:''}
  ${cup.fixed_discount?`<div>💰 ${brl(cup.fixed_discount)} OFF</div>`:''}
  ${cup.min_purchase?`<div class="small">Compra mínima: ${brl(cup.min_purchase)}</div>`:''}
@@ -1887,7 +1990,7 @@ function seller(o,mi,oi){
  ${cup.usage_limit?`<div class="small">👥 Limite informado: ${Number(cup.usage_limit).toLocaleString('pt-BR')} usos</div>`:''}
  <div>💵 Desconto estimado: <b>${brl(o.desconto_cupom)}</b> (${Number(o.percentual_cupom_efetivo||0).toFixed(2)}%)</div>
  <div class="final">💥 Estimado com cupom: ${brl(o.preco_com_cupom)}</div>
- <div class="small">⚠️ ${o.cupom_match==='produto_publico'?'Cupom encontrado associado ao produto em fonte pública do Mercado Livre.':'Cupom encontrado em fonte pública para este produto.'} Confirme no checkout.</div></div>`:''}
+ <div class="small">⚠️ Cupom selecionado pelas regras públicas atuais do Mercado Livre. A elegibilidade do item não foi confirmada por API pública. Confirme no checkout.</div></div>`:''}
  ${o.cash_discount>0?`<div class="coupon" style="background:#eefaf2;border-color:#78c995"><b>💳 ${esc(o.cash_label||'Pagamento à vista')}</b><div>Desconto informado: ${brl(o.cash_discount)}</div><div class="final">💥 Final estimado: ${brl(o.cash_final)}</div><div class="small">⚠️ Não somado ao cupom automaticamente.</div></div>`:''}
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
@@ -1934,8 +2037,8 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><button onclick="cacar('')">🚀 ATUALIZAR PRODUTOS RÁPIDO</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou toque em atualizar produtos.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
-<div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons são candidatos calculados pelas regras públicas atuais; a elegibilidade final deve ser confirmada no checkout.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
 
@@ -1964,7 +2067,7 @@ def health():
         "mercado_livre_conectado":bool(access_token()),
         "catalogo_categorias":len(CATALOG),
         "fluxo":"products/{product_id}/items",
-        "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
+        "cupons":"candidatos por regras públicas","cupom_por_produto":"não confirmado por API pública de afiliados","cupom_primeiro":"estimativa no resultado; confirmar no checkout","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
 
