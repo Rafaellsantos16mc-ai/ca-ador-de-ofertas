@@ -46,13 +46,20 @@ REDIRECT_URI = os.getenv(
     "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
 
-REQUEST_TIMEOUT = 12
-
-# Limites para a caça não ficar carregando eternamente
-MAX_QUERIES_PER_CATEGORY = 2
-MAX_PRODUCTS_PER_QUERY = 6
-MAX_ITEMS_PER_PRODUCT = 10
-CATEGORY_TIME_LIMIT = 28
+# ============================================================
+# LIMITES
+# ============================================================
+#
+# A versão anterior estava encontrando poucos produtos.
+# Agora aumentamos a quantidade, mas sem voltar ao problema
+# de milhares de chamadas.
+#
+MAX_QUERIES_PER_CATEGORY = 3
+MAX_PRODUCTS_PER_QUERY = 8
+MAX_ITEMS_PER_PRODUCT = 6
+MAX_OFFERS_PER_CATEGORY = 35
+CATEGORY_TIME_LIMIT = 24
+REQUEST_TIMEOUT = 8
 
 HTTP = requests.Session()
 
@@ -132,59 +139,68 @@ CATALOG = {
 
 
 # ============================================================
-# CONSULTAS USADAS NO CAÇAR TODAS
+# BUSCA AUTOMÁTICA
 # ============================================================
 
 SCAN_QUERIES = {
     "📱 Celulares": [
         "smartphone",
-        "iphone"
+        "iphone",
+        "samsung galaxy"
     ],
 
     "🌸 Perfumes": [
         "perfume masculino",
-        "perfume feminino"
+        "perfume feminino",
+        "perfume importado"
     ],
 
     "🏋️ Academia": [
         "roupa academia",
+        "tenis corrida",
         "whey protein"
     ],
 
     "🔧 Ferramentas": [
         "furadeira",
-        "parafusadeira"
+        "parafusadeira",
+        "chave de impacto"
     ],
 
     "🎧 Eletrônicos": [
         "fone bluetooth",
-        "smartwatch"
+        "smartwatch",
+        "caixa de som bluetooth"
     ],
 
     "🏠 Casa": [
         "aspirador",
+        "ventilador",
         "liquidificador"
     ],
 
     "🚗 Automotivo": [
         "som automotivo",
-        "acessorios automotivos"
+        "acessorios automotivos",
+        "camera de re"
     ],
 
     "🍳 Cozinha": [
         "air fryer",
-        "liquidificador"
+        "liquidificador",
+        "panela"
     ],
 
     "👕 Moda": [
         "tenis masculino",
+        "tenis feminino",
         "camiseta masculina"
     ]
 }
 
 
 # ============================================================
-# PERFIS DE RELEVÂNCIA
+# PERFIS
 # ============================================================
 
 PROFILES = {
@@ -216,7 +232,9 @@ PROFILES = {
             "carregador",
             "cabo",
             "adaptador",
-            "case"
+            "case",
+            "pelicula 3d",
+            "película 3d"
         ]
     },
 
@@ -282,7 +300,8 @@ PROFILES = {
             "kit ferramentas",
             "serra",
             "esmerilhadeira",
-            "martelete"
+            "martelete",
+            "impacto"
         ],
         "negative": [
             "brinquedo",
@@ -300,7 +319,8 @@ PROFILES = {
             "relógio inteligente",
             "caixa de som",
             "mouse",
-            "teclado"
+            "teclado",
+            "bluetooth"
         ],
         "negative": []
     },
@@ -393,7 +413,7 @@ init_db()
 
 
 # ============================================================
-# FUNÇÕES BÁSICAS
+# UTILIDADES
 # ============================================================
 
 def normalizar(texto):
@@ -442,12 +462,15 @@ def api_headers():
     token = get_token()
 
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = (
+            f"Bearer {token}"
+        )
 
     return headers
 
 
 def ml_get(path, params=None):
+
     try:
         return HTTP.get(
             ML_API + path,
@@ -455,6 +478,7 @@ def ml_get(path, params=None):
             params=params or {},
             timeout=REQUEST_TIMEOUT
         )
+
     except requests.RequestException:
         return None
 
@@ -464,6 +488,7 @@ def ml_get(path, params=None):
 # ============================================================
 
 def detectar_perfil_busca(query):
+
     q = normalizar(query)
 
     if any(x in q for x in [
@@ -551,17 +576,25 @@ def detectar_perfil_busca(query):
     return None
 
 
-def calcular_relevancia(titulo, query=None, perfil=None):
+def calcular_relevancia(
+    titulo,
+    query=None,
+    perfil=None
+):
 
     texto = normalizar(titulo)
 
     if not perfil and query:
-        perfil = detectar_perfil_busca(query)
+        perfil = detectar_perfil_busca(
+            query
+        )
 
     if not perfil:
         return 100
 
-    dados = PROFILES.get(perfil)
+    dados = PROFILES.get(
+        perfil
+    )
 
     if not dados:
         return 100
@@ -569,10 +602,12 @@ def calcular_relevancia(titulo, query=None, perfil=None):
     score = 0
 
     for termo in dados["positive"]:
+
         if normalizar(termo) in texto:
             score += 25
 
     for termo in dados["negative"]:
+
         if normalizar(termo) in texto:
             score -= 60
 
@@ -582,7 +617,11 @@ def calcular_relevancia(titulo, query=None, perfil=None):
     return score
 
 
-def produto_relevante(titulo, query=None, perfil=None):
+def produto_relevante(
+    titulo,
+    query=None,
+    perfil=None
+):
 
     score = calcular_relevancia(
         titulo,
@@ -597,20 +636,26 @@ def produto_relevante(titulo, query=None, perfil=None):
 
 
 # ============================================================
-# OAUTH PKCE
+# OAUTH
 # ============================================================
 
 def gerar_pkce():
 
-    verifier = secrets.token_urlsafe(64)
+    verifier = secrets.token_urlsafe(
+        64
+    )
 
     digest = hashlib.sha256(
         verifier.encode("utf-8")
     ).digest()
 
-    challenge = base64.urlsafe_b64encode(
-        digest
-    ).decode("utf-8").rstrip("=")
+    challenge = (
+        base64.urlsafe_b64encode(
+            digest
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
 
     return verifier, challenge
 
@@ -619,14 +664,22 @@ def gerar_pkce():
 def ml_login():
 
     if not CLIENT_ID:
-        return "ML_CLIENT_ID não configurado.", 500
+        return (
+            "ML_CLIENT_ID não configurado.",
+            500
+        )
 
     if not CLIENT_SECRET:
-        return "ML_CLIENT_SECRET não configurado.", 500
+        return (
+            "ML_CLIENT_SECRET não configurado.",
+            500
+        )
 
     verifier, challenge = gerar_pkce()
 
-    state = secrets.token_urlsafe(32)
+    state = secrets.token_urlsafe(
+        32
+    )
 
     session.permanent = True
 
@@ -643,54 +696,81 @@ def ml_login():
     }
 
     return redirect(
-        ML_AUTH + "?" + urlencode(params)
+        ML_AUTH
+        + "?"
+        + urlencode(params)
     )
 
 
 @app.route("/mercadolivre/callback")
 def ml_callback():
 
-    error = request.args.get("error")
+    error = request.args.get(
+        "error"
+    )
 
     if error:
+
         return jsonify({
             "ok": False,
             "erro": error,
-            "descricao": request.args.get(
-                "error_description"
-            )
+            "descricao":
+                request.args.get(
+                    "error_description"
+                )
         }), 400
 
-    code = request.args.get("code")
-    state = request.args.get("state")
+    code = request.args.get(
+        "code"
+    )
+
+    state = request.args.get(
+        "state"
+    )
 
     if not code:
+
         return jsonify({
             "ok": False,
-            "erro": "Código de autorização não recebido."
+            "erro":
+                "Código de autorização não recebido."
         }), 400
 
-    if state != session.get("oauth_state"):
+    if state != session.get(
+        "oauth_state"
+    ):
+
         return jsonify({
             "ok": False,
-            "erro": "State OAuth inválido."
+            "erro":
+                "State OAuth inválido."
         }), 400
 
-    verifier = session.get("pkce_verifier")
+    verifier = session.get(
+        "pkce_verifier"
+    )
 
     if not verifier:
+
         return jsonify({
             "ok": False,
-            "erro": "PKCE não encontrado."
+            "erro":
+                "PKCE não encontrado."
         }), 400
 
     data = {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": verifier
+        "grant_type":
+            "authorization_code",
+        "client_id":
+            CLIENT_ID,
+        "client_secret":
+            CLIENT_SECRET,
+        "code":
+            code,
+        "redirect_uri":
+            REDIRECT_URI,
+        "code_verifier":
+            verifier
     }
 
     try:
@@ -707,17 +787,22 @@ def ml_callback():
 
         return jsonify({
             "ok": False,
-            "erro": "Falha ao obter token.",
-            "detalhes": str(e)
+            "erro":
+                "Falha ao obter token.",
+            "detalhes":
+                str(e)
         }), 500
 
     if response.status_code >= 400:
 
         return jsonify({
             "ok": False,
-            "erro": "Mercado Livre recusou o token.",
-            "status": response.status_code,
-            "resposta": result
+            "erro":
+                "Mercado Livre recusou o token.",
+            "status":
+                response.status_code,
+            "resposta":
+                result
         }), response.status_code
 
     access_token = result.get(
@@ -728,17 +813,26 @@ def ml_callback():
 
         return jsonify({
             "ok": False,
-            "erro": "Access token não retornado."
+            "erro":
+                "Access token não retornado."
         }), 500
 
     session.permanent = True
 
-    session["ml_access_token"] = access_token
-    session["ml_refresh_token"] = result.get(
-        "refresh_token"
+    session["ml_access_token"] = (
+        access_token
     )
-    session["ml_user_id"] = result.get(
-        "user_id"
+
+    session["ml_refresh_token"] = (
+        result.get(
+            "refresh_token"
+        )
+    )
+
+    session["ml_user_id"] = (
+        result.get(
+            "user_id"
+        )
     )
 
     session.pop(
@@ -811,7 +905,8 @@ def ml_status():
         "usuario": {
             "id": user.get("id"),
             "nickname": user.get("nickname"),
-            "country_id": user.get("country_id")
+            "country_id":
+                user.get("country_id")
         }
     })
 
@@ -822,9 +917,8 @@ def health():
     return jsonify({
         "status": "ok",
         "app": "Cacador de Ofertas",
-        "mercadolivre": bool(
-            get_token()
-        )
+        "mercadolivre":
+            bool(get_token())
     })
 
 
@@ -839,7 +933,8 @@ def diagnostico():
 
         return jsonify({
             "ok": False,
-            "erro": "Falha de conexão."
+            "erro":
+                "Falha de conexão."
         }), 500
 
     try:
@@ -849,21 +944,15 @@ def diagnostico():
 
     return jsonify({
         "ok": True,
-        "status": response.status_code,
-        "usuario": data
+        "status":
+            response.status_code,
+        "usuario":
+            data
     })
 
 
 # ============================================================
-# NOVA BUSCA DE PRODUTOS
-#
-# Em vez de:
-# domain discovery -> highlights -> PRODUCT/ITEM
-#
-# agora:
-# /products/search -> PRODUCT_ID -> /products/{id}/items
-#
-# Isso resolve o problema que deixou a caça com 0 ofertas.
+# BUSCADOR DE PRODUTOS
 # ============================================================
 
 def search_products(query):
@@ -871,10 +960,14 @@ def search_products(query):
     response = ml_get(
         "/products/search",
         {
-            "site_id": SITE_ID,
-            "q": query,
-            "limit": MAX_PRODUCTS_PER_QUERY,
-            "offset": 0
+            "site_id":
+                SITE_ID,
+            "q":
+                query,
+            "limit":
+                MAX_PRODUCTS_PER_QUERY,
+            "offset":
+                0
         }
     )
 
@@ -925,18 +1018,22 @@ def search_products(query):
         )
 
         produtos.append({
-            "id": product_id,
-            "titulo": titulo,
-            "domain_id": item.get(
-                "domain_id"
-            ),
-            "permalink": item.get(
-                "permalink"
-            )
+            "id":
+                product_id,
+            "titulo":
+                titulo,
+            "domain_id":
+                item.get("domain_id"),
+            "permalink":
+                item.get("permalink")
         })
 
     return produtos
 
+
+# ============================================================
+# PRODUTO
+# ============================================================
 
 def get_product(product_id):
 
@@ -955,6 +1052,10 @@ def get_product(product_id):
     except Exception:
         return None
 
+
+# ============================================================
+# VENDEDORES DO PRODUTO
+# ============================================================
 
 def get_product_items(product_id):
 
@@ -984,11 +1085,13 @@ def get_product_items(product_id):
     ):
         return []
 
-    return results[:MAX_ITEMS_PER_PRODUCT]
+    return results[
+        :MAX_ITEMS_PER_PRODUCT
+    ]
 
 
 # ============================================================
-# MONTAR OFERTA
+# OFERTA
 # ============================================================
 
 def montar_oferta(
@@ -1021,7 +1124,9 @@ def montar_oferta(
 
     if not titulo:
 
-        titulo = "Produto Mercado Livre"
+        titulo = (
+            "Produto Mercado Livre"
+        )
 
     preco = money(
         item.get("price")
@@ -1037,6 +1142,7 @@ def montar_oferta(
             buy_box,
             dict
         ):
+
             preco = money(
                 buy_box.get(
                     "price"
@@ -1052,7 +1158,10 @@ def montar_oferta(
         )
     )
 
-    if preco_original <= 0 and product:
+    if (
+        preco_original <= 0
+        and product
+    ):
 
         preco_original = money(
             product.get(
@@ -1068,8 +1177,7 @@ def montar_oferta(
             (
                 (
                     preco_original
-                    -
-                    preco
+                    - preco
                 )
                 /
                 preco_original
@@ -1109,32 +1217,47 @@ def montar_oferta(
     )
 
     seller_id = (
-        item.get("seller_id")
+        item.get(
+            "seller_id"
+        )
         or ""
     )
 
     item_id = (
-        item.get("item_id")
-        or item.get("id")
+        item.get(
+            "item_id"
+        )
+        or item.get(
+            "id"
+        )
         or ""
     )
 
     user_product_id = (
-        item.get("user_product_id")
+        item.get(
+            "user_product_id"
+        )
         or ""
     )
 
     product_id = ""
 
     if product:
+
         product_id = (
-            product.get("id")
+            product.get(
+                "id"
+            )
             or ""
         )
 
     link = (
-        item.get("permalink")
-        or item.get("link")
+        item.get(
+            "permalink"
+        )
+        or item.get(
+            "link"
+        )
         or ""
     )
 
@@ -1155,38 +1278,57 @@ def montar_oferta(
         perfil
     )
 
-    if perfil and not produto_relevante(
-        titulo,
-        query,
+    if (
         perfil
+        and not produto_relevante(
+            titulo,
+            query,
+            perfil
+        )
     ):
         return None
 
     oferta = {
-        "titulo": titulo,
-        "preco": preco,
-        "preco_original": preco_original,
-        "desconto": desconto,
-        "frete": frete,
-        "frete_gratis": frete_gratis,
-        "total": total,
-        "seller_id": str(
-            seller_id
-        ),
-        "item_id": item_id,
-        "product_id": product_id,
-        "user_product_id": user_product_id,
-        "link": link,
-        "query": query,
-        "categoria": categoria,
-        "relevancia": relevancia,
-        "condicao": item.get(
-            "condition",
-            "new"
-        )
+        "titulo":
+            titulo,
+        "preco":
+            preco,
+        "preco_original":
+            preco_original,
+        "desconto":
+            desconto,
+        "frete":
+            frete,
+        "frete_gratis":
+            frete_gratis,
+        "total":
+            total,
+        "seller_id":
+            str(seller_id),
+        "item_id":
+            item_id,
+        "product_id":
+            product_id,
+        "user_product_id":
+            user_product_id,
+        "link":
+            link,
+        "query":
+            query,
+        "categoria":
+            categoria,
+        "relevancia":
+            relevancia,
+        "condicao":
+            item.get(
+                "condition",
+                "new"
+            )
     }
 
-    oferta["score_oferta"] = score_oferta(
+    oferta[
+        "score_oferta"
+    ] = score_oferta(
         oferta
     )
 
@@ -1226,12 +1368,16 @@ def score_oferta(oferta):
 
     if desconto >= 50:
         score += 55
+
     elif desconto >= 30:
         score += 40
+
     elif desconto >= 20:
         score += 30
+
     elif desconto >= 10:
         score += 18
+
     elif desconto >= 5:
         score += 8
 
@@ -1242,8 +1388,10 @@ def score_oferta(oferta):
 
     if total <= 50:
         score += 8
+
     elif total <= 100:
         score += 6
+
     elif total <= 300:
         score += 4
 
@@ -1254,7 +1402,7 @@ def score_oferta(oferta):
 
 
 # ============================================================
-# BUSCA DE UMA QUERY
+# SCAN DE UMA QUERY
 # ============================================================
 
 def scan_query(
@@ -1280,8 +1428,7 @@ def scan_query(
 
         if (
             time.time()
-            -
-            inicio
+            - inicio
         ) >= limite_tempo:
             break
 
@@ -1299,43 +1446,39 @@ def scan_query(
             product_id
         )
 
-        product = get_product(
-            product_id
-        )
-
-        # Mesmo se o detalhe não vier,
-        # continuamos usando o nome do
-        # resultado da busca.
-        if not product:
-            product = {
-                "id": product_id,
-                "name": produto_ref.get(
-                    "titulo"
-                )
-            }
-
         titulo = (
             produto_ref.get(
                 "titulo"
             )
-            or product.get(
-                "name"
-            )
             or ""
         )
 
-        # Filtro antes de gastar chamada
-        # buscando vendedores.
         perfil = detectar_perfil_busca(
             query
         )
 
-        if perfil and not produto_relevante(
-            titulo,
-            query,
+        if (
             perfil
+            and not produto_relevante(
+                titulo,
+                query,
+                perfil
+            )
         ):
             continue
+
+        # IMPORTANTE:
+        # Não fazemos /products/{id} para
+        # todos os produtos.
+        #
+        # Isso reduziu bastante a quantidade
+        # de chamadas e deixa a caça mais rápida.
+        product = {
+            "id":
+                product_id,
+            "name":
+                titulo
+        }
 
         items = get_product_items(
             product_id
@@ -1348,8 +1491,7 @@ def scan_query(
 
             if (
                 time.time()
-                -
-                inicio
+                - inicio
             ) >= limite_tempo:
                 break
 
@@ -1362,6 +1504,7 @@ def scan_query(
             )
 
             if oferta:
+
                 ofertas.append(
                     oferta
                 )
@@ -1370,7 +1513,7 @@ def scan_query(
 
 
 # ============================================================
-# DEDUPLICAÇÃO POR PRODUTO + VENDEDOR
+# DEDUPLICAÇÃO
 # ============================================================
 
 def deduplicar_ofertas(
@@ -1402,20 +1545,16 @@ def deduplicar_ofertas(
             )
         )
 
-        # O product_id é a chave principal.
-        # Se não vier, usa o título.
         produto_chave = (
             product_id
             if product_id
-            else titulo[:140]
+            else titulo[:150]
         )
 
         chave = (
             produto_chave
-            +
-            "|"
-            +
-            seller_id
+            + "|"
+            + seller_id
         )
 
         atual = melhores.get(
@@ -1478,9 +1617,7 @@ def deduplicar_ofertas(
 # BUSCA MANUAL
 # ============================================================
 
-def buscar_manual(
-    query
-):
+def buscar_manual(query):
 
     resultados = scan_query(
         query=query,
@@ -1495,12 +1632,10 @@ def buscar_manual(
 
 
 # ============================================================
-# CAÇAR UMA CATEGORIA
+# CAÇAR CATEGORIA
 # ============================================================
 
-def cacar_categoria(
-    categoria
-):
+def cacar_categoria(categoria):
 
     consultas = SCAN_QUERIES.get(
         categoria,
@@ -1525,8 +1660,7 @@ def cacar_categoria(
             -
             (
                 time.time()
-                -
-                inicio
+                - inicio
             )
         )
 
@@ -1546,13 +1680,24 @@ def cacar_categoria(
             )
 
         except Exception:
+
             continue
+
+        # Não deixa uma categoria
+        # consumir tempo demais.
+        if (
+            time.time()
+            - inicio
+        ) >= CATEGORY_TIME_LIMIT:
+            break
 
     todos = deduplicar_ofertas(
         todos
     )
 
-    return todos[:60]
+    return todos[
+        :MAX_OFFERS_PER_CATEGORY
+    ]
 
 
 # ============================================================
@@ -1571,7 +1716,8 @@ def api_buscar():
 
         return jsonify({
             "ok": False,
-            "erro": "Digite uma busca."
+            "erro":
+                "Digite uma busca."
         }), 400
 
     inicio = time.time()
@@ -1586,23 +1732,28 @@ def api_buscar():
 
         return jsonify({
             "ok": False,
-            "erro": str(e)
+            "erro":
+                str(e)
         }), 500
 
     return jsonify({
         "ok": True,
-        "query": query,
-        "perfil": detectar_perfil_busca(
-            query
-        ),
-        "tempo": round(
-            time.time() - inicio,
-            2
-        ),
-        "total": len(
+        "query":
+            query,
+        "perfil":
+            detectar_perfil_busca(
+                query
+            ),
+        "tempo":
+            round(
+                time.time()
+                - inicio,
+                2
+            ),
+        "total":
+            len(resultados),
+        "resultados":
             resultados
-        ),
-        "resultados": resultados
     })
 
 
@@ -1622,7 +1773,8 @@ def api_cacar():
 
         return jsonify({
             "ok": False,
-            "erro": "Categoria inválida."
+            "erro":
+                "Categoria inválida."
         }), 400
 
     inicio = time.time()
@@ -1635,24 +1787,30 @@ def api_cacar():
 
         return jsonify({
             "ok": True,
-            "categoria": categoria,
-            "tempo": round(
-                time.time() - inicio,
-                2
-            ),
-            "total": len(
+            "categoria":
+                categoria,
+            "tempo":
+                round(
+                    time.time()
+                    - inicio,
+                    2
+                ),
+            "total":
+                len(resultados),
+            "resultados":
                 resultados
-            ),
-            "resultados": resultados
         })
 
     except Exception as e:
 
         return jsonify({
             "ok": False,
-            "categoria": categoria,
-            "erro": str(e),
-            "resultados": []
+            "categoria":
+                categoria,
+            "erro":
+                str(e),
+            "resultados":
+                []
         }), 500
 
 
@@ -1667,7 +1825,8 @@ def buscar_cupons():
         response = HTTP.get(
             "https://www.mercadolivre.com.br/l/promocoes",
             headers={
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent":
+                    "Mozilla/5.0"
             },
             timeout=8
         )
@@ -1681,8 +1840,10 @@ def buscar_cupons():
         return []
 
     padrao = re.compile(
-        r"(?i)(?:código|codigo|cupom|usar cupom)"
-        r".{0,120}?([A-Z0-9]{5,20})"
+        r"(?i)"
+        r"(?:código|codigo|cupom|usar cupom)"
+        r".{0,120}?"
+        r"([A-Z0-9]{5,20})"
     )
 
     encontrados = padrao.findall(
@@ -1694,7 +1855,11 @@ def buscar_cupons():
 
     for codigo in encontrados:
 
-        codigo = codigo.upper().strip()
+        codigo = (
+            codigo
+            .upper()
+            .strip()
+        )
 
         if codigo in vistos:
             continue
@@ -1704,8 +1869,10 @@ def buscar_cupons():
         )
 
         cupons.append({
-            "codigo": codigo,
-            "estimativa": True
+            "codigo":
+                codigo,
+            "estimativa":
+                True
         })
 
         if len(cupons) >= 20:
@@ -1719,7 +1886,8 @@ def api_cupons():
 
     return jsonify({
         "ok": True,
-        "cupons": buscar_cupons()
+        "cupons":
+            buscar_cupons()
     })
 
 
@@ -1728,7 +1896,8 @@ def cupons():
 
     return jsonify({
         "ok": True,
-        "cupons": buscar_cupons()
+        "cupons":
+            buscar_cupons()
     })
 
 
@@ -1792,17 +1961,15 @@ def gerar_anuncio():
 
     if categoria:
 
-        linhas.append(
-            f"📌 {categoria}"
-        )
+        linhas.extend([
+            f"📌 {categoria}",
+            ""
+        ])
 
-        linhas.append("")
-
-    linhas.append(
-        f"🛒 {titulo}"
-    )
-
-    linhas.append("")
+    linhas.extend([
+        f"🛒 {titulo}",
+        ""
+    ])
 
     if (
         original > preco
@@ -1840,9 +2007,10 @@ def gerar_anuncio():
 
     return jsonify({
         "ok": True,
-        "texto": "\n".join(
-            linhas
-        )
+        "texto":
+            "\n".join(
+                linhas
+            )
     })
 
 
@@ -1877,20 +2045,32 @@ def salvar():
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        data.get("titulo"),
-        money(
-            data.get("preco")
+        data.get(
+            "titulo"
         ),
         money(
-            data.get("desconto")
+            data.get(
+                "preco"
+            )
         ),
         money(
-            data.get("frete")
+            data.get(
+                "desconto"
+            )
         ),
         money(
-            data.get("total")
+            data.get(
+                "frete"
+            )
         ),
-        data.get("link"),
+        money(
+            data.get(
+                "total"
+            )
+        ),
+        data.get(
+            "link"
+        ),
         str(
             data.get(
                 "seller_id"
@@ -1963,19 +2143,24 @@ def teste_busca():
 
     return jsonify({
         "ok": True,
-        "query": query,
-        "tempo": round(
-            time.time() - inicio,
-            2
-        ),
-        "total": len(
+        "query":
+            query,
+        "tempo":
+            round(
+                time.time()
+                - inicio,
+                2
+            ),
+        "total":
+            len(resultados),
+        "resultados":
             resultados
-        ),
-        "resultados": resultados
     })
 
 
-@app.route("/mercadolivre/teste-produto-itens")
+@app.route(
+    "/mercadolivre/teste-produto-itens"
+)
 def teste_produto_itens():
 
     product_id = request.args.get(
@@ -1987,7 +2172,8 @@ def teste_produto_itens():
 
         return jsonify({
             "ok": False,
-            "erro": "Use ?id=MLB..."
+            "erro":
+                "Use ?id=MLB..."
         }), 400
 
     itens = get_product_items(
@@ -1996,15 +2182,18 @@ def teste_produto_itens():
 
     return jsonify({
         "ok": True,
-        "product_id": product_id,
-        "total": len(
+        "product_id":
+            product_id,
+        "total":
+            len(itens),
+        "itens":
             itens
-        ),
-        "itens": itens
     })
 
 
-@app.route("/mercadolivre/teste-produto")
+@app.route(
+    "/mercadolivre/teste-produto"
+)
 def teste_produto():
 
     product_id = request.args.get(
@@ -2016,7 +2205,8 @@ def teste_produto():
 
         return jsonify({
             "ok": False,
-            "erro": "Use ?id=MLB..."
+            "erro":
+                "Use ?id=MLB..."
         }), 400
 
     produto = get_product(
@@ -2027,7 +2217,8 @@ def teste_produto():
 
         return jsonify({
             "ok": False,
-            "erro": "Produto não encontrado."
+            "erro":
+                "Produto não encontrado."
         }), 404
 
     return jsonify(
@@ -2074,11 +2265,12 @@ body {
 }
 
 .header {
-    background: linear-gradient(
-        135deg,
-        #171b24,
-        #202735
-    );
+    background:
+        linear-gradient(
+            135deg,
+            #171b24,
+            #202735
+        );
     border-radius: 20px;
     padding: 22px;
     margin-bottom: 15px;
@@ -2086,13 +2278,14 @@ body {
 
 .header h1 {
     margin: 0 0 8px;
-    font-size: 28px;
+    font-size: 29px;
 }
 
 .header p {
     margin: 0;
     color: #aeb7c5;
     line-height: 1.5;
+    font-size: 16px;
 }
 
 .buttons {
@@ -2123,13 +2316,13 @@ body {
 }
 
 .btn:disabled {
-    opacity: .55;
+    opacity: .5;
 }
 
 .connection {
     margin-top: 14px;
-    padding: 11px 14px;
-    border-radius: 11px;
+    padding: 12px 14px;
+    border-radius: 12px;
     font-weight: bold;
 }
 
@@ -2141,6 +2334,17 @@ body {
 .disconnected {
     background: #3b1c1c;
     color: #ff8585;
+}
+
+.notice {
+    background: #29250f;
+    border: 1px solid #655313;
+    color: #ffe27b;
+    padding: 13px;
+    border-radius: 12px;
+    margin-bottom: 15px;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .search {
@@ -2172,7 +2376,7 @@ body {
 }
 
 .category {
-    min-height: 62px;
+    min-height: 65px;
     border-radius: 14px;
     border: 1px solid #303744;
     background: #181c24;
@@ -2229,7 +2433,7 @@ body {
 
 .stat strong {
     display: block;
-    font-size: 23px;
+    font-size: 25px;
     margin-bottom: 4px;
 }
 
@@ -2240,20 +2444,21 @@ body {
 
 .results {
     display: grid;
-    gap: 12px;
+    gap: 14px;
 }
 
 .product-card {
     background: #181c24;
     border: 1px solid #2d3440;
-    border-radius: 17px;
-    padding: 17px;
+    border-radius: 18px;
+    padding: 18px;
 }
 
 .product-card.best {
     border-color: #00a650;
     box-shadow:
-        0 0 0 1px rgba(
+        0 0 0 1px
+        rgba(
             0,
             166,
             80,
@@ -2265,7 +2470,7 @@ body {
     font-size: 20px;
     line-height: 1.4;
     font-weight: bold;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
 }
 
 .product-summary {
@@ -2282,7 +2487,7 @@ body {
 }
 
 .badge {
-    padding: 6px 9px;
+    padding: 7px 10px;
     border-radius: 20px;
     background: #2c333f;
     color: #e3e7ed;
@@ -2306,7 +2511,7 @@ body {
 }
 
 .best-price {
-    font-size: 29px;
+    font-size: 30px;
     font-weight: bold;
     color: #4be18b;
 }
@@ -2320,6 +2525,7 @@ body {
 .sellers-title {
     margin-top: 18px;
     margin-bottom: 8px;
+    font-size: 18px;
     font-weight: bold;
     color: #dce2eb;
 }
@@ -2350,24 +2556,24 @@ body {
 }
 
 .seller-info {
-    margin-top: 7px;
+    margin-top: 8px;
     color: #aeb6c4;
     font-size: 12px;
-    line-height: 1.6;
+    line-height: 1.7;
 }
 
 .seller-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 7px;
-    margin-top: 10px;
+    margin-top: 11px;
 }
 
 .seller-actions a,
 .seller-actions button {
     border: 0;
     border-radius: 9px;
-    padding: 9px 11px;
+    padding: 10px 12px;
     font-weight: bold;
     cursor: pointer;
     text-decoration: none;
@@ -2388,18 +2594,7 @@ body {
 .empty {
     text-align: center;
     color: #8d97a6;
-    padding: 40px 10px;
-}
-
-.notice {
-    background: #29250f;
-    border: 1px solid #655313;
-    color: #ffe27b;
-    padding: 12px;
-    border-radius: 12px;
-    margin-bottom: 15px;
-    font-size: 12px;
-    line-height: 1.5;
+    padding: 45px 10px;
 }
 
 @media (max-width: 600px) {
@@ -2417,16 +2612,17 @@ body {
     }
 
     .header h1 {
-        font-size: 24px;
+        font-size: 25px;
     }
 
     .best-price {
-        font-size: 25px;
+        font-size: 27px;
     }
 
     .seller-row {
         align-items: flex-start;
     }
+
 }
 
 </style>
@@ -2574,7 +2770,6 @@ Clique em uma categoria ou em
 
 </div>
 
-
 <script>
 
 const CATEGORIES =
@@ -2602,11 +2797,26 @@ function escapeHtml(value) {
     return String(
         value || ""
     )
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll(
+        "&",
+        "&amp;"
+    )
+    .replaceAll(
+        "<",
+        "&lt;"
+    )
+    .replaceAll(
+        ">",
+        "&gt;"
+    )
+    .replaceAll(
+        '"',
+        "&quot;"
+    )
+    .replaceAll(
+        "'",
+        "&#039;"
+    );
 }
 
 
@@ -2640,7 +2850,8 @@ function setStatus(
                 100,
                 progresso || 0
             )
-        ) + "%";
+        )
+        + "%";
 }
 
 
@@ -2668,7 +2879,8 @@ async function verificarMercadoLivre() {
             await fetch(
                 "/api/mercadolivre/status",
                 {
-                    cache: "no-store"
+                    cache:
+                        "no-store"
                 }
             );
 
@@ -2699,7 +2911,8 @@ async function verificarMercadoLivre() {
                 (
                     usuario.nickname
                     ?
-                    " — " +
+                    " — "
+                    +
                     usuario.nickname
                     :
                     ""
@@ -2787,27 +3000,20 @@ function renderCategories() {
 
 
 /* =========================================================
-   AGRUPAMENTO
+   AGRUPAR PRODUTOS
    ========================================================= */
 
 function chaveProduto(item) {
 
-    /*
-       Primeiro usamos product_id.
+    if (item.product_id) {
 
-       Isso é muito mais seguro que tentar
-       adivinhar se dois títulos são iguais.
-    */
-
-    if (
-        item.product_id
-    ) {
-
-        return "PRODUCT:"
+        return (
+            "PRODUCT:"
             +
             String(
                 item.product_id
-            );
+            )
+        );
     }
 
     let texto =
@@ -2830,12 +3036,14 @@ function chaveProduto(item) {
         )
         .trim();
 
-    return "TITLE:"
+    return (
+        "TITLE:"
         +
         texto.substring(
             0,
             150
-        );
+        )
+    );
 }
 
 
@@ -2854,7 +3062,11 @@ function agruparProdutos(
                     item
                 );
 
-            if (!grupos.has(chave)) {
+            if (
+                !grupos.has(
+                    chave
+                )
+            ) {
 
                 grupos.set(
                     chave,
@@ -2887,7 +3099,10 @@ function agruparProdutos(
             );
 
             ofertas.forEach(
-                (oferta, index) => {
+                (
+                    oferta,
+                    index
+                ) => {
 
                     oferta.menor_preco =
                         index === 0;
@@ -2951,7 +3166,10 @@ function agruparProdutos(
                 scoreB
             ) {
 
-                return scoreB - scoreA;
+                return (
+                    scoreB -
+                    scoreA
+                );
             }
 
             return (
@@ -2964,6 +3182,10 @@ function agruparProdutos(
     return produtos;
 }
 
+
+/* =========================================================
+   ESTATÍSTICAS
+   ========================================================= */
 
 function updateStats(
     lista
@@ -3035,8 +3257,7 @@ function updateStats(
         maiorDesconto.toFixed(
             0
         )
-        +
-        "%";
+        + "%";
 }
 
 
@@ -3074,7 +3295,10 @@ function renderResults(
     box.innerHTML = "";
 
     produtos.forEach(
-        (produto, index) => {
+        (
+            produto,
+            index
+        ) => {
 
             const melhor =
                 produto.melhor;
@@ -3155,13 +3379,11 @@ function renderResults(
                 </div>
 
                 <div class="product-summary">
-
                     🏪
                     ${
                         produto.quantidadeVendedores
                     }
                     vendedor(es)
-
                     • menor preço:
                     <b>
                         ${
@@ -3170,7 +3392,6 @@ function renderResults(
                             )
                         }
                     </b>
-
                 </div>
 
                 <div>
@@ -3213,7 +3434,10 @@ function renderResults(
             `;
 
             produto.ofertas.forEach(
-                (oferta, sellerIndex) => {
+                (
+                    oferta,
+                    sellerIndex
+                ) => {
 
                     const seller =
                         document.createElement(
@@ -3303,7 +3527,8 @@ function renderResults(
                             👤 Vendedor:
                             ${
                                 escapeHtml(
-                                    oferta.seller_id || "-"
+                                    oferta.seller_id ||
+                                    "-"
                                 )
                             }
 
@@ -3428,7 +3653,8 @@ async function buscar() {
                     query
                 ),
                 {
-                    cache: "no-store"
+                    cache:
+                        "no-store"
                 }
             );
 
@@ -3451,7 +3677,8 @@ async function buscar() {
         }
 
         resultadosGlobais =
-            data.resultados || [];
+            data.resultados ||
+            [];
 
         renderResults(
             resultadosGlobais
@@ -3498,7 +3725,8 @@ async function cacarCategoria(
                     categoria
                 ),
                 {
-                    cache: "no-store"
+                    cache:
+                        "no-store"
                 }
             );
 
@@ -3521,7 +3749,8 @@ async function cacarCategoria(
         }
 
         const resultados =
-            data.resultados || [];
+            data.resultados ||
+            [];
 
         if (atualizarTela) {
 
@@ -3653,7 +3882,7 @@ async function cacarTodas() {
 
 
 /* =========================================================
-   DUPLICAÇÃO CLIENTE
+   DEDUPE NO NAVEGADOR
    ========================================================= */
 
 function dedupeClient(
@@ -3671,14 +3900,16 @@ function dedupeClient(
                     item.product_id
                     ||
                     String(
-                        item.titulo || ""
+                        item.titulo ||
+                        ""
                     ).toLowerCase()
                 )
                 +
                 "|"
                 +
                 String(
-                    item.seller_id || ""
+                    item.seller_id ||
+                    ""
                 );
 
             const atual =
@@ -3728,7 +3959,8 @@ async function copiarAnuncio(
             await fetch(
                 "/api/gerar-anuncio",
                 {
-                    method: "POST",
+                    method:
+                        "POST",
 
                     headers: {
                         "Content-Type":
@@ -3777,7 +4009,8 @@ async function salvarOferta(
             await fetch(
                 "/api/salvar",
                 {
-                    method: "POST",
+                    method:
+                        "POST",
 
                     headers: {
                         "Content-Type":
@@ -3850,7 +4083,8 @@ def not_found(error):
 
     return jsonify({
         "ok": False,
-        "erro": "Rota não encontrada."
+        "erro":
+            "Rota não encontrada."
     }), 404
 
 
@@ -3859,7 +4093,8 @@ def server_error(error):
 
     return jsonify({
         "ok": False,
-        "erro": "Erro interno do servidor."
+        "erro":
+            "Erro interno do servidor."
     }), 500
 
 
