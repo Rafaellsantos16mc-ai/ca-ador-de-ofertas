@@ -7,6 +7,7 @@ import hashlib
 import secrets
 import base64
 import html as html_lib
+import threading
 from urllib.parse import urlencode
 
 import requests
@@ -14,7 +15,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 
 
 # ============================================================
-# CONFIGURAÇÃO
+# CONFIG
 # ============================================================
 
 app = Flask(__name__)
@@ -59,7 +60,7 @@ PRODUCT_SEARCH_LIMIT = 50
 
 
 # ============================================================
-# TERMOS DE BUSCA
+# BUSCAS
 # ============================================================
 
 SEARCH_GROUPS = {
@@ -139,7 +140,7 @@ SEARCH_GROUPS = {
 
 
 # ============================================================
-# CUPONS OFICIAIS DE FALLBACK
+# CUPONS FALLBACK
 # ============================================================
 
 OFFICIAL_COUPON_FALLBACK = [
@@ -214,6 +215,7 @@ OFFICIAL_COUPON_FALLBACK = [
 # ============================================================
 
 def db():
+
     conn = sqlite3.connect(
         DATABASE,
         timeout=30,
@@ -279,7 +281,6 @@ def init_db():
         )
     """)
 
-    # Migração caso o banco antigo não tenha essas colunas
     columns = {
         row["name"]
         for row in conn.execute(
@@ -287,7 +288,7 @@ def init_db():
         ).fetchall()
     }
 
-    new_columns = {
+    extra = {
         "image_url": "TEXT",
         "seller_name": "TEXT",
         "original_price": "REAL",
@@ -296,7 +297,7 @@ def init_db():
         "official_store": "INTEGER DEFAULT 0",
     }
 
-    for column, definition in new_columns.items():
+    for column, definition in extra.items():
 
         if column not in columns:
 
@@ -315,7 +316,7 @@ init_db()
 
 
 # ============================================================
-# UTILITÁRIOS
+# UTIL
 # ============================================================
 
 def money(value):
@@ -338,9 +339,7 @@ def clean_text(value):
     if value is None:
         return ""
 
-    value = html_lib.unescape(
-        str(value)
-    )
+    value = html_lib.unescape(str(value))
 
     value = re.sub(
         r"<[^>]+>",
@@ -397,7 +396,6 @@ def parse_money(value):
 
     try:
         return float(value)
-
     except Exception:
         return None
 
@@ -476,32 +474,22 @@ def get_access_token():
 
     row = get_token_row()
 
-    if not row:
-        return None
-
-    return row["access_token"]
+    return row["access_token"] if row else None
 
 
 def get_refresh_token():
 
     row = get_token_row()
 
-    if not row:
-        return None
-
-    return row["refresh_token"]
+    return row["refresh_token"] if row else None
 
 
 def make_code_verifier():
 
-    return secrets.token_urlsafe(
-        64
-    )
+    return secrets.token_urlsafe(64)
 
 
-def make_code_challenge(
-    verifier
-):
+def make_code_challenge(verifier):
 
     digest = hashlib.sha256(
         verifier.encode("utf-8")
@@ -517,17 +505,14 @@ def make_code_challenge(
 
 
 # ============================================================
-# REFRESH TOKEN
+# REFRESH
 # ============================================================
 
 def refresh_token_for_worker(
     refresh_token
 ):
 
-    if not refresh_token:
-        return None
-
-    if not ML_CLIENT_ID:
+    if not refresh_token or not ML_CLIENT_ID:
         return None
 
     payload = {
@@ -591,7 +576,7 @@ def refresh_token_for_worker(
 
 
 # ============================================================
-# MERCADO LIVRE REQUEST
+# MERCADO LIVRE
 # ============================================================
 
 def ml_get_worker(
@@ -610,7 +595,7 @@ def ml_get_worker(
 
     headers = {
         "Accept": "application/json",
-        "User-Agent": "CacadorDeOfertas/3.0",
+        "User-Agent": "CacadorDeOfertas/4.0",
     }
 
     if access_token:
@@ -679,9 +664,11 @@ def ml_get_worker(
                 return None, {}
 
     try:
+
         data = response.json()
 
     except Exception:
+
         data = {}
 
     return response.status_code, data
@@ -691,9 +678,7 @@ def ml_get_worker(
 # CUPONS
 # ============================================================
 
-def save_coupons(
-    coupons
-):
+def save_coupons(coupons):
 
     conn = db()
 
@@ -737,9 +722,7 @@ def save_coupons(
     conn.close()
 
 
-def parse_coupon_page(
-    raw_html
-):
+def parse_coupon_page(raw_html):
 
     text = html_lib.unescape(
         raw_html or ""
@@ -765,9 +748,7 @@ def parse_coupon_page(
         text
     )
 
-    text = html_lib.unescape(
-        text
-    )
+    text = html_lib.unescape(text)
 
     text = re.sub(
         r"\s+",
@@ -794,34 +775,25 @@ def parse_coupon_page(
         start = match.start()
 
         if i + 1 < len(matches):
-
-            end = matches[
-                i + 1
-            ].start()
-
+            end = matches[i + 1].start()
         else:
-
             end = min(
                 len(text),
                 start + 1800
             )
 
-        block = text[
-            start:end
-        ]
+        block = text[start:end]
 
         percent = None
 
-        patterns = [
+        for pattern in [
 
             r"até\s+(\d+(?:[.,]\d+)?)\s*%\s*de\s*desconto",
 
             r"(\d+(?:[.,]\d+)?)\s*%\s*de\s*desconto",
 
             r"desconto\s+de\s+(\d+(?:[.,]\d+)?)\s*%",
-        ]
-
-        for pattern in patterns:
+        ]:
 
             m = re.search(
                 pattern,
@@ -847,16 +819,14 @@ def parse_coupon_page(
 
         fixed = None
 
-        patterns_fixed = [
+        for pattern in [
 
             r"desconto\s+de\s+até\s+R\$\s*([\d\.,]+)",
 
             r"até\s+R\$\s*([\d\.,]+)\s*de\s*desconto",
 
             r"R\$\s*([\d\.,]+)\s*OFF",
-        ]
-
-        for pattern in patterns_fixed:
+        ]:
 
             m = re.search(
                 pattern,
@@ -875,16 +845,14 @@ def parse_coupon_page(
 
         minimum = 0
 
-        patterns_min = [
+        for pattern in [
 
             r"compra\s+a\s+partir\s+de\s+R\$\s*([\d\.,]+)",
 
             r"pedido\s+a\s+partir\s+de\s+R\$\s*([\d\.,]+)",
 
             r"mínimo\s+de\s+R\$\s*([\d\.,]+)",
-        ]
-
-        for pattern in patterns_min:
+        ]:
 
             m = re.search(
                 pattern,
@@ -905,14 +873,12 @@ def parse_coupon_page(
 
         maximum = None
 
-        patterns_max = [
+        for pattern in [
 
             r"máximo\s+de\s+R\$\s*([\d\.,]+)",
 
             r"desconto\s+máximo\s+de\s+R\$\s*([\d\.,]+)",
-        ]
-
-        for pattern in patterns_max:
+        ]:
 
             m = re.search(
                 pattern,
@@ -933,26 +899,32 @@ def parse_coupon_page(
             continue
 
         coupons.append({
+
             "code": code,
-            "type": (
+
+            "type":
                 "percent"
                 if percent is not None
-                else "fixed"
-            ),
-            "value": (
+                else "fixed",
+
+            "value":
                 percent
                 if percent is not None
-                else fixed
-            ),
-            "min_purchase": minimum,
-            "max_discount": maximum,
-            "source": "scraped",
+                else fixed,
+
+            "min_purchase":
+                minimum,
+
+            "max_discount":
+                maximum,
+
+            "source":
+                "scraped",
         })
 
     unique = {}
 
     for coupon in coupons:
-
         unique[
             coupon["code"]
         ] = coupon
@@ -969,14 +941,15 @@ def sync_coupons():
     )
 
     headers = {
-        "User-Agent": (
+        "User-Agent":
             "Mozilla/5.0 "
             "(iPhone; CPU iPhone OS 18_0 like Mac OS X) "
             "AppleWebKit/605.1.15 "
             "(KHTML, like Gecko) "
-            "Version/18.0 Mobile/15E148 Safari/604.1"
-        ),
-        "Accept-Language": "pt-BR,pt;q=0.9",
+            "Version/18.0 Mobile/15E148 Safari/604.1",
+
+        "Accept-Language":
+            "pt-BR,pt;q=0.9",
     }
 
     coupons = []
@@ -1010,12 +983,12 @@ def sync_coupons():
     if not coupons:
 
         print(
-            "[CUPONS] Usando fallback."
+            "[CUPONS] Fallback oficial."
         )
 
         coupons = [
-            dict(x)
-            for x in OFFICIAL_COUPON_FALLBACK
+            dict(coupon)
+            for coupon in OFFICIAL_COUPON_FALLBACK
         ]
 
     save_coupons(
@@ -1108,22 +1081,32 @@ def calculate_coupon(
     )
 
     return {
-        "code": coupon["code"],
-        "discount": round(
-            discount,
-            2
-        ),
-        "final_price": round(
-            final_price,
-            2
-        ),
-        "effective_discount": round(
-            discount / price * 100,
-            2
-        ),
-        "source": coupon.get(
-            "source"
-        ),
+
+        "code":
+            coupon["code"],
+
+        "discount":
+            round(
+                discount,
+                2
+            ),
+
+        "final_price":
+            round(
+                final_price,
+                2
+            ),
+
+        "effective_discount":
+            round(
+                discount / price * 100,
+                2
+            ),
+
+        "source":
+            coupon.get(
+                "source"
+            ),
     }
 
 
@@ -1173,19 +1156,29 @@ def product_search(
         "/products/search",
         auth,
         params={
-            "site_id": SITE_ID,
-            "q": query,
-            "status": "active",
-            "limit": PRODUCT_SEARCH_LIMIT,
-            "offset": 0,
+            "site_id":
+                SITE_ID,
+
+            "q":
+                query,
+
+            "status":
+                "active",
+
+            "limit":
+                PRODUCT_SEARCH_LIMIT,
+
+            "offset":
+                0,
         }
     )
 
     if status != 200:
 
         print(
-            "[PRODUCT SEARCH ERRO]",
+            "[PRODUCT SEARCH]",
             query,
+            "HTTP",
             status
         )
 
@@ -1231,8 +1224,11 @@ def get_product_items(
         f"/products/{product_id}/items",
         auth,
         params={
-            "limit": MAX_ITEMS_PER_PRODUCT,
-            "offset": 0,
+            "limit":
+                MAX_ITEMS_PER_PRODUCT,
+
+            "offset":
+                0,
         }
     )
 
@@ -1247,7 +1243,7 @@ def get_product_items(
 
 
 # ============================================================
-# PREÇO ATUAL
+# PREÇO
 # ============================================================
 
 def get_sale_price(
@@ -1267,18 +1263,11 @@ def get_sale_price(
     if status != 200:
         return None, None
 
-    if not isinstance(
-        data,
-        dict
-    ):
-        return None, None
-
     amount = data.get(
         "amount"
     )
 
     if amount is None:
-
         amount = data.get(
             "price"
         )
@@ -1288,29 +1277,22 @@ def get_sale_price(
     )
 
     if regular is None:
-
         regular = data.get(
             "original_amount"
         )
 
     try:
-
-        amount = float(
-            amount
-        )
-
+        amount = float(amount)
     except Exception:
-
         amount = None
 
     try:
-
-        regular = float(
-            regular
-        ) if regular is not None else None
-
+        regular = (
+            float(regular)
+            if regular is not None
+            else None
+        )
     except Exception:
-
         regular = None
 
     return amount, regular
@@ -1329,12 +1311,6 @@ def get_prices(
     if status != 200:
         return None, None
 
-    if not isinstance(
-        data,
-        dict
-    ):
-        return None, None
-
     prices = data.get(
         "prices",
         []
@@ -1347,7 +1323,6 @@ def get_prices(
         return None, None
 
     amounts = []
-
     regulars = []
 
     for p in prices:
@@ -1358,20 +1333,14 @@ def get_prices(
         ):
             continue
 
-        amount = p.get(
-            "amount"
-        )
-
-        regular = (
-            p.get("regular_amount")
-            or p.get("original_amount")
-        )
-
         try:
 
-            if amount is not None:
+            if p.get("amount") is not None:
+
                 amounts.append(
-                    float(amount)
+                    float(
+                        p["amount"]
+                    )
                 )
 
         except Exception:
@@ -1379,7 +1348,18 @@ def get_prices(
 
         try:
 
+            regular = (
+                p.get(
+                    "regular_amount"
+                )
+                or
+                p.get(
+                    "original_amount"
+                )
+            )
+
             if regular is not None:
+
                 regulars.append(
                     float(regular)
                 )
@@ -1397,17 +1377,13 @@ def get_prices(
 
     original = None
 
-    if regulars:
+    valid = [
+        x for x in regulars
+        if x > current
+    ]
 
-        valid = [
-            x for x in regulars
-            if x > current
-        ]
-
-        if valid:
-            original = max(
-                valid
-            )
+    if valid:
+        original = max(valid)
 
     return current, original
 
@@ -1424,7 +1400,6 @@ def get_current_price(
     if not item_id:
         return None, None
 
-    # PRIMEIRO: SALE PRICE
     current, original = get_sale_price(
         item_id,
         auth
@@ -1436,22 +1411,21 @@ def get_current_price(
 
             try:
 
-                item_original = float(
+                old = float(
                     item.get(
                         "original_price"
                     )
                     or 0
                 )
 
-                if item_original > current:
-                    original = item_original
+                if old > current:
+                    original = old
 
             except Exception:
                 pass
 
         return current, original
 
-    # SEGUNDO: PRICES
     current, original = get_prices(
         item_id,
         auth
@@ -1460,7 +1434,6 @@ def get_current_price(
     if current is not None:
         return current, original
 
-    # TERCEIRO: ITEM
     try:
 
         current = float(
@@ -1473,30 +1446,24 @@ def get_current_price(
 
         try:
 
-            original = float(
+            old = float(
                 item.get(
                     "original_price"
                 )
                 or 0
             )
 
+            if old > current:
+                original = old
+
         except Exception:
             pass
 
-        if current > 0:
-
-            if (
-                original is not None
-                and original <= current
-            ):
-                original = None
-
-            return current, original
+        return current, original
 
     except Exception:
-        pass
 
-    return None, None
+        return None, None
 
 
 # ============================================================
@@ -1531,12 +1498,12 @@ def get_product_image(
                 "source"
             ):
 
-                url = picture.get(
+                value = picture.get(
                     key
                 )
 
-                if url:
-                    return url
+                if value:
+                    return value
 
     thumbnail = item.get(
         "thumbnail"
@@ -1544,16 +1511,11 @@ def get_product_image(
 
     if thumbnail:
 
-        if thumbnail.startswith(
-            "http:"
-        ):
-            thumbnail = thumbnail.replace(
-                "http:",
-                "https:",
-                1
-            )
-
-        return thumbnail
+        return thumbnail.replace(
+            "http:",
+            "https:",
+            1
+        )
 
     return ""
 
@@ -1562,27 +1524,26 @@ def get_product_image(
 # LOJA
 # ============================================================
 
-def get_seller_name(
-    item
-):
+def get_seller_name(item):
 
-    seller_name = (
-        item.get("seller_nickname")
-        or item.get("seller_name")
-        or item.get("seller_nick")
+    value = (
+        item.get(
+            "seller_nickname"
+        )
+        or item.get(
+            "seller_name"
+        )
+        or item.get(
+            "seller_nick"
+        )
     )
 
-    if seller_name:
-        return clean_text(
-            seller_name
-        )
-
-    return ""
+    return clean_text(
+        value
+    )
 
 
-def is_official_store(
-    item
-):
+def is_official_store(item):
 
     return bool(
         item.get(
@@ -1591,9 +1552,7 @@ def is_official_store(
     )
 
 
-def free_shipping(
-    item
-):
+def free_shipping(item):
 
     shipping = item.get(
         "shipping"
@@ -1608,6 +1567,7 @@ def free_shipping(
     if shipping.get(
         "free_shipping"
     ) is True:
+
         return True
 
     try:
@@ -1714,31 +1674,33 @@ def build_candidate(
         original_price is not None
         and original_price <= current_price
     ):
+
         original_price = None
 
-    seller_id = item.get(
-        "seller_id"
-    )
-
-    seller_name = get_seller_name(
-        item
+    product_id = (
+        product.get(
+            "id"
+        )
+        or
+        item.get(
+            "catalog_product_id"
+        )
     )
 
     title = clean_text(
-        product.get("name")
-        or product.get("title")
-        or item.get("title")
-        or "Produto"
-    )
-
-    image_url = get_product_image(
-        product,
-        item
-    )
-
-    product_id = (
-        product.get("id")
-        or item.get("catalog_product_id")
+        product.get(
+            "name"
+        )
+        or
+        product.get(
+            "title"
+        )
+        or
+        item.get(
+            "title"
+        )
+        or
+        "Produto"
     )
 
     return {
@@ -1750,16 +1712,23 @@ def build_candidate(
             title,
 
         "image_url":
-            image_url,
+            get_product_image(
+                product,
+                item
+            ),
 
         "item_id":
             item_id,
 
         "seller_id":
-            seller_id,
+            item.get(
+                "seller_id"
+            ),
 
         "seller_name":
-            seller_name,
+            get_seller_name(
+                item
+            ),
 
         "category":
             category,
@@ -1824,8 +1793,8 @@ def build_candidate(
 
         "product_url":
             (
-                "https://www.mercadolivre.com.br/"
-                f"p/{product_id}"
+                "https://www.mercadolivre.com.br/p/"
+                + str(product_id)
             ),
     }
 
@@ -1834,9 +1803,7 @@ def build_candidate(
 # ESCOLHER MELHOR
 # ============================================================
 
-def choose_best(
-    candidates
-):
+def choose_best(candidates):
 
     if not candidates:
         return None
@@ -1844,28 +1811,18 @@ def choose_best(
     candidates.sort(
         key=lambda x: (
 
-            # Primeiro:
-            # menor preço final
             x["final_price"],
 
-            # Depois:
-            # maior economia
             -x["coupon_discount"],
 
-            # Depois:
-            # maior percentual
             -x["effective_discount"],
 
-            # Frete grátis
             not x["free_shipping"],
 
-            # Loja oficial
             not x["official_store"],
 
-            # Buy Box
             not x["buy_box"],
 
-            # Preço atual
             x["current_price"],
         )
     )
@@ -1897,7 +1854,6 @@ def process_product(
         auth
     )
 
-    # Buy Box como fallback
     if not items:
 
         winner = product.get(
@@ -1917,7 +1873,6 @@ def process_product(
                     winner
                 ]
 
-    # Filhos do produto
     if not items:
 
         children = product.get(
@@ -1957,14 +1912,14 @@ def process_product(
         "buy_box_winner"
     )
 
-    buy_box_item = None
+    winner_item_id = None
 
     if isinstance(
         winner,
         dict
     ):
 
-        buy_box_item = winner.get(
+        winner_item_id = winner.get(
             "item_id"
         )
 
@@ -1974,20 +1929,15 @@ def process_product(
         :MAX_ITEMS_PER_PRODUCT
     ]:
 
-        buy_box = (
-            item.get(
-                "item_id"
-            )
-            == buy_box_item
-        )
-
         candidate = build_candidate(
             product,
             item,
             category,
             coupons,
             auth,
-            buy_box
+            item.get(
+                "item_id"
+            ) == winner_item_id
         )
 
         if candidate:
@@ -2001,7 +1951,7 @@ def process_product(
 
 
 # ============================================================
-# JOBS
+# JOB
 # ============================================================
 
 JOBS = {}
@@ -2108,8 +2058,13 @@ def run_scan(
                 else:
 
                     product_id = (
-                        result.get("id")
-                        or result.get("product_id")
+                        result.get(
+                            "id"
+                        )
+                        or
+                        result.get(
+                            "product_id"
+                        )
                     )
 
                 if not product_id:
@@ -2124,20 +2079,17 @@ def run_scan(
                 if len(product_map) >= MAX_PRODUCTS_SCAN:
                     break
 
-            progress = int(
-                (
-                    index
-                    / max(
-                        total_searches,
-                        1
-                    )
-                )
-                * 25
-            )
-
             update_job(
                 job_id,
-                progress=progress,
+                progress=int(
+                    (
+                        index /
+                        max(
+                            total_searches,
+                            1
+                        )
+                    ) * 25
+                ),
                 message=(
                     f"Encontrados "
                     f"{len(product_map)} "
@@ -2146,7 +2098,7 @@ def run_scan(
             )
 
         print(
-            "[SCAN] TOTAL PRODUTOS:",
+            "[SCAN] PRODUTOS:",
             len(product_map)
         )
 
@@ -2204,23 +2156,17 @@ def run_scan(
                     repr(e)
                 )
 
-            progress = (
-                25
-                + int(
+            update_job(
+                job_id,
+                progress=25 + int(
                     (
-                        index
-                        / max(
+                        index /
+                        max(
                             total,
                             1
                         )
-                    )
-                    * 70
-                )
-            )
-
-            update_job(
-                job_id,
-                progress=progress,
+                    ) * 70
+                ),
                 message=(
                     f"Montando ofertas "
                     f"{index}/{total}..."
@@ -2231,7 +2177,6 @@ def run_scan(
             offers.values()
         )
 
-        # Melhor economia primeiro
         final_offers.sort(
             key=lambda x: (
                 -x["coupon_discount"],
@@ -2321,11 +2266,6 @@ def run_scan(
             )
         )
 
-        print(
-            "[SCAN FINALIZADO]",
-            len(final_offers)
-        )
-
     except Exception as e:
 
         print(
@@ -2377,16 +2317,23 @@ def health():
     row = get_token_row()
 
     return jsonify({
-        "status": "ok",
-        "app": "Cacador de Ofertas",
-        "mercadolivre": bool(
-            row and row["access_token"]
-        )
+
+        "status":
+            "ok",
+
+        "app":
+            "Cacador de Ofertas",
+
+        "mercadolivre":
+            bool(
+                row and
+                row["access_token"]
+            )
     })
 
 
 # ============================================================
-# CONECTAR MERCADO LIVRE
+# CONNECT
 # ============================================================
 
 @app.route(
@@ -2440,14 +2387,10 @@ def mercadolivre_connect():
             "S256",
     }
 
-    auth_url = (
+    return redirect(
         ML_AUTH
         + "?"
         + urlencode(params)
-    )
-
-    return redirect(
-        auth_url
     )
 
 
@@ -2479,14 +2422,6 @@ def mercadolivre_callback():
         "state"
     )
 
-    expected_state = session.get(
-        "oauth_state"
-    )
-
-    verifier = session.get(
-        "oauth_verifier"
-    )
-
     if not code:
 
         return (
@@ -2496,13 +2431,19 @@ def mercadolivre_callback():
 
     if (
         not state
-        or state != expected_state
+        or state != session.get(
+            "oauth_state"
+        )
     ):
 
         return (
             "State OAuth inválido.",
             400
         )
+
+    verifier = session.get(
+        "oauth_verifier"
+    )
 
     if not verifier:
 
@@ -2627,7 +2568,7 @@ def mercadolivre_callback():
 
 
 # ============================================================
-# DESCONECTAR
+# DISCONNECT
 # ============================================================
 
 @app.route(
@@ -2648,7 +2589,7 @@ def disconnect():
 
 
 # ============================================================
-# INICIAR CAÇA
+# START SCAN
 # ============================================================
 
 @app.route(
@@ -2664,7 +2605,10 @@ def start_scan():
     if not access_token:
 
         return jsonify({
-            "ok": False,
+
+            "ok":
+                False,
+
             "error":
                 "Conecte o Mercado Livre primeiro."
         }), 401
@@ -2700,6 +2644,8 @@ def start_scan():
             refresh_token,
     }
 
+    # IMPORTANTE:
+    # threading foi importado no início
     threading.Thread(
         target=run_scan,
         args=(
@@ -2710,8 +2656,12 @@ def start_scan():
     ).start()
 
     return jsonify({
-        "ok": True,
-        "job_id": job_id
+
+        "ok":
+            True,
+
+        "job_id":
+            job_id
     })
 
 
@@ -2722,9 +2672,7 @@ def start_scan():
 @app.route(
     "/api/scan/status/<job_id>"
 )
-def scan_status(
-    job_id
-):
+def scan_status(job_id):
 
     job = JOBS.get(
         job_id
@@ -2733,13 +2681,19 @@ def scan_status(
     if not job:
 
         return jsonify({
-            "ok": False,
+
+            "ok":
+                False,
+
             "error":
                 "Job não encontrado."
         }), 404
 
     return jsonify({
-        "ok": True,
+
+        "ok":
+            True,
+
         **job
     })
 
@@ -2790,14 +2744,20 @@ def offers_api():
         )
 
     return jsonify({
-        "ok": True,
-        "offers": offers,
-        "total": len(offers)
+
+        "ok":
+            True,
+
+        "offers":
+            offers,
+
+        "total":
+            len(offers)
     })
 
 
 # ============================================================
-# GERAR TEXTO DA OFERTA
+# GERAR ANÚNCIO
 # ============================================================
 
 @app.route(
@@ -2831,14 +2791,6 @@ def generate_ad():
         "coupon_code"
     )
 
-    coupon_discount = float(
-        data.get(
-            "coupon_discount",
-            0
-        )
-        or 0
-    )
-
     final_price = float(
         data.get(
             "final_price",
@@ -2850,9 +2802,6 @@ def generate_ad():
     affiliate_url = (
         data.get(
             "affiliate_url"
-        )
-        or data.get(
-            "url"
         )
         or ""
     ).strip()
@@ -2870,14 +2819,10 @@ def generate_ad():
         or ""
     ).strip()
 
-    # --------------------------------
-    # TITULO
-    # --------------------------------
-
     lines = []
 
     lines.append(
-        "🔥 OFERTA ENCONTRADA!"
+        "🔥 OFERTA IMPERDÍVEL!"
     )
 
     lines.append("")
@@ -2888,17 +2833,16 @@ def generate_ad():
 
     lines.append("")
 
-    # --------------------------------
-    # DE / POR
-    # --------------------------------
-
     if original_price:
 
         try:
+
             original_price = float(
                 original_price
             )
+
         except Exception:
+
             original_price = None
 
     if (
@@ -2910,21 +2854,9 @@ def generate_ad():
             f"De {money(original_price)}"
         )
 
-    if coupon_code:
-
-        lines.append(
-            f"Por {money(final_price)} 🔥"
-        )
-
-    else:
-
-        lines.append(
-            f"Por {money(current_price)} 🔥"
-        )
-
-    # --------------------------------
-    # CUPOM
-    # --------------------------------
+    lines.append(
+        f"Por {money(final_price)} 🔥"
+    )
 
     if coupon_code:
 
@@ -2933,10 +2865,6 @@ def generate_ad():
         lines.append(
             f"🎟️ Cupom: {coupon_code}"
         )
-
-    # --------------------------------
-    # LINK
-    # --------------------------------
 
     if affiliate_url:
 
@@ -2949,10 +2877,6 @@ def generate_ad():
         lines.append(
             affiliate_url
         )
-
-    # --------------------------------
-    # LOJA
-    # --------------------------------
 
     lines.append("")
 
@@ -2974,10 +2898,6 @@ def generate_ad():
             "🏪 Loja no MELI!"
         )
 
-    # --------------------------------
-    # AVISO
-    # --------------------------------
-
     if coupon_code:
 
         lines.append("")
@@ -2988,7 +2908,10 @@ def generate_ad():
         )
 
     return jsonify({
-        "ok": True,
+
+        "ok":
+            True,
+
         "text":
             "\n".join(lines)
     })
@@ -3012,9 +2935,7 @@ HTML = r'''
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>
-Caçador de Ofertas
-</title>
+<title>Caçador de Ofertas</title>
 
 <style>
 
@@ -3026,11 +2947,9 @@ body {
 
     margin: 0;
 
-    background:
-        #f1f3f6;
+    background: #f1f3f6;
 
-    color:
-        #111827;
+    color: #111827;
 
     font-family:
         -apple-system,
@@ -3054,17 +2973,13 @@ body {
 
 .header {
 
-    background:
-        white;
+    background: white;
 
-    border-radius:
-        20px;
+    border-radius: 20px;
 
-    padding:
-        20px;
+    padding: 20px;
 
-    margin-bottom:
-        14px;
+    margin-bottom: 14px;
 
     box-shadow:
         0 4px 20px
@@ -3073,152 +2988,115 @@ body {
 
 .header h1 {
 
-    margin:
-        0 0 7px;
+    margin: 0 0 7px;
 
-    font-size:
-        25px;
+    font-size: 25px;
 }
 
 .header p {
 
     margin: 0;
 
-    color:
-        #6b7280;
+    color: #6b7280;
 }
 
 .connection {
 
-    margin-top:
-        15px;
+    margin-top: 15px;
 
-    display:
-        flex;
+    display: flex;
 
-    justify-content:
-        space-between;
+    justify-content: space-between;
 
-    align-items:
-        center;
+    align-items: center;
 
-    gap:
-        10px;
+    gap: 10px;
 
-    flex-wrap:
-        wrap;
+    flex-wrap: wrap;
 }
 
 .connected {
 
-    color:
-        #16895c;
+    color: #16895c;
 
-    font-weight:
-        850;
+    font-weight: 850;
 
-    font-size:
-        17px;
+    font-size: 17px;
 }
 
 .btn {
 
     border: 0;
 
-    border-radius:
-        12px;
+    border-radius: 12px;
 
-    padding:
-        13px 18px;
+    padding: 13px 18px;
 
-    font-size:
-        14px;
+    font-size: 14px;
 
-    font-weight:
-        850;
+    font-weight: 850;
 
-    cursor:
-        pointer;
+    cursor: pointer;
 
-    text-decoration:
-        none;
+    text-decoration: none;
 
-    display:
-        inline-flex;
+    display: inline-flex;
 
-    align-items:
-        center;
+    align-items: center;
 
-    justify-content:
-        center;
+    justify-content: center;
 }
 
 .btn-primary {
 
-    background:
-        #3483fa;
+    background: #3483fa;
 
-    color:
-        white;
+    color: white;
 }
 
 .btn-danger {
 
-    background:
-        #ef5350;
+    background: #ef5350;
 
-    color:
-        white;
+    color: white;
 }
 
 .btn-dark {
 
-    background:
-        #111827;
+    background: #111827;
 
-    color:
-        white;
+    color: white;
 }
 
 .btn:disabled {
 
-    opacity:
-        .55;
+    opacity: .55;
 
-    cursor:
-        not-allowed;
+    cursor: not-allowed;
 }
 
 
-/* ==========================================
-   ESTATÍSTICAS
-   ========================================== */
+/* ESTATÍSTICAS */
 
 .stats {
 
-    display:
-        grid;
+    display: grid;
 
     grid-template-columns:
         repeat(4, 1fr);
 
-    gap:
-        10px;
+    gap: 10px;
 
-    margin-bottom:
-        14px;
+    margin-bottom: 14px;
 }
 
 .stat {
 
-    background:
-        white;
+    background: white;
 
-    border-radius:
-        17px;
+    border-radius: 17px;
 
-    padding:
-        17px;
+    padding: 17px;
 
     box-shadow:
         0 4px 18px
@@ -3227,43 +3105,32 @@ body {
 
 .stat-label {
 
-    color:
-        #6b7280;
+    color: #6b7280;
 
-    font-size:
-        13px;
+    font-size: 13px;
 
-    margin-bottom:
-        7px;
+    margin-bottom: 7px;
 }
 
 .stat-value {
 
-    font-size:
-        22px;
+    font-size: 22px;
 
-    font-weight:
-        950;
+    font-weight: 950;
 }
 
 
-/* ==========================================
-   CAÇA
-   ========================================== */
+/* CAÇA */
 
 .scan {
 
-    background:
-        white;
+    background: white;
 
-    border-radius:
-        20px;
+    border-radius: 20px;
 
-    padding:
-        19px;
+    padding: 19px;
 
-    margin-bottom:
-        15px;
+    margin-bottom: 15px;
 
     box-shadow:
         0 4px 18px
@@ -3272,82 +3139,60 @@ body {
 
 .scan-title {
 
-    font-size:
-        21px;
+    font-size: 21px;
 
-    font-weight:
-        950;
+    font-weight: 950;
 
-    margin-bottom:
-        13px;
+    margin-bottom: 13px;
 }
 
 .progress {
 
-    width:
-        100%;
+    width: 100%;
 
-    height:
-        10px;
+    height: 10px;
 
-    background:
-        #e5e7eb;
+    background: #e5e7eb;
 
-    border-radius:
-        999px;
+    border-radius: 999px;
 
-    overflow:
-        hidden;
+    overflow: hidden;
 
-    margin:
-        15px 0 10px;
+    margin: 15px 0 10px;
 }
 
 .progress-bar {
 
-    height:
-        100%;
+    height: 100%;
 
-    width:
-        0%;
+    width: 0%;
 
-    background:
-        #3483fa;
+    background: #3483fa;
 
-    transition:
-        width .25s;
+    transition: width .25s;
 }
 
 .status {
 
-    color:
-        #6b7280;
+    color: #6b7280;
 
-    font-size:
-        14px;
+    font-size: 14px;
 }
 
 
-/* ==========================================
-   OFERTA
-   ========================================== */
+/* OFERTA */
 
 .offer {
 
-    background:
-        #202222;
+    background: #202222;
 
-    color:
-        white;
+    color: white;
 
-    border-radius:
-        20px;
+    border-radius: 20px;
 
-    overflow:
-        hidden;
+    overflow: hidden;
 
-    margin-bottom:
-        18px;
+    margin-bottom: 18px;
 
     box-shadow:
         0 5px 22px
@@ -3356,362 +3201,251 @@ body {
 
 .offer-image {
 
-    width:
-        100%;
+    width: 100%;
 
-    aspect-ratio:
-        1 / 1;
+    aspect-ratio: 1 / 1;
 
-    background:
-        #e5e7eb;
+    background: #e5e7eb;
 
-    display:
-        flex;
+    display: flex;
 
-    align-items:
-        center;
+    align-items: center;
 
-    justify-content:
-        center;
+    justify-content: center;
 
-    overflow:
-        hidden;
+    overflow: hidden;
 }
 
 .offer-image img {
 
-    width:
-        100%;
+    width: 100%;
 
-    height:
-        100%;
+    height: 100%;
 
-    object-fit:
-        cover;
+    object-fit: cover;
 
-    display:
-        block;
+    display: block;
 }
 
 .offer-content {
 
-    padding:
-        17px 18px 20px;
+    padding: 17px 18px 20px;
 }
 
 .offer-title {
 
-    font-size:
-        21px;
+    font-size: 21px;
 
-    line-height:
-        1.25;
+    line-height: 1.25;
 
-    font-weight:
-        900;
+    font-weight: 900;
 
-    margin-bottom:
-        18px;
+    margin-bottom: 18px;
 }
 
 .old-price {
 
-    color:
-        #eeeeee;
+    color: #eeeeee;
 
-    font-size:
-        18px;
+    font-size: 18px;
 
-    margin-bottom:
-        3px;
+    margin-bottom: 3px;
 }
 
 .old-price span {
 
-    text-decoration:
-        line-through;
+    text-decoration: line-through;
 }
 
 .current-label {
 
-    color:
-        #d1d5db;
+    color: #d1d5db;
 
-    font-size:
-        13px;
+    font-size: 13px;
 }
 
 .final-price {
 
-    font-size:
-        31px;
+    font-size: 31px;
 
-    font-weight:
-        950;
+    font-weight: 950;
 
-    margin-top:
-        2px;
+    margin-top: 2px;
 
-    color:
-        #ffffff;
-}
-
-.final-price small {
-
-    font-size:
-        16px;
-
-    font-weight:
-        700;
+    color: white;
 }
 
 
-/* ==========================================
-   CUPOM
-   ========================================== */
+/* CUPOM */
 
 .coupon {
 
-    margin-top:
-        18px;
+    margin-top: 18px;
 
-    padding:
-        13px;
+    padding: 13px;
 
-    border-radius:
-        13px;
+    border-radius: 13px;
 
-    background:
-        #292b2b;
+    background: #292b2b;
 
-    border:
-        1px solid
-        #444;
+    border: 1px solid #444;
 }
 
 .coupon-title {
 
-    font-size:
-        17px;
+    font-size: 17px;
 
-    margin-bottom:
-        5px;
+    margin-bottom: 5px;
 }
 
 .coupon-title strong {
 
-    color:
-        #ffffff;
+    color: white;
 }
 
 .coupon-saving {
 
-    color:
-        #d1d5db;
+    color: #d1d5db;
 
-    font-size:
-        13px;
+    font-size: 13px;
 
-    line-height:
-        1.45;
+    line-height: 1.45;
 }
 
 .coupon-status {
 
-    display:
-        inline-block;
+    display: inline-block;
 
-    margin-top:
-        8px;
+    margin-top: 8px;
 
-    background:
-        #f59e0b;
+    background: #f59e0b;
 
-    color:
-        #111827;
+    color: #111827;
 
-    border-radius:
-        999px;
+    border-radius: 999px;
 
-    padding:
-        4px 9px;
+    padding: 4px 9px;
 
-    font-size:
-        10px;
+    font-size: 10px;
 
-    font-weight:
-        950;
+    font-weight: 950;
 }
 
 
-/* ==========================================
-   LINK
-   ========================================== */
+/* AFILIADO */
 
 .affiliate-box {
 
-    margin-top:
-        15px;
+    margin-top: 15px;
 }
 
 .affiliate-box label {
 
-    display:
-        block;
+    display: block;
 
-    font-size:
-        12px;
+    font-size: 12px;
 
-    color:
-        #bfc2c4;
+    color: #bfc2c4;
 
-    margin-bottom:
-        6px;
+    margin-bottom: 6px;
 }
 
 .affiliate {
 
-    width:
-        100%;
+    width: 100%;
 
-    border:
-        1px solid
-        #555;
+    border: 1px solid #555;
 
-    background:
-        #292b2b;
+    background: #292b2b;
 
-    color:
-        white;
+    color: white;
 
-    border-radius:
-        10px;
+    border-radius: 10px;
 
-    padding:
-        12px;
+    padding: 12px;
 
-    outline:
-        none;
+    outline: none;
 }
 
 .actions {
 
-    display:
-        grid;
+    display: grid;
 
-    grid-template-columns:
-        1fr 1fr;
+    grid-template-columns: 1fr 1fr;
 
-    gap:
-        8px;
+    gap: 8px;
 
-    margin-top:
-        12px;
+    margin-top: 12px;
 }
 
 .actions .btn {
 
-    width:
-        100%;
+    width: 100%;
 }
 
 .store {
 
-    margin-top:
-        14px;
+    margin-top: 14px;
 
-    font-weight:
-        700;
+    font-weight: 700;
 
-    color:
-        #eeeeee;
+    color: #eeeeee;
 }
-
-
-/* ==========================================
-   ANÚNCIO
-   ========================================== */
 
 .ad-box {
 
-    display:
-        none;
+    display: none;
 
-    margin-top:
-        12px;
+    margin-top: 12px;
 }
 
 .ad-box textarea {
 
-    width:
-        100%;
+    width: 100%;
 
-    min-height:
-        180px;
+    min-height: 180px;
 
-    resize:
-        vertical;
+    resize: vertical;
 
-    border:
-        1px solid
-        #555;
+    border: 1px solid #555;
 
-    border-radius:
-        12px;
+    border-radius: 12px;
 
-    background:
-        #151717;
+    background: #151717;
 
-    color:
-        white;
+    color: white;
 
-    padding:
-        12px;
+    padding: 12px;
 
-    font-size:
-        14px;
+    font-size: 14px;
 
-    line-height:
-        1.45;
+    line-height: 1.45;
 }
 
 .note {
 
-    color:
-        #6b7280;
+    color: #6b7280;
 
-    font-size:
-        12px;
+    font-size: 12px;
 
-    line-height:
-        1.5;
+    line-height: 1.5;
 
-    margin:
-        18px 3px 30px;
+    margin: 18px 3px 30px;
 }
 
 .empty {
 
-    background:
-        white;
+    background: white;
 
-    border-radius:
-        18px;
+    border-radius: 18px;
 
-    padding:
-        35px 20px;
+    padding: 35px 20px;
 
-    text-align:
-        center;
+    text-align: center;
 
-    color:
-        #6b7280;
+    color: #6b7280;
 }
 
-
-/* ==========================================
-   MOBILE
-   ========================================== */
 
 @media(max-width:700px) {
 
@@ -3723,20 +3457,17 @@ body {
 
     .container {
 
-        padding:
-            10px;
+        padding: 10px;
     }
 
     .offer-title {
 
-        font-size:
-            20px;
+        font-size: 20px;
     }
 
     .final-price {
 
-        font-size:
-            29px;
+        font-size: 29px;
     }
 }
 
@@ -3749,10 +3480,6 @@ body {
 <div class="container">
 
 
-<!-- ======================================
-     CABEÇALHO
-     ====================================== -->
-
 <div class="header">
 
 <h1>
@@ -3763,7 +3490,6 @@ body {
 Encontre produtos com desconto e cupons
 para publicar diretamente no seu grupo.
 </p>
-
 
 <div class="connection">
 
@@ -3800,10 +3526,6 @@ Desconectar
 
 </div>
 
-
-<!-- ======================================
-     ESTATÍSTICAS
-     ====================================== -->
 
 <div class="stats">
 
@@ -3875,10 +3597,6 @@ R$ 0,00
 
 {% if connected %}
 
-<!-- ======================================
-     CAÇA
-     ====================================== -->
-
 <div class="scan">
 
 <div class="scan-title">
@@ -3914,19 +3632,14 @@ Pronto para começar.
 {% endif %}
 
 
-<!-- ======================================
-     OFERTAS
-     ====================================== -->
-
 <div id="offers"></div>
 
 
 <div class="note">
 
 ⚠️ O cupom mostrado é uma estimativa baseada
-nas regras públicas encontradas. A disponibilidade
-e aplicação do cupom devem ser confirmadas no
-checkout do Mercado Livre.
+nas regras públicas encontradas. A aplicação
+definitiva deve ser confirmada no checkout.
 
 </div>
 
@@ -3935,10 +3648,8 @@ checkout do Mercado Livre.
 
 <script>
 
+let currentJob = null;
 
-// ============================================================
-// DINHEIRO
-// ============================================================
 
 function money(value) {
 
@@ -3947,56 +3658,84 @@ function money(value) {
     ).toLocaleString(
         "pt-BR",
         {
-            style:
-                "currency",
-
-            currency:
-                "BRL"
+            style: "currency",
+            currency: "BRL"
         }
     );
 }
 
 
-// ============================================================
-// ESCAPE
-// ============================================================
-
-function escapeHtml(
-    value
-) {
+function escapeHtml(value) {
 
     return String(
         value || ""
     )
-    .replace(
-        /&/g,
-        "&amp;"
-    )
-    .replace(
-        /</g,
-        "&lt;"
-    )
-    .replace(
-        />/g,
-        "&gt;"
-    )
-    .replace(
-        /"/g,
-        "&quot;"
-    )
-    .replace(
-        /'/g,
-        "&#039;"
-    );
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 
-// ============================================================
-// START SCAN
-// ============================================================
+/* ============================================================
+   FETCH JSON SEGURO
+   ============================================================ */
 
-let currentJob = null;
+async function fetchJson(
+    url,
+    options = {}
+) {
 
+    const response =
+        await fetch(
+            url,
+            options
+        );
+
+    const text =
+        await response.text();
+
+    let data;
+
+    try {
+
+        data = JSON.parse(
+            text
+        );
+
+    } catch(error) {
+
+        throw new Error(
+            "Servidor retornou HTTP "
+            + response.status
+            + ". "
+            + text.substring(
+                0,
+                500
+            )
+        );
+    }
+
+    if (!response.ok) {
+
+        throw new Error(
+            data.error
+            ||
+            data.message
+            ||
+            "HTTP "
+            + response.status
+        );
+    }
+
+    return data;
+}
+
+
+/* ============================================================
+   START
+   ============================================================ */
 
 async function startScan() {
 
@@ -4009,8 +3748,7 @@ async function startScan() {
         return;
     }
 
-    button.disabled =
-        true;
+    button.disabled = true;
 
     button.innerText =
         "🔎 CAÇANDO...";
@@ -4028,41 +3766,28 @@ async function startScan() {
 
     try {
 
-        const response =
-            await fetch(
+        const data =
+            await fetchJson(
                 "/api/scan/start",
                 {
-                    method:
-                        "POST",
+                    method: "POST",
 
                     headers: {
                         "Content-Type":
                             "application/json"
                     },
 
-                    body:
-                        "{}"
+                    body: "{}"
                 }
             );
 
-        const data =
-            await response.json();
-
         if (!data.ok) {
 
-            document.getElementById(
-                "scanStatus"
-            ).innerText =
-                data.error ||
-                "Erro ao iniciar.";
-
-            button.disabled =
-                false;
-
-            button.innerText =
-                "🚀 CAÇAR OFERTAS";
-
-            return;
+            throw new Error(
+                data.error
+                ||
+                "Não foi possível iniciar."
+            );
         }
 
         currentJob =
@@ -4070,12 +3795,18 @@ async function startScan() {
 
         pollScan();
 
+
     } catch(error) {
+
+        console.error(
+            error
+        );
 
         document.getElementById(
             "scanStatus"
         ).innerText =
-            "Erro: " + error;
+            "Erro: "
+            + error.message;
 
         button.disabled =
             false;
@@ -4086,9 +3817,9 @@ async function startScan() {
 }
 
 
-// ============================================================
-// STATUS
-// ============================================================
+/* ============================================================
+   POLL
+   ============================================================ */
 
 async function pollScan() {
 
@@ -4098,18 +3829,14 @@ async function pollScan() {
 
     try {
 
-        const response =
-            await fetch(
+        const data =
+            await fetchJson(
                 "/api/scan/status/"
-                + currentJob
+                + encodeURIComponent(
+                    currentJob
+                )
             );
 
-        const data =
-            await response.json();
-
-        if (!data.ok) {
-            return;
-        }
 
         document.getElementById(
             "progressBar"
@@ -4118,6 +3845,7 @@ async function pollScan() {
                 data.progress || 0
             )
             + "%";
+
 
         document.getElementById(
             "scanStatus"
@@ -4137,14 +3865,11 @@ async function pollScan() {
                     "scanButton"
                 );
 
-            if (button) {
+            button.disabled =
+                false;
 
-                button.disabled =
-                    false;
-
-                button.innerText =
-                    "🚀 CAÇAR OFERTAS";
-            }
+            button.innerText =
+                "🚀 CAÇAR OFERTAS";
 
             return;
         }
@@ -4160,14 +3885,11 @@ async function pollScan() {
                     "scanButton"
                 );
 
-            if (button) {
+            button.disabled =
+                false;
 
-                button.disabled =
-                    false;
-
-                button.innerText =
-                    "🚀 CAÇAR OFERTAS";
-            }
+            button.innerText =
+                "🚀 CAÇAR OFERTAS";
 
             return;
         }
@@ -4178,31 +3900,45 @@ async function pollScan() {
             900
         );
 
+
     } catch(error) {
 
-        setTimeout(
-            pollScan,
-            1500
+        console.error(
+            error
         );
+
+        document.getElementById(
+            "scanStatus"
+        ).innerText =
+            "Erro: "
+            + error.message;
+
+        const button =
+            document.getElementById(
+                "scanButton"
+            );
+
+        button.disabled =
+            false;
+
+        button.innerText =
+            "🚀 CAÇAR OFERTAS";
     }
 }
 
 
-// ============================================================
-// CARREGAR OFERTAS
-// ============================================================
+/* ============================================================
+   OFERTAS
+   ============================================================ */
 
 async function loadOffers() {
 
     try {
 
-        const response =
-            await fetch(
+        const data =
+            await fetchJson(
                 "/api/offers"
             );
-
-        const data =
-            await response.json();
 
         if (!data.ok) {
             return;
@@ -4221,9 +3957,9 @@ async function loadOffers() {
 }
 
 
-// ============================================================
-// RENDER
-// ============================================================
+/* ============================================================
+   RENDER
+   ============================================================ */
 
 function renderOffers(
     offers
@@ -4237,14 +3973,11 @@ function renderOffers(
     container.innerHTML =
         "";
 
-    let coupons =
-        0;
+    let coupons = 0;
 
-    let totalCurrent =
-        0;
+    let totalCurrent = 0;
 
-    let totalFinal =
-        0;
+    let totalFinal = 0;
 
     const seen =
         new Set();
@@ -4267,13 +4000,11 @@ function renderOffers(
             offer.product_id
         );
 
-
         totalCurrent +=
             Number(
                 offer.current_price
                 || 0
             );
-
 
         totalFinal +=
             Number(
@@ -4281,11 +4012,9 @@ function renderOffers(
                 || 0
             );
 
-
         if (
             offer.coupon_code
         ) {
-
             coupons++;
         }
 
@@ -4299,10 +4028,6 @@ function renderOffers(
             "offer";
 
 
-        // ---------------------------------
-        // IMAGEM
-        // ---------------------------------
-
         let imageHtml = "";
 
         if (
@@ -4314,10 +4039,10 @@ function renderOffers(
 <div class="offer-image">
 
 <img
-    src="${escapeHtml(
-        offer.image_url
-    )}"
-    onerror="this.parentElement.style.display='none';"
+src="${escapeHtml(
+    offer.image_url
+)}"
+onerror="this.parentElement.style.display='none';"
 >
 
 </div>
@@ -4327,12 +4052,7 @@ function renderOffers(
         }
 
 
-        // ---------------------------------
-        // PREÇO ANTIGO
-        // ---------------------------------
-
-        let oldPrice =
-            "";
+        let oldPrice = "";
 
         if (
             offer.original_price
@@ -4364,12 +4084,7 @@ ${money(
         }
 
 
-        // ---------------------------------
-        // CUPOM
-        // ---------------------------------
-
-        let couponHtml =
-            "";
+        let couponHtml = "";
 
         if (
             offer.coupon_code
@@ -4390,7 +4105,6 @@ ${escapeHtml(
 
 </div>
 
-
 <div class="coupon-saving">
 
 Economia estimada:
@@ -4401,7 +4115,6 @@ ${money(
 </strong>
 
 </div>
-
 
 <div class="coupon-status">
 CUPOM ESTIMADO
@@ -4414,12 +4127,9 @@ CUPOM ESTIMADO
         }
 
 
-        // ---------------------------------
-        // LOJA
-        // ---------------------------------
-
         let storeText =
             "🏪 Loja no MELI!";
+
 
         if (
             offer.official_store
@@ -4438,21 +4148,20 @@ CUPOM ESTIMADO
                     offer.seller_name
                 )
                 + " no MELI!";
-
         }
 
 
-        // ---------------------------------
-        // CARD
-        // ---------------------------------
+        const productId =
+            String(
+                offer.product_id
+            );
+
 
         card.innerHTML = `
 
 ${imageHtml}
 
-
 <div class="offer-content">
-
 
 <div class="offer-title">
 
@@ -4462,16 +4171,11 @@ ${escapeHtml(
 
 </div>
 
-
 ${oldPrice}
 
-
 <div class="current-label">
-
 Por
-
 </div>
-
 
 <div class="final-price">
 
@@ -4481,14 +4185,11 @@ ${money(
 
 ${offer.coupon_code
     ? "<small> 🔥</small>"
-    : ""
-}
+    : ""}
 
 </div>
 
-
 ${couponHtml}
-
 
 <div class="affiliate-box">
 
@@ -4497,45 +4198,37 @@ Seu link de afiliado
 </label>
 
 <input
-    class="affiliate"
-    id="affiliate-${escapeHtml(
-        offer.product_id
-    )}"
-    placeholder="Cole aqui seu link meli.la..."
+class="affiliate"
+id="affiliate-${escapeHtml(
+    productId
+)}"
+placeholder="Cole aqui seu link meli.la..."
 >
-
 
 </div>
 
-
 <div class="actions">
 
-
 <a
-    class="btn btn-primary"
-    href="${escapeHtml(
-        offer.product_url
-    )}"
-    target="_blank"
+class="btn btn-primary"
+href="${escapeHtml(
+    offer.product_url
+)}"
+target="_blank"
 >
 🛒 Abrir produto
 </a>
 
-
 <button
-    class="btn btn-dark"
-    onclick='generateAd(
-        ${JSON.stringify(
-            offer
-        )}
-    )'
+class="btn btn-dark"
+data-product-id="${escapeHtml(
+    productId
+)}"
 >
 📢 Gerar anúncio
 </button>
 
-
 </div>
-
 
 <div class="store">
 
@@ -4543,50 +4236,76 @@ ${storeText}
 
 </div>
 
-
 <div
-    class="ad-box"
-    id="ad-${escapeHtml(
-        offer.product_id
-    )}"
+class="ad-box"
+id="ad-${escapeHtml(
+    productId
+)}"
 >
 
 <textarea
-    id="adtext-${escapeHtml(
-        offer.product_id
-    )}"
-    readonly
+id="adtext-${escapeHtml(
+    productId
+)}"
+readonly
 ></textarea>
 
-
 <button
-    class="btn btn-primary"
-    style="margin-top:8px;"
-    onclick="copyAd(
-        '${escapeHtml(
-            offer.product_id
-        )}'
-    )"
+class="btn btn-primary"
+style="margin-top:8px;"
+data-copy-id="${escapeHtml(
+    productId
+)}"
 >
 📋 Copiar anúncio
 </button>
 
 </div>
 
-
 </div>
 
 `;
+
+
+        const generateButton =
+            card.querySelector(
+                "[data-product-id]"
+            );
+
+        generateButton.addEventListener(
+            "click",
+            function() {
+
+                generateAd(
+                    offer
+                );
+
+            }
+        );
+
+
+        const copyButton =
+            card.querySelector(
+                "[data-copy-id]"
+            );
+
+        copyButton.addEventListener(
+            "click",
+            function() {
+
+                copyAd(
+                    productId
+                );
+
+            }
+        );
+
 
         container.appendChild(
             card
         );
     }
 
-
-    // =====================================
-    // ESTATÍSTICAS
-    // =====================================
 
     document.getElementById(
         "statOffers"
@@ -4640,9 +4359,9 @@ para procurar novamente.
 }
 
 
-// ============================================================
-// GERAR ANÚNCIO
-// ============================================================
+/* ============================================================
+   GERAR ANÚNCIO
+   ============================================================ */
 
 async function generateAd(
     offer
@@ -4651,8 +4370,11 @@ async function generateAd(
     const input =
         document.getElementById(
             "affiliate-"
-            + offer.product_id
+            + String(
+                offer.product_id
+            )
         );
+
 
     const affiliate =
         input
@@ -4663,7 +4385,7 @@ async function generateAd(
     if (!affiliate) {
 
         alert(
-            "Cole primeiro o seu link de afiliado."
+            "Cole primeiro seu link de afiliado."
         );
 
         if (input) {
@@ -4676,12 +4398,11 @@ async function generateAd(
 
     try {
 
-        const response =
-            await fetch(
+        const data =
+            await fetchJson(
                 "/api/generate-ad",
                 {
-                    method:
-                        "POST",
+                    method: "POST",
 
                     headers: {
                         "Content-Type":
@@ -4703,9 +4424,6 @@ async function generateAd(
                             coupon_code:
                                 offer.coupon_code,
 
-                            coupon_discount:
-                                offer.coupon_discount,
-
                             final_price:
                                 offer.final_price,
 
@@ -4722,31 +4440,31 @@ async function generateAd(
             );
 
 
-        const data =
-            await response.json();
-
-
         if (!data.ok) {
 
-            alert(
+            throw new Error(
+                data.error
+                ||
                 "Erro ao gerar anúncio."
             );
-
-            return;
         }
+
+
+        const id =
+            String(
+                offer.product_id
+            );
 
 
         const box =
             document.getElementById(
-                "ad-"
-                + offer.product_id
+                "ad-" + id
             );
 
 
         const textarea =
             document.getElementById(
-                "adtext-"
-                + offer.product_id
+                "adtext-" + id
             );
 
 
@@ -4759,25 +4477,23 @@ async function generateAd(
 
 
         box.scrollIntoView({
-            behavior:
-                "smooth",
-            block:
-                "center"
+            behavior: "smooth",
+            block: "center"
         });
 
 
     } catch(error) {
 
         alert(
-            "Erro ao gerar anúncio."
+            error.message
         );
     }
 }
 
 
-// ============================================================
-// COPIAR
-// ============================================================
+/* ============================================================
+   COPIAR
+   ============================================================ */
 
 async function copyAd(
     productId
@@ -4785,8 +4501,7 @@ async function copyAd(
 
     const textarea =
         document.getElementById(
-            "adtext-"
-            + productId
+            "adtext-" + productId
         );
 
     if (!textarea) {
@@ -4819,9 +4534,9 @@ async function copyAd(
 }
 
 
-// ============================================================
-// CARREGAR AO ABRIR
-// ============================================================
+/* ============================================================
+   CARREGAR
+   ============================================================ */
 
 loadOffers();
 
