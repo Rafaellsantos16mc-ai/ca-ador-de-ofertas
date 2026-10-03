@@ -1196,8 +1196,9 @@ def run_caca_job(job_id, category=None):
             # Um ciclo inicial enxuto. Novos ciclos podem atualizar novamente.
             queries = [q for qs in CATALOG.values() for q in qs][:18]
 
-        update_job(job_id, progress=15, message="🛒 Consultando Mercado Livre...")
+        update_job(job_id, progress=20, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
         result = scan_queries(queries)
+        update_job(job_id, progress=90, message="📊 Organizando os melhores produtos...")
 
         update_job(
             job_id,
@@ -1223,7 +1224,14 @@ def api_buscar():
 @app.route("/api/cacar")
 def api_cacar():
     categoria=request.args.get("categoria","").strip() or None
-    return jsonify(json_safe(auto_scan(categoria, request.args.get("desconto",0))))
+    job_id=create_job()
+    thread=threading.Thread(target=run_caca_job, args=(job_id, categoria), daemon=True)
+    thread.start()
+    return jsonify({"ok":True,"job_id":job_id,"status":"queued"})
+
+@app.route("/api/cacar/status/<job_id>")
+def api_cacar_status(job_id):
+    return jsonify(json_safe(get_job(job_id)))
 
 @app.route("/api/cupons")
 def api_cupons():
@@ -1328,11 +1336,44 @@ button,input,select{width:100%;padding:13px;border-radius:10px;border:1px solid 
 .modelo{border:2px solid #eee;border-radius:15px;padding:14px;margin:13px 0}.mh{display:flex;gap:12px;align-items:center}.mh img{width:85px;height:85px;object-fit:contain;background:#fafafa;border-radius:10px}.title{font-size:18px;font-weight:bold}.tag{display:inline-block;background:#eef4ff;color:#3483fa;border-radius:7px;padding:5px 8px;font-size:11px;margin:3px}.seller{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:12px;margin-top:10px}.price{font-size:22px;font-weight:bold}.green{color:#00a650;font-weight:bold}.old{text-decoration:line-through;color:#777}.coupon{background:#fff8d6;border:1px dashed #d7ad00;border-radius:10px;padding:10px;margin-top:9px}.final{background:#eaf8ef;color:#008a3e;font-weight:bold;padding:9px;border-radius:8px;margin-top:7px}.ad{display:none;white-space:pre-wrap;background:#f7f7f7;padding:10px;border-radius:9px;margin-top:8px;font-size:13px}.small{font-size:12px;color:#666}.status{background:#eef8f0;padding:10px;border-radius:9px}
 </style>
 <script>
+let cacarTimer=null;
 async function cacar(cat){
- document.getElementById('status').textContent='🔄 Atualizando produtos de alto giro...';
- const url='/api/cacar'+(cat?'?categoria='+encodeURIComponent(cat):'');
- const r=await fetch(url); const data=await r.json(); render(data);
- document.getElementById('status').textContent='✅ Busca atualizada agora.';
+ const status=document.getElementById('status');
+ status.textContent='🔄 Iniciando atualização de produtos...';
+ document.getElementById('results').innerHTML='<p>🔎 Procurando produtos de alto giro...</p>';
+ if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
+ try{
+  const url='/api/cacar'+(cat?'?categoria='+encodeURIComponent(cat):'');
+  const r=await fetch(url,{cache:'no-store'});
+  const start=await r.json();
+  if(!start.job_id){throw new Error(start.erro||'Não foi possível iniciar a atualização.');}
+  acompanharCaca(start.job_id);
+ }catch(e){
+  status.textContent='❌ '+e.message;
+ }
+}
+async function acompanharCaca(jobId){
+ const status=document.getElementById('status');
+ try{
+  const r=await fetch('/api/cacar/status/'+encodeURIComponent(jobId),{cache:'no-store'});
+  const job=await r.json();
+  status.textContent=(job.message||'🔄 Atualizando...')+' '+(job.progress||0)+'%';
+  if(job.status==='done'){
+   if(job.result) render(job.result);
+   status.textContent='✅ '+(job.message||'Produtos atualizados.');
+   cacarTimer=null;
+   return;
+  }
+  if(job.status==='error'){
+   status.textContent='❌ '+(job.error||job.message||'Erro durante a atualização.');
+   cacarTimer=null;
+   return;
+  }
+  cacarTimer=setTimeout(()=>acompanharCaca(jobId),1200);
+ }catch(e){
+  status.textContent='⚠️ Aguardando resposta do servidor...';
+  cacarTimer=setTimeout(()=>acompanharCaca(jobId),1800);
+ }
 }
 async function buscar(){
  const q=document.getElementById('q').value.trim(); if(!q)return;
