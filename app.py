@@ -18,7 +18,6 @@ from flask import (
     jsonify,
     session,
 )
-from html.parser import HTMLParser
 
 
 # ============================================================
@@ -62,23 +61,31 @@ ML_REDIRECT_URI = os.getenv(
 
 SEARCHES = [
     "celular",
+    "iphone",
+    "samsung",
+    "xiaomi",
+    "motorola",
     "notebook",
     "smart tv",
+    "televisao",
+    "monitor",
     "fone bluetooth",
     "air fryer",
-    "máquina de lavar",
-    "microondas",
     "geladeira",
-    "monitor",
-    "smartwatch",
-    "caixa de som",
+    "microondas",
+    "maquina de lavar",
     "aspirador",
-    "parafusadeira",
+    "caixa de som",
+    "smartwatch",
+    "tablet",
+    "cadeira escritorio",
     "ferramentas",
-    "tênis",
+    "parafusadeira",
+    "furadeira",
+    "tenis",
     "perfume",
-    "cadeira escritório",
-    "móveis",
+    "mochila",
+    "mala",
 ]
 
 
@@ -88,19 +95,40 @@ SEARCHES = [
 
 PUBLIC_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) "
-        "AppleWebKit/605.1.15 "
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
-        "Version/18.6 Mobile/15E148 Safari/604.1"
+        "Chrome/140.0.0.0 Safari/537.36"
     ),
+
     "Accept": (
         "text/html,application/xhtml+xml,"
-        "application/xml;q=0.9,*/*;q=0.8"
+        "application/xml;q=0.9,image/avif,"
+        "image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": "pt-BR,pt;q=0.9",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
+
+    "Accept-Language":
+        "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+
+    "Cache-Control":
+        "no-cache",
+
+    "Pragma":
+        "no-cache",
+
+    "Upgrade-Insecure-Requests":
+        "1",
 }
+
+
+# ============================================================
+# PÁGINAS PÚBLICAS
+# ============================================================
+
+COUPON_HUBS = [
+    "https://www.mercadolivre.com.br/l/descontaco-cupons",
+    "https://www.mercadolivre.com.br/l/promocoes",
+]
 
 
 # ============================================================
@@ -108,8 +136,13 @@ PUBLIC_HEADERS = {
 # ============================================================
 
 def db():
-    conn = sqlite3.connect(DB_FILE)
+
+    conn = sqlite3.connect(
+        DB_FILE
+    )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
@@ -155,6 +188,11 @@ def clean_text(value):
         str(value)
     )
 
+    value = value.replace(
+        "\xa0",
+        " "
+    )
+
     value = re.sub(
         r"\s+",
         " ",
@@ -186,13 +224,11 @@ def normalize_text(value):
         value
     )
 
-    value = re.sub(
+    return re.sub(
         r"\s+",
         " ",
         value
-    )
-
-    return value.strip()
+    ).strip()
 
 
 def parse_money(value):
@@ -225,9 +261,13 @@ def parse_money(value):
         )
 
     try:
-        return float(value)
+
+        return float(
+            value
+        )
 
     except Exception:
+
         return None
 
 
@@ -272,13 +312,13 @@ def product_key(title):
     }
 
     words = [
-        word
-        for word in text.split()
-        if word not in remove
+        x
+        for x in text.split()
+        if x not in remove
     ]
 
     return " ".join(
-        words[:35]
+        words[:40]
     )
 
 
@@ -288,7 +328,7 @@ def extract_mlb_id(url):
         return None
 
     match = re.search(
-        r"MLB[-_]?(\d{6,})",
+        r"\bMLB[-_]?(\d{6,})\b",
         str(url).upper()
     )
 
@@ -317,7 +357,9 @@ def make_code_challenge(
 ):
 
     digest = hashlib.sha256(
-        verifier.encode("ascii")
+        verifier.encode(
+            "ascii"
+        )
     ).digest()
 
     return base64.urlsafe_b64encode(
@@ -356,25 +398,30 @@ def save_auth(data):
             data.get(
                 "access_token"
             ),
+
             data.get(
                 "refresh_token"
             ),
+
             int(
                 data.get(
                     "expires_at",
                     now_ts() + 21600
                 )
             ),
+
             str(
                 data.get(
                     "user_id",
                     ""
                 )
             ),
+
             data.get(
                 "nickname",
                 ""
             ),
+
             now_ts(),
         )
     )
@@ -422,6 +469,7 @@ def refresh_ml_token():
 
         response = requests.post(
             ML_TOKEN_URL,
+
             data={
                 "grant_type":
                     "refresh_token",
@@ -435,6 +483,7 @@ def refresh_ml_token():
                 "refresh_token":
                     refresh_token,
             },
+
             timeout=30,
         )
 
@@ -509,9 +558,9 @@ def get_access_token():
 
     if expires_at <= now_ts() + 120:
 
-        if refresh_ml_token():
+        refresh_ml_token()
 
-            row = get_auth()
+        row = get_auth()
 
     if not row:
         return None
@@ -577,6 +626,7 @@ def ml_get(
                 )
 
         try:
+
             data = response.json()
 
         except Exception:
@@ -597,7 +647,7 @@ def ml_get(
 
 
 # ============================================================
-# LOGIN MERCADO LIVRE
+# LOGIN
 # ============================================================
 
 @app.route(
@@ -726,6 +776,7 @@ def mercadolivre_callback():
 
         response = requests.post(
             ML_TOKEN_URL,
+
             data={
                 "grant_type":
                     "authorization_code",
@@ -745,6 +796,7 @@ def mercadolivre_callback():
                 "code_verifier":
                     verifier,
             },
+
             timeout=30,
         )
 
@@ -776,10 +828,12 @@ def mercadolivre_callback():
 
         user_response = requests.get(
             ML_API + "/users/me",
+
             headers={
                 "Authorization":
                     f"Bearer {access_token}"
             },
+
             timeout=30,
         )
 
@@ -870,51 +924,8 @@ def mercadolivre_reconnect():
 
 
 # ============================================================
-# CATALOGO
+# PRODUTO DO CATÁLOGO
 # ============================================================
-
-def search_products(
-    query,
-    limit=20
-):
-
-    response, data = ml_get(
-        "/products/search",
-        params={
-            "site_id":
-                "MLB",
-
-            "q":
-                query,
-
-            "status":
-                "active",
-
-            "limit":
-                limit,
-        }
-    )
-
-    if (
-        not response
-        or response.status_code != 200
-    ):
-
-        print(
-            "[PRODUCT SEARCH ERRO]",
-            query,
-            response.status_code
-            if response
-            else None
-        )
-
-        return []
-
-    return data.get(
-        "results",
-        []
-    )
-
 
 def get_product_detail(
     product_id
@@ -934,302 +945,193 @@ def get_product_detail(
 
 
 # ============================================================
-# PARSER DE CARDS DO MERCADO LIVRE
+# DOWNLOAD PÚBLICO
 # ============================================================
 
-class ProductCardParser(
-    HTMLParser
+def fetch_public_page(
+    url
 ):
 
-    CARD_CLASSES = (
-        "poly-card",
-        "ui-search-result__wrapper",
-        "ui-search-result",
-    )
+    try:
 
-    def __init__(self):
-
-        super().__init__(
-            convert_charrefs=True
+        response = requests.get(
+            url,
+            headers=PUBLIC_HEADERS,
+            timeout=30,
+            allow_redirects=True
         )
 
-        self.depth = 0
-
-        self.cards = []
-
-        self.active_cards = []
-
-        self.active_anchor = None
-
-        self.heading_stack = []
-
-        self.active_heading = None
-
-        self.old_price_depth = 0
-
-    def handle_starttag(
-        self,
-        tag,
-        attrs
-    ):
-
-        self.depth += 1
-
-        attrs_dict = dict(
-            attrs
+        print(
+            "[PUBLIC]",
+            response.status_code,
+            len(
+                response.content
+            ),
+            url
         )
 
-        classes = (
-            attrs_dict.get(
-                "class",
-                ""
-            )
-            or ""
-        ).lower()
+        if response.status_code != 200:
 
-        is_card = any(
-            marker in classes
-            for marker in self.CARD_CLASSES
+            return {
+                "ok":
+                    False,
+
+                "status":
+                    response.status_code,
+
+                "url":
+                    response.url,
+
+                "html":
+                    response.text[:5000],
+
+                "bytes":
+                    len(
+                        response.content
+                    ),
+            }
+
+        return {
+            "ok":
+                True,
+
+            "status":
+                response.status_code,
+
+            "url":
+                response.url,
+
+            "html":
+                response.text,
+
+            "bytes":
+                len(
+                    response.content
+                ),
+        }
+
+    except Exception as e:
+
+        print(
+            "[PUBLIC ERRO]",
+            url,
+            e
         )
 
-        if is_card:
+        return {
+            "ok":
+                False,
 
-            self.active_cards.append(
-                {
-                    "start_depth":
-                        self.depth,
+            "status":
+                None,
 
-                    "text":
-                        [],
+            "url":
+                url,
 
-                    "links":
-                        [],
+            "html":
+                "",
 
-                    "headings":
-                        [],
-
-                    "old_prices":
-                        [],
-                }
-            )
-
-        if self.active_cards:
-
-            card = self.active_cards[-1]
-
-            if tag.lower() == "a":
-
-                self.active_anchor = {
-                    "href":
-                        attrs_dict.get(
-                            "href",
-                            ""
-                        ),
-
-                    "title":
-                        attrs_dict.get(
-                            "title",
-                            ""
-                        ),
-
-                    "aria":
-                        attrs_dict.get(
-                            "aria-label",
-                            ""
-                        ),
-
-                    "text":
-                        [],
-                }
-
-            if tag.lower() in (
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "h5",
-            ):
-
-                self.active_heading = {
-                    "tag":
-                        tag.lower(),
-
-                    "text":
-                        [],
-                }
-
-                self.heading_stack.append(
-                    self.active_heading
-                )
-
-            if tag.lower() in (
-                "s",
-                "del",
-            ):
-
-                self.old_price_depth += 1
-
-    def handle_endtag(
-        self,
-        tag
-    ):
-
-        tag = tag.lower()
-
-        if (
-            tag == "a"
-            and self.active_anchor
-        ):
-
-            anchor = self.active_anchor
-
-            anchor["text"] = clean_text(
-                " ".join(
-                    anchor["text"]
-                )
-            )
-
-            if self.active_cards:
-
-                self.active_cards[
-                    -1
-                ]["links"].append(
-                    anchor
-                )
-
-            self.active_anchor = None
-
-        if (
-            tag in (
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "h5",
-            )
-            and self.heading_stack
-        ):
-
-            heading = (
-                self.heading_stack.pop()
-            )
-
-            heading["text"] = clean_text(
-                " ".join(
-                    heading["text"]
-                )
-            )
-
-            if self.active_cards:
-
-                self.active_cards[
-                    -1
-                ]["headings"].append(
-                    heading
-                )
-
-            self.active_heading = (
-                self.heading_stack[-1]
-                if self.heading_stack
-                else None
-            )
-
-        if tag in (
-            "s",
-            "del",
-        ):
-
-            self.old_price_depth = max(
+            "bytes":
                 0,
-                self.old_price_depth - 1
-            )
 
-        # Fecha cards que começaram
-        # neste nível.
-        if self.active_cards:
-
-            finished = []
-
-            for index, card in enumerate(
-                self.active_cards
-            ):
-
-                if (
-                    self.depth
-                    <= card[
-                        "start_depth"
-                    ]
-                    and index
-                    == len(
-                        self.active_cards
-                    ) - 1
-                ):
-
-                    finished.append(
-                        card
-                    )
-
-            for card in finished:
-
-                self.cards.append(
-                    card
-                )
-
-                self.active_cards.pop()
-
-        self.depth = max(
-            0,
-            self.depth - 1
-        )
-
-    def handle_data(
-        self,
-        data
-    ):
-
-        if not data:
-            return
-
-        if self.active_cards:
-
-            card = self.active_cards[
-                -1
-            ]
-
-            card["text"].append(
-                data
-            )
-
-            if (
-                self.old_price_depth
-                > 0
-            ):
-
-                card[
-                    "old_prices"
-                ].append(
-                    data
-                )
-
-        if self.active_anchor:
-
-            self.active_anchor[
-                "text"
-            ].append(
-                data
-            )
-
-        if self.active_heading:
-
-            self.active_heading[
-                "text"
-            ].append(
-                data
-            )
+            "error":
+                str(e),
+        }
 
 
 # ============================================================
-# PREÇO
+# HTML -> TEXTO
+# ============================================================
+
+def html_to_lines(
+    source
+):
+
+    if not source:
+        return []
+
+    source = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        "\n",
+        source,
+        flags=re.I | re.S
+    )
+
+    source = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        "\n",
+        source,
+        flags=re.I | re.S
+    )
+
+    source = re.sub(
+        r"<noscript\b[^>]*>.*?</noscript>",
+        "\n",
+        source,
+        flags=re.I | re.S
+    )
+
+    # Mantém separação entre elementos.
+    source = re.sub(
+        r"</(?:div|li|article|section|p|h1|h2|h3|h4|h5|a|span|br)>",
+        "\n",
+        source,
+        flags=re.I
+    )
+
+    source = re.sub(
+        r"<[^>]+>",
+        " ",
+        source
+    )
+
+    source = html.unescape(
+        source
+    )
+
+    raw_lines = source.splitlines()
+
+    lines = []
+
+    for line in raw_lines:
+
+        line = clean_text(
+            line
+        )
+
+        if not line:
+            continue
+
+        # Evita linhas gigantes.
+        if len(line) > 1000:
+
+            pieces = re.split(
+                r"\s{2,}",
+                line
+            )
+
+            for piece in pieces:
+
+                piece = clean_text(
+                    piece
+                )
+
+                if piece:
+                    lines.append(
+                        piece
+                    )
+
+        else:
+
+            lines.append(
+                line
+            )
+
+    return lines
+
+
+# ============================================================
+# PREÇOS
 # ============================================================
 
 PRICE_RE = re.compile(
@@ -1255,100 +1157,14 @@ def extract_prices(
             match.group(1)
         )
 
-        if value is not None:
+        if value is None:
+            continue
 
-            result.append(
-                {
-                    "value":
-                        value,
-
-                    "start":
-                        match.start(),
-
-                    "end":
-                        match.end(),
-                }
-            )
+        result.append(
+            value
+        )
 
     return result
-
-
-def get_current_price(
-    text,
-    old_prices_text=""
-):
-
-    prices = extract_prices(
-        text
-    )
-
-    if not prices:
-        return None
-
-    old_values = []
-
-    for item in extract_prices(
-        old_prices_text
-    ):
-
-        old_values.append(
-            round(
-                item["value"],
-                2
-            )
-        )
-
-    # Remove preços riscados.
-    candidates = [
-        item
-        for item in prices
-        if round(
-            item["value"],
-            2
-        ) not in old_values
-    ]
-
-    if not candidates:
-
-        candidates = prices
-
-    # Ignora a parte de parcelamento.
-    before_installment = re.split(
-        r"\bou\s+R\$",
-        text,
-        maxsplit=1,
-        flags=re.I
-    )[0]
-
-    prices_before_installment = (
-        extract_prices(
-            before_installment
-        )
-    )
-
-    if prices_before_installment:
-
-        filtered = [
-            item
-            for item in
-            prices_before_installment
-            if round(
-                item["value"],
-                2
-            ) not in old_values
-        ]
-
-        if filtered:
-            candidates = filtered
-
-    if not candidates:
-        return None
-
-    # O primeiro preço atual,
-    # depois do preço antigo.
-    return candidates[0][
-        "value"
-    ]
 
 
 # ============================================================
@@ -1364,7 +1180,7 @@ def detect_coupon(
     )
 
     # --------------------------------------------------------
-    # CUPOM 15% OFF
+    # Cupom 15% OFF
     # --------------------------------------------------------
 
     m = re.search(
@@ -1377,25 +1193,22 @@ def detect_coupon(
 
     if m:
 
+        value = float(
+            m.group(1).replace(
+                ",",
+                "."
+            )
+        )
+
         return {
             "type":
                 "percent",
 
             "value":
-                float(
-                    m.group(1).replace(
-                        ",",
-                        "."
-                    )
-                ),
+                value,
 
             "label":
-                "Cupom "
-                + m.group(1).replace(
-                    ",",
-                    "."
-                )
-                + "% OFF",
+                f"Cupom {value:g}% OFF",
         }
 
     # --------------------------------------------------------
@@ -1412,29 +1225,26 @@ def detect_coupon(
 
     if m:
 
+        value = float(
+            m.group(1).replace(
+                ",",
+                "."
+            )
+        )
+
         return {
             "type":
                 "percent",
 
             "value":
-                float(
-                    m.group(1).replace(
-                        ",",
-                        "."
-                    )
-                ),
+                value,
 
             "label":
-                "Cupom "
-                + m.group(1).replace(
-                    ",",
-                    "."
-                )
-                + "% OFF",
+                f"Cupom {value:g}% OFF",
         }
 
     # --------------------------------------------------------
-    # CUPOM R$ XX OFF
+    # Cupom R$15 OFF
     # --------------------------------------------------------
 
     m = re.search(
@@ -1452,7 +1262,7 @@ def detect_coupon(
             m.group(1)
         )
 
-        if value:
+        if value is not None:
 
             return {
                 "type":
@@ -1462,379 +1272,154 @@ def detect_coupon(
                     value,
 
                 "label":
-                    "Cupom "
-                    + money_br(
-                        value
-                    )
-                    + " OFF",
+                    f"Cupom {money_br(value)} OFF",
+            }
+
+    # --------------------------------------------------------
+    # Cupom de R$15
+    # --------------------------------------------------------
+
+    m = re.search(
+        r"cupom.*?"
+        r"r\$\s*"
+        r"(\d+(?:[.,]\d+)?)",
+        text,
+        re.I
+    )
+
+    if m:
+
+        value = parse_money(
+            m.group(1)
+        )
+
+        if (
+            value is not None
+            and value > 0
+            and value <= 500
+        ):
+
+            return {
+                "type":
+                    "fixed",
+
+                "value":
+                    value,
+
+                "label":
+                    f"Cupom {money_br(value)} OFF",
             }
 
     return None
 
 
-def detect_coupon_final_price(
+# ============================================================
+# PREÇO FINAL EXPLÍCITO
+# ============================================================
+
+def detect_coupon_final(
     text
 ):
 
-    # Exemplos:
-    # R$1.605,60 com Cupom
-    # R$426,64 com Cupom
-
-    m = re.search(
+    patterns = [
         r"R\$\s*"
         r"(\d{1,3}(?:\.\d{3})*"
         r"(?:,\d{2})"
         r"|\d+(?:,\d{2}))"
         r"\s+com\s+cupom",
-        text,
-        re.I
-    )
 
-    if not m:
-        return None
+        r"por\s+"
+        r"R\$\s*"
+        r"(\d{1,3}(?:\.\d{3})*"
+        r"(?:,\d{2})"
+        r"|\d+(?:,\d{2}))"
+        r"\s+com\s+cupom",
+    ]
 
-    return parse_money(
-        m.group(1)
-    )
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.I
+        )
+
+        if match:
+
+            value = parse_money(
+                match.group(1)
+            )
+
+            if value is not None:
+                return value
+
+    return None
 
 
 # ============================================================
-# TÍTULO
+# CALCULO
 # ============================================================
 
-def extract_title(
-    card
+def calculate_offer(
+    price,
+    coupon,
+    explicit_final=None
 ):
 
-    headings = card.get(
-        "headings",
-        []
-    )
-
-    candidates = []
-
-    for heading in headings:
-
-        text = clean_text(
-            heading.get(
-                "text",
-                ""
-            )
-        )
-
-        if len(text) >= 10:
-
-            candidates.append(
-                text
-            )
-
-    if candidates:
-
-        candidates.sort(
-            key=len,
-            reverse=True
-        )
-
-        return candidates[0]
-
-    links = card.get(
-        "links",
-        []
-    )
-
-    for link in links:
-
-        text = clean_text(
-            link.get(
-                "text",
-                ""
-            )
-        )
-
-        if len(text) >= 15:
-
-            if "cupom" not in (
-                text.lower()
-            ):
-
-                return text
-
-    text = clean_text(
-        " ".join(
-            card.get(
-                "text",
-                []
-            )
-        )
-    )
-
-    text = re.sub(
-        r"cupom\s+\d+(?:[.,]\d+)?"
-        r"\s*%\s*off",
-        "",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"\d+(?:[.,]\d+)?"
-        r"\s*%\s*off\s+com\s+cupom",
-        "",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"r\$\s*[\d.,]+",
-        "",
-        text,
-        flags=re.I
-    )
-
-    text = clean_text(
-        text
-    )
-
-    return text[:250]
-
-
-# ============================================================
-# LINK
-# ============================================================
-
-def extract_product_url(
-    card,
-    source_url
-):
-
-    links = card.get(
-        "links",
-        []
-    )
-
-    possible = []
-
-    for link in links:
-
-        href = (
-            link.get(
-                "href",
-                ""
-            )
-            or ""
-        )
-
-        title = clean_text(
-            link.get(
-                "title",
-                ""
-            )
-        )
-
-        aria = clean_text(
-            link.get(
-                "aria",
-                ""
-            )
-        )
-
-        text = clean_text(
-            link.get(
-                "text",
-                ""
-            )
-        )
-
-        if not href:
-            continue
-
-        if href.startswith("//"):
-
-            href = (
-                "https:"
-                + href
-            )
-
-        elif href.startswith("/"):
-
-            href = urljoin(
-                source_url,
-                href
-            )
-
-        score = 0
-
-        if "MLB" in href.upper():
-            score += 10
-
-        if "mercadolivre.com.br" in (
-            href.lower()
-        ):
-            score += 5
-
-        if len(title) > 20:
-            score += 2
-
-        if len(text) > 20:
-            score += 2
-
-        if len(aria) > 20:
-            score += 2
-
-        possible.append(
-            (
-                score,
-                href
-            )
-        )
-
-    if not possible:
-        return source_url
-
-    possible.sort(
-        reverse=True
-    )
-
-    return possible[0][1]
-
-
-# ============================================================
-# PROCESSA CARD
-# ============================================================
-
-def process_card(
-    card,
-    source_url
-):
-
-    text = clean_text(
-        " ".join(
-            card.get(
-                "text",
-                []
-            )
-        )
-    )
-
-    if "cupom" not in (
-        text.lower()
+    if not valid_price(
+        price
     ):
         return None
-
-    coupon = detect_coupon(
-        text
-    )
 
     if not coupon:
         return None
 
-    old_prices_text = clean_text(
-        " ".join(
-            card.get(
-                "old_prices",
-                []
-            )
-        )
-    )
-
-    base_price = get_current_price(
-        text,
-        old_prices_text
-    )
-
-    if not valid_price(
-        base_price
-    ):
-        return None
-
-    coupon_final = (
-        detect_coupon_final_price(
-            text
-        )
-    )
-
-    # --------------------------------------------------------
-    # Se o Mercado Livre mostra diretamente:
-    # R$ X com Cupom
-    # --------------------------------------------------------
-
     if (
-        coupon_final is not None
-        and coupon_final < base_price
+        explicit_final is not None
+        and explicit_final < price
     ):
 
         final_price = (
-            coupon_final
+            explicit_final
         )
+
+    elif coupon["type"] == "percent":
 
         discount = (
-            base_price
-            - final_price
+            price
+            * coupon["value"]
+            / 100
         )
 
-        label = (
-            f"{coupon['label']} "
-            f"→ {money_br(final_price)}"
+        final_price = (
+            price
+            - discount
         )
 
     else:
 
-        if coupon["type"] == "percent":
-
-            discount = (
-                base_price
-                * coupon["value"]
-                / 100
-            )
-
-        else:
-
-            discount = min(
-                coupon["value"],
-                base_price
-            )
+        discount = min(
+            coupon["value"],
+            price
+        )
 
         final_price = (
-            base_price
+            price
             - discount
         )
 
-        label = coupon[
-            "label"
-        ]
+    discount = (
+        price
+        - final_price
+    )
 
     if discount <= 0:
         return None
 
-    title = extract_title(
-        card
-    )
-
-    if not title:
-        return None
-
-    url = extract_product_url(
-        card,
-        source_url
-    )
-
-    product_id = extract_mlb_id(
-        url
-    )
-
-    effective_percent = (
-        discount
-        / base_price
-        * 100
-    )
-
     return {
-        "title":
-            title,
-
         "price":
             round(
-                base_price,
+                price,
                 2
             ),
 
@@ -1852,18 +1437,247 @@ def process_card(
 
         "effective_percent":
             round(
-                effective_percent,
+                discount
+                / price
+                * 100,
                 2
             ),
 
         "coupon_label":
-            label,
+            coupon["label"],
+    }
+
+
+# ============================================================
+# LINK DE PRODUTO
+# ============================================================
+
+def extract_product_link(
+    source_html,
+    nearby_text=""
+):
+
+    # Tenta primeiro MLB.
+    patterns = [
+        r'https?://[^"\']*MLB\d{6,}[^"\']*',
+        r'https?://[^"\']*mercadolivre\.com\.br/[^"\']+',
+        r'href=["\']([^"\']*MLB\d{6,}[^"\']*)["\']',
+    ]
+
+    for pattern in patterns:
+
+        matches = re.findall(
+            pattern,
+            source_html,
+            re.I
+        )
+
+        if matches:
+
+            link = (
+                matches[0]
+                if isinstance(
+                    matches[0],
+                    str
+                )
+                else matches[0][0]
+            )
+
+            if link.startswith(
+                "//"
+            ):
+
+                link = (
+                    "https:"
+                    + link
+                )
+
+            return link
+
+    return ""
+
+
+# ============================================================
+# EXTRAI OFERTAS DE UMA LINHA/BLOCO
+# ============================================================
+
+def parse_coupon_block(
+    block,
+    source_url
+):
+
+    block = clean_text(
+        block
+    )
+
+    if not block:
+        return None
+
+    coupon = detect_coupon(
+        block
+    )
+
+    if not coupon:
+        return None
+
+    prices = extract_prices(
+        block
+    )
+
+    if not prices:
+        return None
+
+    explicit_final = (
+        detect_coupon_final(
+            block
+        )
+    )
+
+    # --------------------------------------------------------
+    # Preço:
+    #
+    # Quando existe preço antigo + atual,
+    # usa o menor preço que faz sentido.
+    # --------------------------------------------------------
+
+    if explicit_final is not None:
+
+        # O preço antes do cupom
+        # deve ser maior que o final.
+        candidates = [
+            p
+            for p in prices
+            if p > explicit_final
+        ]
+
+        if candidates:
+
+            price = min(
+                candidates
+            )
+
+        else:
+
+            price = prices[-1]
+
+    else:
+
+        # Se houver vários preços,
+        # normalmente o último é o atual.
+        price = prices[-1]
+
+    if not valid_price(
+        price
+    ):
+        return None
+
+    offer = calculate_offer(
+        price,
+        coupon,
+        explicit_final
+    )
+
+    if not offer:
+        return None
+
+    # --------------------------------------------------------
+    # Título
+    # --------------------------------------------------------
+
+    title = block
+
+    # Remove cupom.
+    title = re.sub(
+        r"cupom\s+"
+        r"(?:r\$\s*)?"
+        r"\d+(?:[.,]\d+)?"
+        r"(?:\s*%\s*)?"
+        r"\s*off",
+        "",
+        title,
+        flags=re.I
+    )
+
+    title = re.sub(
+        r"\d+(?:[.,]\d+)?"
+        r"\s*%\s*off"
+        r"\s+com\s+cupom",
+        "",
+        title,
+        flags=re.I
+    )
+
+    # Remove preços.
+    title = re.sub(
+        r"R\$\s*"
+        r"\d{1,3}(?:\.\d{3})*"
+        r"(?:,\d{2})"
+        r"|\bR\$\s*\d+(?:,\d{2})",
+        "",
+        title,
+        flags=re.I
+    )
+
+    # Remove informações comuns.
+    title = re.sub(
+        r"\+\d[\d.,]*\s+vendidos?",
+        "",
+        title,
+        flags=re.I
+    )
+
+    title = re.sub(
+        r"\d+(?:[.,]\d+)?\s*"
+        r"(?:estrelas?|$)",
+        "",
+        title,
+        flags=re.I
+    )
+
+    title = re.sub(
+        r"chegará.*",
+        "",
+        title,
+        flags=re.I
+    )
+
+    title = re.sub(
+        r"frete grátis.*",
+        "",
+        title,
+        flags=re.I
+    )
+
+    title = clean_text(
+        title
+    )
+
+    # Tenta cortar prefixos ruins.
+    title = re.sub(
+        r"^(?:imagem|image)\s*[:\-]?\s*",
+        "",
+        title,
+        flags=re.I
+    )
+
+    if len(title) < 8:
+        return None
+
+    # Remove títulos gigantes.
+    if len(title) > 280:
+        title = title[:280]
+
+    return {
+        **offer,
+
+        "title":
+            title,
 
         "url":
-            url,
+            source_url,
 
         "product_id":
-            product_id,
+            None,
 
         "source":
             source_url,
@@ -1871,59 +1685,172 @@ def process_card(
 
 
 # ============================================================
-# FALLBACK PARA BLOCOS DE CUPOM
+# PARSER DA PÁGINA OFICIAL DE CUPONS
 # ============================================================
 
-def fallback_coupon_blocks(
+def parse_coupon_page(
     page_html,
     source_url
 ):
 
-    # Remove scripts/styles.
-    cleaned = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        page_html,
-        flags=re.I | re.S
+    lines = html_to_lines(
+        page_html
     )
 
-    cleaned = re.sub(
-        r"<style\b[^>]*>.*?</style>",
-        " ",
-        cleaned,
-        flags=re.I | re.S
+    print(
+        "[PARSER] linhas:",
+        len(lines)
     )
 
-    # Preserva separação de blocos.
-    cleaned = re.sub(
-        r"</(?:div|li|article|section|p|h1|h2|h3|h4)>",
-        "\n",
-        cleaned,
-        flags=re.I
+    coupon_indexes = []
+
+    for i, line in enumerate(
+        lines
+    ):
+
+        if "cupom" in (
+            line.lower()
+        ):
+
+            coupon_indexes.append(
+                i
+            )
+
+    print(
+        "[PARSER] linhas com cupom:",
+        len(coupon_indexes)
     )
 
-    cleaned = re.sub(
-        r"<[^>]+>",
-        " ",
-        cleaned
-    )
+    offers = []
 
-    cleaned = html.unescape(
-        cleaned
-    )
+    # --------------------------------------------------------
+    # Cada cupom normalmente pertence
+    # ao produto mais próximo.
+    # --------------------------------------------------------
 
-    lines = []
+    for index in coupon_indexes:
 
-    for line in cleaned.splitlines():
+        coupon_line = lines[
+            index
+        ]
 
-        line = clean_text(
-            line
+        # Pega contexto pequeno.
+        before = lines[
+            max(
+                0,
+                index - 5
+            ):
+            index
+        ]
+
+        after = lines[
+            index + 1:
+            min(
+                len(lines),
+                index + 5
+            )
+        ]
+
+        context = (
+            before
+            + [coupon_line]
+            + after
         )
 
-        if line:
-            lines.append(
-                line
+        block = clean_text(
+            " ".join(
+                context
             )
+        )
+
+        item = parse_coupon_block(
+            block,
+            source_url
+        )
+
+        if item:
+
+            # ------------------------------------------------
+            # O título fica melhor quando usamos
+            # a linha imediatamente anterior/posterior.
+            # ------------------------------------------------
+
+            candidates = []
+
+            for candidate in (
+                before
+                + after
+            ):
+
+                candidate = clean_text(
+                    candidate
+                )
+
+                if len(candidate) < 12:
+                    continue
+
+                if "cupom" in (
+                    candidate.lower()
+                ):
+                    continue
+
+                if "frete" in (
+                    candidate.lower()
+                ):
+                    continue
+
+                if "chegará" in (
+                    candidate.lower()
+                ):
+                    continue
+
+                if "vendidos" in (
+                    candidate.lower()
+                ):
+                    continue
+
+                if (
+                    "R$" in candidate
+                    and len(candidate) < 30
+                ):
+                    continue
+
+                candidates.append(
+                    candidate
+                )
+
+            if candidates:
+
+                # Prefere a linha mais longa
+                # que parece nome de produto.
+                candidates.sort(
+                    key=len,
+                    reverse=True
+                )
+
+                item["title"] = (
+                    candidates[0][:280]
+                )
+
+            offers.append(
+                item
+            )
+
+    return offers
+
+
+# ============================================================
+# PARSER DE LISTAGEM
+# ============================================================
+
+def parse_listing_page(
+    page_html,
+    source_url
+):
+
+    lines = html_to_lines(
+        page_html
+    )
 
     offers = []
 
@@ -1931,179 +1858,92 @@ def fallback_coupon_blocks(
         lines
     ):
 
-        if "cupom" not in (
-            line.lower()
-        ):
+        low = line.lower()
+
+        if "cupom" not in low:
             continue
 
-        # A linha normalmente contém
-        # produto + cupom + preço.
-        window_lines = lines[
-            max(0, index - 1):
-            min(
-                len(lines),
-                index + 2
-            )
-        ]
+        # ----------------------------------------------------
+        # Caso:
+        # Cupom 15% OFF Produto ... R$42
+        # ----------------------------------------------------
+
+        context = []
+
+        context.extend(
+            lines[
+                max(
+                    0,
+                    index - 2
+                ):
+                index
+            ]
+        )
+
+        context.append(
+            line
+        )
+
+        context.extend(
+            lines[
+                index + 1:
+                min(
+                    len(lines),
+                    index + 3
+                )
+            ]
+        )
 
         block = clean_text(
             " ".join(
-                window_lines
+                context
             )
         )
 
-        coupon = detect_coupon(
-            block
-        )
-
-        if not coupon:
-            continue
-
-        prices = extract_prices(
-            block
-        )
-
-        if not prices:
-            continue
-
-        # Para blocos públicos do tipo:
-        # Cupom 15% OFF Produto R$733,82
-        price = prices[-1][
-            "value"
-        ]
-
-        if not valid_price(
-            price
-        ):
-            continue
-
-        final_direct = (
-            detect_coupon_final_price(
-                block
-            )
-        )
-
-        if (
-            final_direct
-            and final_direct < price
-        ):
-
-            final_price = (
-                final_direct
-            )
-
-        elif coupon["type"] == "percent":
-
-            final_price = (
-                price
-                * (
-                    1
-                    - coupon["value"]
-                    / 100
-                )
-            )
-
-        else:
-
-            final_price = (
-                price
-                - min(
-                    coupon["value"],
-                    price
-                )
-            )
-
-        discount = (
-            price
-            - final_price
-        )
-
-        if discount <= 0:
-            continue
-
-        title = re.sub(
-            r"cupom\s+"
-            r"\d+(?:[.,]\d+)?"
-            r"\s*%\s*off",
-            "",
+        item = parse_coupon_block(
             block,
-            flags=re.I
+            source_url
         )
 
-        title = re.sub(
-            r"\d+(?:[.,]\d+)?"
-            r"\s*%\s*off\s+com\s+cupom",
-            "",
-            title,
-            flags=re.I
-        )
+        if item:
 
-        title = re.sub(
-            r"r\$\s*[\d.,]+",
-            "",
-            title,
-            flags=re.I
-        )
+            # Tenta extrair um título
+            # diretamente da linha.
+            title_line = line
 
-        title = clean_text(
-            title
-        )
+            title_line = re.sub(
+                r"cupom\s+"
+                r"(?:r\$\s*)?"
+                r"\d+(?:[.,]\d+)?"
+                r"(?:\s*%\s*)?"
+                r"\s*off",
+                "",
+                title_line,
+                flags=re.I
+            )
 
-        if len(title) < 10:
-            continue
+            title_line = clean_text(
+                title_line
+            )
 
-        offers.append(
-            {
-                "title":
-                    title[:250],
+            if (
+                len(title_line) >= 15
+                and "R$" not in title_line
+            ):
 
-                "price":
-                    round(
-                        price,
-                        2
-                    ),
+                item["title"] = (
+                    title_line[:280]
+                )
 
-                "final_price":
-                    round(
-                        final_price,
-                        2
-                    ),
-
-                "discount":
-                    round(
-                        discount,
-                        2
-                    ),
-
-                "effective_percent":
-                    round(
-                        discount
-                        / price
-                        * 100,
-                        2
-                    ),
-
-                "coupon_label":
-                    coupon[
-                        "label"
-                    ],
-
-                "url":
-                    source_url,
-
-                "product_id":
-                    None,
-
-                "source":
-                    source_url,
-            }
-        )
+            offers.append(
+                item
+            )
 
     return offers
 
 
 # ============================================================
-# EXTRATOR PRINCIPAL
+# PARSER GERAL
 # ============================================================
 
 def extract_coupon_offers(
@@ -2111,136 +1951,197 @@ def extract_coupon_offers(
     source_url
 ):
 
-    parser = ProductCardParser()
+    if not page_html:
+        return []
 
-    try:
-
-        parser.feed(
-            page_html
-        )
-
-    except Exception as e:
-
-        print(
-            "[HTML PARSER ERRO]",
-            e
-        )
-
-    offers = []
-
-    for card in parser.cards:
-
-        try:
-
-            item = process_card(
-                card,
-                source_url
-            )
-
-            if item:
-
-                offers.append(
-                    item
-                )
-
-        except Exception as e:
-
-            print(
-                "[CARD ERRO]",
-                e
-            )
-
-    # Se o layout atual não
-    # permitir detectar os cards,
-    # usa o fallback.
-    if not offers:
-
-        offers = (
-            fallback_coupon_blocks(
-                page_html,
-                source_url
-            )
-        )
-
-    return offers
-
-
-# ============================================================
-# DOWNLOAD PÁGINA PÚBLICA
-# ============================================================
-
-def fetch_public_page(
-    url
-):
-
-    try:
-
-        response = requests.get(
-            url,
-            headers=PUBLIC_HEADERS,
-            timeout=25,
-            allow_redirects=True
-        )
-
-        print(
-            "[PUBLIC]",
-            response.status_code,
-            url
-        )
-
-        if response.status_code != 200:
-
-            return None
-
-        return response.text
-
-    except Exception as e:
-
-        print(
-            "[PUBLIC ERRO]",
-            url,
-            e
-        )
-
-        return None
-
-
-# ============================================================
-# BUSCA CUPONS POR CATEGORIA
-# ============================================================
-
-def search_public_coupons(
-    query
-):
-
-    url = (
-        "https://lista.mercadolivre.com.br/"
-        + quote(
-            query.strip(),
-            safe=""
-        )
+    # Primeiro parser da listagem.
+    offers = parse_listing_page(
+        page_html,
+        source_url
     )
 
-    page = fetch_public_page(
+    # Depois parser da página oficial.
+    if not offers:
+
+        offers = parse_coupon_page(
+            page_html,
+            source_url
+        )
+
+    # --------------------------------------------------------
+    # Remove duplicados imediatamente.
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for item in offers:
+
+        key = (
+            normalize_text(
+                item.get(
+                    "title",
+                    ""
+                )
+            )
+            + "|"
+            + str(
+                item.get(
+                    "price",
+                    ""
+                )
+            )
+            + "|"
+            + str(
+                item.get(
+                    "coupon_label",
+                    ""
+                )
+            )
+        )
+
+        if key not in unique:
+
+            unique[key] = item
+
+    return list(
+        unique.values()
+    )
+
+
+# ============================================================
+# BUSCAR UMA URL
+# ============================================================
+
+def search_url(
+    url,
+    source_name
+):
+
+    result = fetch_public_page(
         url
     )
 
-    if not page:
+    if not result:
+
         return []
 
+    if not result.get(
+        "ok"
+    ):
+
+        print(
+            "[FALHA PUBLICA]",
+            source_name,
+            result.get(
+                "status"
+            )
+        )
+
+        return []
+
+    page_html = result[
+        "html"
+    ]
+
+    print(
+        "[HTML]",
+        source_name,
+        "bytes=",
+        len(page_html),
+        "cupom=",
+        page_html.lower().count(
+            "cupom"
+        )
+    )
+
     offers = extract_coupon_offers(
-        page,
+        page_html,
         url
     )
 
     print(
-        "[CUPONS]",
-        query,
-        "=>",
+        "[OFERTAS]",
+        source_name,
         len(offers)
     )
 
     return offers
+
+
+# ============================================================
+# BUSCAR TODAS
+# ============================================================
+
+def hunt_public_coupons():
+
+    all_offers = []
+
+    # --------------------------------------------------------
+    # 1. Página oficial de cupons.
+    # --------------------------------------------------------
+
+    for url in COUPON_HUBS:
+
+        try:
+
+            offers = search_url(
+                url,
+                "HUB"
+            )
+
+            all_offers.extend(
+                offers
+            )
+
+        except Exception as e:
+
+            print(
+                "[HUB ERRO]",
+                e
+            )
+
+        time.sleep(
+            0.5
+        )
+
+    # --------------------------------------------------------
+    # 2. Listagens por categoria.
+    # --------------------------------------------------------
+
+    for query in SEARCHES:
+
+        url = (
+            "https://lista.mercadolivre.com.br/"
+            + quote(
+                query,
+                safe=""
+            )
+        )
+
+        try:
+
+            offers = search_url(
+                url,
+                query
+            )
+
+            all_offers.extend(
+                offers
+            )
+
+        except Exception as e:
+
+            print(
+                "[LISTAGEM ERRO]",
+                query,
+                e
+            )
+
+        time.sleep(
+            0.25
+        )
+
+    return all_offers
 
 
 # ============================================================
@@ -2301,6 +2202,7 @@ def deduplicate_offers(
         if old is None:
 
             grouped[key] = item
+
             continue
 
         current_score = (
@@ -2359,7 +2261,7 @@ def deduplicate_offers(
 
 
 # ============================================================
-# ENRIQUECER COM CATÁLOGO
+# ENRIQUECER
 # ============================================================
 
 def enrich_catalog(
@@ -2396,7 +2298,7 @@ def enrich_catalog(
             ] = detail
 
             time.sleep(
-                0.10
+                0.1
             )
 
         if not detail:
@@ -2443,71 +2345,32 @@ def hunt_offers():
     )
 
     print(
-        "================================"
+        "=========================================="
     )
 
     print(
-        "🤑 CAÇADOR DE OFERTAS"
+        "🤑 CAÇADOR DE OFERTAS - INÍCIO"
     )
 
     print(
-        "================================"
+        "=========================================="
     )
 
-    raw_offers = []
-
-    # --------------------------------------------------------
-    # Busca pública.
-    # --------------------------------------------------------
-
-    for query in SEARCHES:
-
-        try:
-
-            offers = (
-                search_public_coupons(
-                    query
-                )
-            )
-
-            raw_offers.extend(
-                offers
-            )
-
-        except Exception as e:
-
-            print(
-                "[BUSCA ERRO]",
-                query,
-                e
-            )
-
-        time.sleep(
-            0.20
-        )
+    raw = hunt_public_coupons()
 
     print(
-        "[RAW]",
-        len(raw_offers)
+        "[TOTAL RAW]",
+        len(raw)
     )
-
-    # --------------------------------------------------------
-    # Deduplica.
-    # --------------------------------------------------------
 
     offers = deduplicate_offers(
-        raw_offers
+        raw
     )
 
     print(
-        "[ÚNICOS]",
+        "[PRODUTOS ÚNICOS]",
         len(offers)
     )
-
-    # --------------------------------------------------------
-    # Ordena pelo maior desconto
-    # real em R$.
-    # --------------------------------------------------------
 
     offers.sort(
         key=lambda x: (
@@ -2534,30 +2397,15 @@ def hunt_offers():
         )
     )
 
-    # --------------------------------------------------------
-    # Enriquecimento limitado.
-    # --------------------------------------------------------
-
     offers = enrich_catalog(
         offers[:50]
     )
 
-    # --------------------------------------------------------
-    # Limite final.
-    # --------------------------------------------------------
-
-    offers = offers[:50]
-
-    print(
-        "[FINAL]",
-        len(offers)
-    )
-
-    return offers
+    return offers[:50]
 
 
 # ============================================================
-# API STATUS
+# STATUS
 # ============================================================
 
 @app.route(
@@ -2594,7 +2442,7 @@ def api_status():
 
 
 # ============================================================
-# API HUNT
+# HUNT
 # ============================================================
 
 @app.route(
@@ -2638,7 +2486,91 @@ def api_hunt():
 
 
 # ============================================================
-# DIAGNÓSTICO
+# DEBUG PUBLICO
+# ============================================================
+
+@app.route(
+    "/api/debug-public"
+)
+def api_debug_public():
+
+    result = []
+
+    urls = [
+        COUPON_HUBS[0],
+        COUPON_HUBS[1],
+
+        "https://lista.mercadolivre.com.br/celular",
+        "https://lista.mercadolivre.com.br/notebook",
+    ]
+
+    for url in urls:
+
+        data = fetch_public_page(
+            url
+        )
+
+        if not data:
+
+            continue
+
+        html_data = data.get(
+            "html",
+            ""
+        )
+
+        result.append(
+            {
+                "url":
+                    url,
+
+                "status":
+                    data.get(
+                        "status"
+                    ),
+
+                "final_url":
+                    data.get(
+                        "url"
+                    ),
+
+                "bytes":
+                    len(html_data),
+
+                "cupom_count":
+                    html_data.lower().count(
+                        "cupom"
+                    ),
+
+                "produto_count":
+                    len(
+                        re.findall(
+                            r"MLB\d{6,}",
+                            html_data,
+                            re.I
+                        )
+                    ),
+
+                "preview":
+                    clean_text(
+                        html_data
+                    )[:2000],
+            }
+        )
+
+    return jsonify(
+        {
+            "ok":
+                True,
+
+            "results":
+                result,
+        }
+    )
+
+
+# ============================================================
+# DIAGNOSTICO ML
 # ============================================================
 
 @app.route(
@@ -2700,7 +2632,6 @@ def ml_diagnostic():
             row["expires_at"],
     }
 
-    # users/me
     response, data = ml_get(
         "/users/me"
     )
@@ -2729,9 +2660,9 @@ def ml_diagnostic():
         }
     )
 
-    # products/search
     response, data = ml_get(
         "/products/search",
+
         params={
             "site_id":
                 "MLB",
@@ -2780,10 +2711,12 @@ def ml_diagnostic():
                                 []
                             )[:1],
                     }
+
                     if isinstance(
                         data,
                         dict
                     )
+
                     else data
                 ),
         }
@@ -2848,7 +2781,7 @@ body {
 .header h1 {
     margin: 0;
 
-    font-size: 26px;
+    font-size: 27px;
 
     font-weight: 900;
 }
@@ -3396,7 +3329,17 @@ function renderOffers(
 
                 <br><br>
 
-                Tente novamente em alguns instantes.
+                Se continuar assim, abra:
+                <br><br>
+
+                <b>
+                /api/debug-public
+                </b>
+
+                <br><br>
+
+                para verificar se o Railway
+                está recebendo os cupons.
 
             </div>
         `;
@@ -3453,9 +3396,10 @@ function renderOffers(
 
 
                 <div class="warning">
-                    ⚠️ O cupom foi identificado
-                    na listagem pública.
-                    Confirme a aplicação no checkout.
+                    ⚠️ Cupom identificado
+                    na página pública.
+                    Confirme a aplicação
+                    no checkout.
                 </div>
 
 
@@ -3492,9 +3436,8 @@ async function hunt() {
     button.innerText =
         "⏳ CAÇANDO CUPONS...";
 
-
     status.innerText =
-        "Consultando produtos e cupons do Mercado Livre...";
+        "Consultando cupons e ofertas do Mercado Livre...";
 
 
     try {
@@ -3644,7 +3587,9 @@ def home():
 # HEALTH
 # ============================================================
 
-@app.route("/health")
+@app.route(
+    "/health"
+)
 def health():
 
     return jsonify(
