@@ -1,20 +1,24 @@
 import os
 import re
+import json
 import time
 import base64
 import hashlib
 import secrets
 import sqlite3
+import unicodedata
+from datetime import datetime, timedelta
 from urllib.parse import urlencode, quote_plus
 
 import requests
-
 from flask import (
     Flask,
     request,
     redirect,
     jsonify,
     render_template_string,
+    session,
+    send_file,
 )
 
 
@@ -24,7 +28,14 @@ from flask import (
 
 app = Flask(__name__)
 
-APP_NAME = "Caçador de Ofertas"
+app.secret_key = os.getenv(
+    "FLASK_SECRET_KEY",
+    "troque-esta-chave-em-producao"
+)
+
+PORT = int(os.getenv("PORT", "8080"))
+
+DB_FILE = os.getenv("DB_FILE", "ofertas.db")
 
 ML_API = "https://api.mercadolibre.com"
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
@@ -32,66 +43,83 @@ ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 
 ML_SITE = "MLB"
 
-CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
-CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
-
-REDIRECT_URI = os.getenv(
+ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
+ML_CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "").strip()
+ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
-    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback",
+    "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
 
-DB_PATH = os.getenv(
-    "DB_PATH",
-    "ofertas.db",
-)
 
-REQUEST_TIMEOUT = int(
-    os.getenv(
-        "REQUEST_TIMEOUT",
-        "20",
-    )
-)
+# ============================================================
+# CONFIGURAÇÕES
+# ============================================================
 
-MAX_RESULTS = 50
+REQUEST_TIMEOUT = 25
 
-oauth_sessions = {}
+CATEGORY_CACHE_SECONDS = 60 * 60 * 12
+
+MAX_CATEGORIES = 8
+MAX_ITEMS_PER_CATEGORY = 20
+MAX_OFFERS = 100
+
+DEFAULT_DISCOUNT = 10
+
+
+# ============================================================
+# SESSÃO HTTP
+# ============================================================
+
+http = requests.Session()
+
+http.headers.update({
+    "User-Agent": "CacadorDeOfertas/1.0",
+    "Accept": "application/json",
+})
 
 
 # ============================================================
 # BANCO
 # ============================================================
 
-def db():
-    conn = sqlite3.connect(DB_PATH)
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
+    conn = get_db()
 
-    conn = db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_tokens (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at INTEGER,
+            user_id TEXT,
+            nickname TEXT,
+            updated_at INTEGER
+        )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS ofertas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_id TEXT UNIQUE,
-            title TEXT,
-            price REAL,
-            original_price REAL,
-            discount REAL,
-            currency TEXT,
-            permalink TEXT,
-            thumbnail TEXT,
+            titulo TEXT,
+            preco REAL,
+            preco_original REAL,
+            desconto REAL,
+            url TEXT,
+            imagem TEXT,
             seller_id TEXT,
-            product_id TEXT,
-            category_id TEXT,
-            category_name TEXT,
-            source TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            categoria_id TEXT,
+            categoria_nome TEXT,
+            fonte TEXT,
+            criado_em INTEGER
         )
-        """
-    )
+    """)
 
     conn.commit()
     conn.close()
@@ -101,344 +129,749 @@ init_db()
 
 
 # ============================================================
-# TOKEN
-# ============================================================
-
-def get_saved_token():
-
-    token = (
-        os.getenv("ML_ACCESS_TOKEN")
-        or os.getenv("ML_TOKEN")
-        or os.getenv("ACCESS_TOKEN")
-    )
-
-    if token:
-        return token.strip()
-
-    return None
-
-
-def get_refresh_token():
-
-    token = (
-        os.getenv("ML_REFRESH_TOKEN")
-        or os.getenv("REFRESH_TOKEN")
-    )
-
-    if token:
-        return token.strip()
-
-    return None
-
-
-def save_token_memory(data):
-
-    if not data:
-        return
-
-    oauth_sessions["token"] = data
-
-
-def current_token():
-
-    token_data = oauth_sessions.get(
-        "token"
-    )
-
-    if isinstance(
-        token_data,
-        dict,
-    ):
-
-        token = token_data.get(
-            "access_token"
-        )
-
-        if token:
-            return token
-
-    return get_saved_token()
-
-
-def refresh_access_token():
-
-    refresh_token = get_refresh_token()
-
-    token_data = oauth_sessions.get(
-        "token"
-    )
-
-    if isinstance(
-        token_data,
-        dict,
-    ):
-
-        refresh_token = (
-            token_data.get(
-                "refresh_token"
-            )
-            or refresh_token
-        )
-
-    if not refresh_token:
-        return None
-
-    if not CLIENT_ID or not CLIENT_SECRET:
-        return None
-
-    try:
-
-        response = requests.post(
-            ML_TOKEN,
-            data={
-                "grant_type": "refresh_token",
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "refresh_token": refresh_token,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if response.status_code != 200:
-            return None
-
-        data = response.json()
-
-        save_token_memory(data)
-
-        return data.get(
-            "access_token"
-        )
-
-    except Exception:
-
-        return None
-
-
-# ============================================================
-# API GET
-# ============================================================
-
-def api_get(
-    path,
-    params=None,
-    retry=True,
-):
-
-    token = current_token()
-
-    if not token:
-
-        return {
-            "ok": False,
-            "status": 401,
-            "error": "Access token não encontrado.",
-            "data": None,
-        }
-
-    try:
-
-        response = requests.get(
-            f"{ML_API}{path}",
-            headers={
-                "Authorization": (
-                    f"Bearer {token}"
-                ),
-                "Accept": "application/json",
-                "User-Agent": (
-                    "CacadorDeOfertas/2.0"
-                ),
-            },
-            params=params or {},
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if (
-            response.status_code == 401
-            and retry
-        ):
-
-            new_token = (
-                refresh_access_token()
-            )
-
-            if new_token:
-
-                return api_get(
-                    path,
-                    params=params,
-                    retry=False,
-                )
-
-        try:
-            data = response.json()
-
-        except Exception:
-
-            data = {
-                "raw": response.text[:5000]
-            }
-
-        return {
-            "ok": response.ok,
-            "status": response.status_code,
-            "error": (
-                None
-                if response.ok
-                else data
-            ),
-            "data": data,
-        }
-
-    except Exception as e:
-
-        return {
-            "ok": False,
-            "status": 0,
-            "error": str(e),
-            "data": None,
-        }
-
-
-# ============================================================
-# PKCE
-# ============================================================
-
-def base64url(data):
-
-    return (
-        base64.urlsafe_b64encode(
-            data
-        )
-        .decode()
-        .rstrip("=")
-    )
-
-
-def create_pkce():
-
-    verifier = base64url(
-        secrets.token_bytes(32)
-    )
-
-    challenge = base64url(
-        hashlib.sha256(
-            verifier.encode()
-        ).digest()
-    )
-
-    return verifier, challenge
-
-
-# ============================================================
 # UTILITÁRIOS
 # ============================================================
 
-def normalize_query(value):
+def normalize_text(text):
+    if text is None:
+        return ""
 
-    value = str(
-        value or ""
-    ).strip()
+    text = str(text)
 
-    value = re.sub(
-        r"\s+",
-        " ",
-        value,
+    text = unicodedata.normalize(
+        "NFKD",
+        text
+    ).encode(
+        "ascii",
+        "ignore"
+    ).decode(
+        "ascii"
     )
 
-    return value[:200]
+    text = text.lower()
+
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+def normalize_query(text):
+    return normalize_text(text)
 
 
 def safe_float(value):
-
     try:
-
         if value is None:
             return None
 
         return float(value)
 
     except Exception:
-
         return None
 
 
-def calculate_discount(
-    original,
-    price,
+def now_ts():
+    return int(time.time())
+
+
+def json_safe(value):
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
+
+
+# ============================================================
+# TOKEN OAUTH
+# ============================================================
+
+def save_tokens(
+    access_token,
+    refresh_token=None,
+    expires_in=None,
+    user_id=None,
+    nickname=None
 ):
+    conn = get_db()
 
-    original = safe_float(
-        original
-    )
+    expires_at = now_ts() + int(expires_in or 0)
 
-    price = safe_float(
-        price
-    )
+    old = conn.execute(
+        "SELECT refresh_token, user_id, nickname FROM oauth_tokens WHERE id = 1"
+    ).fetchone()
 
-    if not original:
-        return None
+    if refresh_token is None and old:
+        refresh_token = old["refresh_token"]
 
-    if not price:
-        return None
+    if user_id is None and old:
+        user_id = old["user_id"]
 
-    if original <= 0:
-        return None
+    if nickname is None and old:
+        nickname = old["nickname"]
 
-    if price >= original:
-        return 0.0
-
-    return round(
-        (
-            (original - price)
-            / original
+    conn.execute("""
+        INSERT INTO oauth_tokens (
+            id,
+            access_token,
+            refresh_token,
+            expires_at,
+            user_id,
+            nickname,
+            updated_at
         )
-        * 100,
-        2,
-    )
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            access_token = excluded.access_token,
+            refresh_token = excluded.refresh_token,
+            expires_at = excluded.expires_at,
+            user_id = excluded.user_id,
+            nickname = excluded.nickname,
+            updated_at = excluded.updated_at
+    """, (
+        access_token,
+        refresh_token,
+        expires_at,
+        user_id,
+        nickname,
+        now_ts(),
+    ))
+
+    conn.commit()
+    conn.close()
 
 
-def extract_item_ids(text):
+def get_tokens():
+    conn = get_db()
 
-    if not text:
-        return []
+    row = conn.execute(
+        "SELECT * FROM oauth_tokens WHERE id = 1"
+    ).fetchone()
 
-    found = re.findall(
-        r"\bMLB[-_]?(\d{6,})\b",
-        str(text),
-        flags=re.IGNORECASE,
-    )
+    conn.close()
 
-    result = []
+    if not row:
+        return None
 
-    for number in found:
+    return dict(row)
 
-        item_id = (
-            f"MLB{number}"
+
+def refresh_access_token():
+    tokens = get_tokens()
+
+    if not tokens:
+        return None
+
+    refresh_token = tokens.get("refresh_token")
+
+    if not refresh_token:
+        return None
+
+    if not ML_CLIENT_ID or not ML_CLIENT_SECRET:
+        return None
+
+    data = {
+        "grant_type": "refresh_token",
+        "client_id": ML_CLIENT_ID,
+        "client_secret": ML_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+    }
+
+    try:
+        response = http.post(
+            ML_TOKEN,
+            data=data,
+            timeout=REQUEST_TIMEOUT,
         )
 
-        if item_id not in result:
-            result.append(
-                item_id
+    except Exception:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+
+    if response.status_code != 200:
+        return None
+
+    access_token = payload.get("access_token")
+
+    if not access_token:
+        return None
+
+    save_tokens(
+        access_token=access_token,
+        refresh_token=payload.get("refresh_token"),
+        expires_in=payload.get("expires_in", 21600),
+        user_id=tokens.get("user_id"),
+        nickname=tokens.get("nickname"),
+    )
+
+    return access_token
+
+
+def get_access_token():
+    tokens = get_tokens()
+
+    if not tokens:
+        return None
+
+    access_token = tokens.get("access_token")
+    expires_at = int(tokens.get("expires_at") or 0)
+
+    # Renova antes de expirar
+    if access_token and expires_at > now_ts() + 120:
+        return access_token
+
+    return refresh_access_token()
+
+
+# ============================================================
+# API MERCADO LIVRE
+# ============================================================
+
+def api_get(
+    path,
+    params=None,
+    retry_refresh=True,
+    timeout=REQUEST_TIMEOUT
+):
+    token = get_access_token()
+
+    if not token:
+        return {
+            "ok": False,
+            "status": 401,
+            "data": None,
+            "error": "Mercado Livre não autorizado.",
+            "url": ML_API + path,
+        }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    url = ML_API + path
+
+    try:
+        response = http.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
+
+    except requests.RequestException as e:
+        return {
+            "ok": False,
+            "status": 0,
+            "data": None,
+            "error": str(e),
+            "url": url,
+        }
+
+    if response.status_code == 401 and retry_refresh:
+        new_token = refresh_access_token()
+
+        if new_token:
+            return api_get(
+                path,
+                params=params,
+                retry_refresh=False,
+                timeout=timeout,
             )
 
-    return result
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+
+    if response.status_code >= 200 and response.status_code < 300:
+        return {
+            "ok": True,
+            "status": response.status_code,
+            "data": data,
+            "error": None,
+            "url": response.url,
+        }
+
+    error_message = None
+
+    if isinstance(data, dict):
+        error_message = (
+            data.get("message")
+            or data.get("error")
+            or data.get("cause")
+        )
+
+    if isinstance(error_message, list):
+        error_message = json.dumps(
+            error_message,
+            ensure_ascii=False
+        )
+
+    if not error_message:
+        error_message = response.text[:500]
+
+    return {
+        "ok": False,
+        "status": response.status_code,
+        "data": data,
+        "error": error_message,
+        "url": response.url,
+    }
 
 
 # ============================================================
-# CATEGORIA / DOMAIN DISCOVERY
+# OAUTH PKCE
 # ============================================================
 
-def discover_categories(query):
+def generate_code_verifier():
+    return secrets.token_urlsafe(64)[:128]
 
-    query = normalize_query(
-        query
+
+def generate_code_challenge(verifier):
+    digest = hashlib.sha256(
+        verifier.encode("ascii")
+    ).digest()
+
+    return base64.urlsafe_b64encode(
+        digest
+    ).decode("ascii").rstrip("=")
+
+
+@app.route("/mercadolivre/login")
+def mercadolivre_login():
+
+    if not ML_CLIENT_ID:
+        return """
+        <h2>ML_CLIENT_ID não configurado.</h2>
+        """
+
+    state = secrets.token_urlsafe(32)
+
+    verifier = generate_code_verifier()
+    challenge = generate_code_challenge(verifier)
+
+    session["ml_oauth_state"] = state
+    session["ml_code_verifier"] = verifier
+
+    params = {
+        "response_type": "code",
+        "client_id": ML_CLIENT_ID,
+        "redirect_uri": ML_REDIRECT_URI,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+
+    url = ML_AUTH + "?" + urlencode(params)
+
+    return redirect(url)
+
+
+@app.route("/mercadolivre/callback")
+def mercadolivre_callback():
+
+    error = request.args.get("error")
+
+    if error:
+        return jsonify({
+            "ok": False,
+            "erro": error,
+            "descricao": request.args.get("error_description"),
+        }), 400
+
+    state = request.args.get("state")
+    code = request.args.get("code")
+
+    expected_state = session.get("ml_oauth_state")
+    verifier = session.get("ml_code_verifier")
+
+    if not state or state != expected_state:
+        return jsonify({
+            "ok": False,
+            "erro": "state inválido",
+        }), 400
+
+    if not code:
+        return jsonify({
+            "ok": False,
+            "erro": "code não recebido",
+        }), 400
+
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": ML_CLIENT_ID,
+        "client_secret": ML_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": ML_REDIRECT_URI,
+        "code_verifier": verifier,
+    }
+
+    try:
+        response = http.post(
+            ML_TOKEN,
+            data=data,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "erro": str(e),
+        }), 500
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+
+    if response.status_code != 200:
+        return jsonify({
+            "ok": False,
+            "status": response.status_code,
+            "resposta": payload,
+        }), response.status_code
+
+    access_token = payload.get("access_token")
+
+    if not access_token:
+        return jsonify({
+            "ok": False,
+            "erro": "access_token não recebido",
+            "resposta": payload,
+        }), 500
+
+    save_tokens(
+        access_token=access_token,
+        refresh_token=payload.get("refresh_token"),
+        expires_in=payload.get("expires_in", 21600),
     )
 
-    if not query:
-        return []
+    # Busca usuário autorizado
+    me = api_get("/users/me")
 
-    response = api_get(
+    user_id = None
+    nickname = None
+
+    if me["ok"] and isinstance(me["data"], dict):
+        user_id = me["data"].get("id")
+        nickname = me["data"].get("nickname")
+
+        save_tokens(
+            access_token=access_token,
+            refresh_token=payload.get("refresh_token"),
+            expires_in=payload.get("expires_in", 21600),
+            user_id=user_id,
+            nickname=nickname,
+        )
+
+    session.pop("ml_oauth_state", None)
+    session.pop("ml_code_verifier", None)
+
+    return redirect("/")
+
+
+# ============================================================
+# CATEGORIAS
+# ============================================================
+
+_category_cache = {
+    "timestamp": 0,
+    "categories": None,
+    "status": None,
+    "error": None,
+}
+
+
+def load_all_categories(force=False):
+    global _category_cache
+
+    if (
+        not force
+        and _category_cache["categories"] is not None
+        and now_ts() - _category_cache["timestamp"] < CATEGORY_CACHE_SECONDS
+    ):
+        return {
+            "ok": True,
+            "status": _category_cache["status"],
+            "categories": _category_cache["categories"],
+            "error": _category_cache["error"],
+            "cached": True,
+        }
+
+    result = api_get(
+        f"/sites/{ML_SITE}/categories/all",
+        timeout=60,
+    )
+
+    if not result["ok"]:
+        _category_cache = {
+            "timestamp": now_ts(),
+            "categories": None,
+            "status": result["status"],
+            "error": result["error"],
+        }
+
+        return {
+            "ok": False,
+            "status": result["status"],
+            "categories": None,
+            "error": result["error"],
+            "cached": False,
+        }
+
+    data = result["data"]
+
+    categories = []
+
+    if isinstance(data, list):
+        categories = data
+
+    elif isinstance(data, dict):
+        if isinstance(data.get("categories"), list):
+            categories = data["categories"]
+
+        elif isinstance(data.get("results"), list):
+            categories = data["results"]
+
+    if not categories:
+        return {
+            "ok": False,
+            "status": result["status"],
+            "categories": [],
+            "error": "API retornou a árvore, mas o formato não foi reconhecido.",
+            "cached": False,
+        }
+
+    _category_cache = {
+        "timestamp": now_ts(),
+        "categories": categories,
+        "status": result["status"],
+        "error": None,
+    }
+
+    return {
+        "ok": True,
+        "status": result["status"],
+        "categories": categories,
+        "error": None,
+        "cached": False,
+    }
+
+
+def flatten_categories(data):
+    """
+    Aceita tanto árvore aninhada quanto lista plana.
+    """
+
+    output = []
+    seen = set()
+
+    def walk(node, parents=None):
+
+        if parents is None:
+            parents = []
+
+        if isinstance(node, list):
+            for child in node:
+                walk(child, parents)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        category_id = node.get("id")
+        name = node.get("name")
+
+        if category_id and name:
+
+            path = parents + [{
+                "id": category_id,
+                "name": name,
+            }]
+
+            children = node.get("children_categories")
+
+            if not isinstance(children, list):
+                children = []
+
+            record = {
+                "id": category_id,
+                "name": name,
+                "path": path,
+                "children": len(children),
+                "leaf": len(children) == 0,
+                "total_items": node.get(
+                    "total_items_in_this_category"
+                ),
+            }
+
+            if category_id not in seen:
+                seen.add(category_id)
+                output.append(record)
+
+            for child in children:
+                walk(child, path)
+
+        else:
+            children = node.get("children_categories")
+
+            if isinstance(children, list):
+                for child in children:
+                    walk(child, parents)
+
+    walk(data)
+
+    return output
+
+
+def category_score(category, query):
+    query_norm = normalize_text(query)
+
+    if not query_norm:
+        return 0
+
+    query_tokens = set(query_norm.split())
+
+    name_norm = normalize_text(
+        category.get("name", "")
+    )
+
+    path_names = " ".join(
+        normalize_text(x.get("name", ""))
+        for x in category.get("path", [])
+    )
+
+    full_text = f"{name_norm} {path_names}"
+
+    score = 0
+
+    # Nome contém a expressão completa
+    if query_norm in name_norm:
+        score += 100
+
+    # Nome contém expressão completa no caminho
+    if query_norm in path_names:
+        score += 50
+
+    name_tokens = set(name_norm.split())
+
+    overlap = query_tokens.intersection(name_tokens)
+
+    score += len(overlap) * 25
+
+    # Também procura os termos no caminho
+    path_tokens = set(full_text.split())
+
+    score += len(query_tokens.intersection(path_tokens)) * 8
+
+    # Categoria folha é importante para highlights
+    if category.get("leaf"):
+        score += 30
+
+    # Categorias com produtos têm prioridade
+    total_items = safe_float(
+        category.get("total_items")
+    )
+
+    if total_items:
+        if total_items > 100:
+            score += 5
+
+    # Penaliza categorias genéricas demais
+    generic = {
+        "outros",
+        "diversos",
+        "servicos",
+        "servicos diversos",
+    }
+
+    if name_norm in generic:
+        score -= 50
+
+    return score
+
+
+def discover_categories_from_tree(query, limit=8):
+    result = load_all_categories()
+
+    if not result["ok"]:
+        return {
+            "ok": False,
+            "status": result["status"],
+            "error": result["error"],
+            "categories": [],
+        }
+
+    flat = flatten_categories(
+        result["categories"]
+    )
+
+    scored = []
+
+    for category in flat:
+
+        score = category_score(
+            category,
+            query
+        )
+
+        if score <= 0:
+            continue
+
+        scored.append({
+            "id": category["id"],
+            "name": category["name"],
+            "score": score,
+            "leaf": category["leaf"],
+            "children": category["children"],
+            "total_items": category["total_items"],
+            "path": category["path"],
+            "source": "category_tree",
+        })
+
+    scored.sort(
+        key=lambda x: (
+            -x["score"],
+            not x["leaf"],
+            -(safe_float(x["total_items"]) or 0),
+        )
+    )
+
+    return {
+        "ok": True,
+        "status": 200,
+        "error": None,
+        "categories": scored[:limit],
+    }
+
+
+# ============================================================
+# PREDITOR + FALLBACK DE CATEGORIAS
+# ============================================================
+
+def discover_categories(query, max_results=MAX_CATEGORIES):
+    query = normalize_query(query)
+
+    if not query:
+        return {
+            "categories": [],
+            "attempts": [],
+        }
+
+    attempts = []
+    categories = []
+    seen = set()
+
+    # --------------------------------------------------------
+    # 1. Preditor oficial
+    # --------------------------------------------------------
+
+    predictor = api_get(
         f"/sites/{ML_SITE}/domain_discovery/search",
         params={
             "q": query,
@@ -446,157 +879,340 @@ def discover_categories(query):
         },
     )
 
-    if not response["ok"]:
+    predictor_total = 0
 
-        return []
-
-    data = response["data"]
-
-    if not isinstance(
-        data,
-        list,
+    if predictor["ok"] and isinstance(
+        predictor["data"],
+        list
     ):
 
-        return []
-
-    categories = []
-
-    seen = set()
-
-    for item in data:
-
-        if not isinstance(
-            item,
-            dict,
-        ):
-            continue
-
-        category_id = item.get(
-            "category_id"
+        predictor_total = len(
+            predictor["data"]
         )
 
-        category_name = item.get(
-            "category_name"
+        for item in predictor["data"]:
+
+            category_id = item.get(
+                "category_id"
+            )
+
+            category_name = item.get(
+                "category_name"
+            )
+
+            if not category_id:
+                continue
+
+            if category_id in seen:
+                continue
+
+            seen.add(category_id)
+
+            categories.append({
+                "id": category_id,
+                "name": category_name,
+                "score": 1000 - len(categories),
+                "leaf": None,
+                "children": None,
+                "total_items": None,
+                "path": [],
+                "source": "domain_discovery",
+                "domain_id": item.get("domain_id"),
+                "domain_name": item.get("domain_name"),
+            })
+
+    attempts.append({
+        "metodo": "domain_discovery",
+        "q": query,
+        "status": predictor["status"],
+        "total": predictor_total,
+        "erro": predictor["error"],
+    })
+
+    # --------------------------------------------------------
+    # 2. Fallback árvore completa
+    # --------------------------------------------------------
+
+    if len(categories) < max_results:
+
+        tree = discover_categories_from_tree(
+            query,
+            limit=max_results,
         )
 
-        domain_id = item.get(
-            "domain_id"
-        )
-
-        if not category_id:
-            continue
-
-        if category_id in seen:
-            continue
-
-        seen.add(
-            category_id
-        )
-
-        categories.append({
-            "category_id": category_id,
-            "category_name": (
-                category_name
-                or category_id
-            ),
-            "domain_id": domain_id,
-            "domain_name": item.get(
-                "domain_name"
-            ),
-            "attributes": (
-                item.get(
-                    "attributes"
-                )
-                or []
-            ),
+        attempts.append({
+            "metodo": "category_tree",
+            "q": query,
+            "status": tree["status"],
+            "total": len(tree["categories"]),
+            "erro": tree["error"],
         })
 
-    return categories
+        if tree["ok"]:
 
+            for item in tree["categories"]:
 
-# ============================================================
-# MAIS VENDIDOS / HIGHLIGHTS
-# ============================================================
+                category_id = item["id"]
 
-def get_highlights(
-    category_id,
-):
+                if category_id in seen:
+                    continue
 
-    response = api_get(
-        f"/highlights/{ML_SITE}/category/{quote_plus(category_id)}"
-    )
+                seen.add(category_id)
 
-    if not response["ok"]:
+                categories.append(item)
 
-        return {
-            "ok": False,
-            "status": response["status"],
-            "error": response["error"],
-            "content": [],
-        }
-
-    data = (
-        response["data"]
-        or {}
-    )
-
-    content = data.get(
-        "content",
-        [],
-    )
-
-    if not isinstance(
-        content,
-        list,
-    ):
-
-        content = []
+                if len(categories) >= max_results:
+                    break
 
     return {
-        "ok": True,
-        "status": response["status"],
-        "error": None,
-        "query_data": data.get(
-            "query_data"
-        ),
-        "content": content,
+        "categories": categories[:max_results],
+        "attempts": attempts,
     }
 
 
 # ============================================================
-# ITEM
+# HIGHLIGHTS
 # ============================================================
 
-def get_item(
-    item_id,
-):
+def get_highlights(category_id):
+    return api_get(
+        f"/highlights/{ML_SITE}/category/{quote_plus(category_id)}"
+    )
 
+
+# ============================================================
+# PRODUTOS
+# ============================================================
+
+def get_product(product_id):
+    return api_get(
+        f"/products/{quote_plus(product_id)}"
+    )
+
+
+def get_item(item_id):
     return api_get(
         f"/items/{quote_plus(item_id)}"
     )
 
 
-def get_sale_price(
-    item_id,
+# ============================================================
+# USER PRODUCT
+# ============================================================
+
+def get_user_product(user_product_id):
+    return api_get(
+        f"/user-products/{quote_plus(user_product_id)}"
+    )
+
+
+def get_items_from_user_product(
+    user_product_id,
+    seller_id=None
 ):
+    """
+    USER_PRODUCT (MLBU...) pode estar associado a um ou mais
+    ITEMs. A API oficial permite procurar os itens do vendedor
+    filtrando pelo user_product_id.
+    """
+
+    if not seller_id:
+        return {
+            "ok": False,
+            "status": 0,
+            "data": None,
+            "error": "seller_id não informado.",
+        }
 
     return api_get(
-        f"/items/{quote_plus(item_id)}/sale_price",
+        f"/users/{seller_id}/items/search",
         params={
-            "context": (
-                "channel_marketplace"
-            )
+            "user_product_id": user_product_id,
+            "limit": 50,
         },
     )
 
 
-def get_prices(
-    item_id,
-):
+# ============================================================
+# PREÇOS
+# ============================================================
 
+def get_sale_price(item_id):
+    return api_get(
+        f"/items/{quote_plus(item_id)}/sale_price",
+        params={
+            "context": "channel_marketplace",
+        },
+    )
+
+
+def get_prices(item_id):
     return api_get(
         f"/items/{quote_plus(item_id)}/prices"
     )
+
+
+# ============================================================
+# DESCONTO
+# ============================================================
+
+def calculate_discount(
+    price,
+    original_price
+):
+    price = safe_float(price)
+    original_price = safe_float(
+        original_price
+    )
+
+    if not price or not original_price:
+        return None
+
+    if original_price <= price:
+        return 0.0
+
+    discount = (
+        (original_price - price)
+        / original_price
+    ) * 100
+
+    return round(
+        discount,
+        2
+    )
+
+
+def extract_price_data(
+    item_id,
+    item_data
+):
+    """
+    Tenta obter:
+    - preço atual
+    - preço original
+    - desconto
+    """
+
+    price = None
+    original_price = None
+    source = None
+
+    # --------------------------------------------------------
+    # 1. Sale Price
+    # --------------------------------------------------------
+
+    sale = get_sale_price(item_id)
+
+    if sale["ok"] and isinstance(
+        sale["data"],
+        dict
+    ):
+
+        data = sale["data"]
+
+        price = safe_float(
+            data.get("amount")
+        )
+
+        original_price = safe_float(
+            data.get("regular_amount")
+        )
+
+        if price is not None:
+            source = "sale_price"
+
+    # --------------------------------------------------------
+    # 2. Prices
+    # --------------------------------------------------------
+
+    if price is None:
+
+        prices = get_prices(item_id)
+
+        if prices["ok"]:
+
+            data = prices["data"]
+
+            entries = []
+
+            if isinstance(data, dict):
+
+                if isinstance(
+                    data.get("prices"),
+                    list
+                ):
+                    entries = data["prices"]
+
+                elif isinstance(
+                    data.get("results"),
+                    list
+                ):
+                    entries = data["results"]
+
+            elif isinstance(data, list):
+                entries = data
+
+            for entry in entries:
+
+                amount = safe_float(
+                    entry.get("amount")
+                )
+
+                regular = safe_float(
+                    entry.get(
+                        "regular_amount"
+                    )
+                )
+
+                if amount is None:
+                    continue
+
+                price = amount
+
+                if regular:
+                    original_price = regular
+
+                source = "prices"
+
+                if original_price:
+                    break
+
+    # --------------------------------------------------------
+    # 3. Fallback /items
+    # --------------------------------------------------------
+
+    if price is None:
+        price = safe_float(
+            item_data.get("price")
+        )
+
+    if original_price is None:
+
+        original_price = safe_float(
+            item_data.get(
+                "original_price"
+            )
+        )
+
+    if original_price is None:
+
+        original_price = safe_float(
+            item_data.get(
+                "base_price"
+            )
+        )
+
+    discount = calculate_discount(
+        price,
+        original_price
+    )
+
+    return {
+        "price": price,
+        "original_price": original_price,
+        "discount": discount,
+        "source": source,
+    }
 
 
 # ============================================================
@@ -605,358 +1221,153 @@ def get_prices(
 
 def analyze_item(
     item_id,
-    source="highlights",
     category_id=None,
     category_name=None,
+    source="unknown",
+    position=None
 ):
+    if not item_id:
+        return {
+            "ok": False,
+            "reason": "item_id vazio",
+        }
 
-    item_response = get_item(
+    if not str(item_id).startswith("MLB"):
+        return {
+            "ok": False,
+            "reason": "item_id não parece ser MLB",
+        }
+
+    item_result = get_item(
         item_id
     )
 
-    if not item_response["ok"]:
-
+    if not item_result["ok"]:
         return {
             "ok": False,
             "item_id": item_id,
+            "status": item_result["status"],
+            "reason": item_result["error"],
             "source": source,
-            "error": item_response[
-                "error"
-            ],
-            "status": item_response[
-                "status"
-            ],
         }
 
-    item = (
-        item_response["data"]
-        or {}
+    item = item_result["data"]
+
+    if not isinstance(item, dict):
+        return {
+            "ok": False,
+            "item_id": item_id,
+            "reason": "Resposta /items inválida.",
+        }
+
+    prices = extract_price_data(
+        item_id,
+        item
     )
 
-    sale_response = get_sale_price(
-        item_id
-    )
+    price = prices["price"]
+    original_price = prices["original_price"]
+    discount = prices["discount"]
 
-    sale = (
-        sale_response["data"]
-        if sale_response["ok"]
-        else {}
-    )
+    if discount is None:
 
-    prices_response = get_prices(
-        item_id
-    )
-
-    prices_data = (
-        prices_response["data"]
-        if prices_response["ok"]
-        else {}
-    )
-
-    current_price = None
-    original_price = None
-
-    currency = (
-        item.get(
-            "currency_id"
-        )
-        or "BRL"
-    )
-
-    # --------------------------------------------------------
-    # SALE PRICE
-    # --------------------------------------------------------
-
-    if isinstance(
-        sale,
-        dict,
-    ):
-
-        current_price = safe_float(
-            sale.get(
-                "amount"
-            )
-        )
-
-        original_price = safe_float(
-            sale.get(
-                "regular_amount"
-            )
-        )
-
-        currency = (
-            sale.get(
-                "currency_id"
-            )
-            or currency
-        )
-
-    # --------------------------------------------------------
-    # PRICES
-    # --------------------------------------------------------
-
-    if isinstance(
-        prices_data,
-        dict,
-    ):
-
-        prices = prices_data.get(
-            "prices",
-            [],
-        )
-
-        if isinstance(
-            prices,
-            list,
-        ):
-
-            promotions = []
-            standards = []
-
-            for price in prices:
-
-                if not isinstance(
-                    price,
-                    dict,
-                ):
-                    continue
-
-                amount = safe_float(
-                    price.get(
-                        "amount"
-                    )
-                )
-
-                regular = safe_float(
-                    price.get(
-                        "regular_amount"
-                    )
-                )
-
-                price_type = str(
-                    price.get(
-                        "type"
-                    )
-                    or ""
-                ).lower()
-
-                if (
-                    price_type
-                    == "promotion"
-                ):
-
-                    promotions.append(
-                        price
-                    )
-
-                elif (
-                    price_type
-                    == "standard"
-                ):
-
-                    standards.append(
-                        price
-                    )
-
-                if (
-                    current_price
-                    is None
-                    and amount is not None
-                ):
-
-                    current_price = amount
-
-                if (
-                    original_price
-                    is None
-                    and regular is not None
-                ):
-
-                    original_price = regular
-
-                if price.get(
-                    "currency_id"
-                ):
-
-                    currency = price.get(
-                        "currency_id"
-                    )
-
-            if promotions:
-
-                promotion = (
-                    promotions[0]
-                )
-
-                amount = safe_float(
-                    promotion.get(
-                        "amount"
-                    )
-                )
-
-                regular = safe_float(
-                    promotion.get(
-                        "regular_amount"
-                    )
-                )
-
-                if amount is not None:
-                    current_price = amount
-
-                if regular is not None:
-                    original_price = regular
-
-            if (
-                original_price is None
-                and standards
-            ):
-
-                original_price = (
-                    safe_float(
-                        standards[0].get(
-                            "amount"
-                        )
-                    )
-                )
-
-    # --------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------
-
-    if current_price is None:
-
-        current_price = safe_float(
-            item.get(
-                "price"
-            )
-        )
-
-    if original_price is None:
-
-        original_price = safe_float(
-            item.get(
-                "original_price"
-            )
-        )
-
-    discount = calculate_discount(
-        original_price,
-        current_price,
-    )
+        return {
+            "ok": True,
+            "oferta": False,
+            "item_id": item_id,
+            "titulo": item.get("title"),
+            "preco": price,
+            "preco_original": original_price,
+            "desconto": None,
+            "fonte": source,
+            "position": position,
+            "motivo": "Preço original/desconto não disponível.",
+        }
 
     return {
         "ok": True,
+        "oferta": discount > 0,
         "item_id": item_id,
-        "title": item.get(
-            "title"
-        ),
-        "price": current_price,
-        "original_price": original_price,
-        "discount": discount,
-        "currency": currency,
-        "permalink": item.get(
+        "titulo": item.get("title"),
+        "preco": price,
+        "preco_original": original_price,
+        "desconto": discount,
+        "url": item.get(
             "permalink"
+        ) or (
+            f"https://www.mercadolivre.com.br/"
+            f"{item_id}"
         ),
-        "thumbnail": item.get(
+        "imagem": item.get(
             "thumbnail"
         ),
         "seller_id": item.get(
             "seller_id"
         ),
-        "product_id": (
-            item.get(
-                "catalog_product_id"
-            )
-            or item.get(
-                "product_id"
-            )
-        ),
-        "category_id": category_id,
-        "category_name": category_name,
-        "source": source,
-        "promotion": (
-            sale.get(
-                "metadata"
-            )
-            if isinstance(
-                sale,
-                dict,
-            )
-            else None
-        ),
+        "categoria_id": item.get(
+            "category_id"
+        ) or category_id,
+        "categoria_nome": category_name,
+        "fonte": source,
+        "position": position,
     }
 
 
 # ============================================================
-# PRODUTO DE CATÁLOGO
+# SALVAR OFERTA
 # ============================================================
 
-def get_product(
-    product_id,
-):
+def save_offer(offer):
+    if not offer.get("item_id"):
+        return
 
-    return api_get(
-        f"/products/{quote_plus(product_id)}"
-    )
+    conn = get_db()
 
+    conn.execute("""
+        INSERT INTO ofertas (
+            item_id,
+            titulo,
+            preco,
+            preco_original,
+            desconto,
+            url,
+            imagem,
+            seller_id,
+            categoria_id,
+            categoria_nome,
+            fonte,
+            criado_em
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_id) DO UPDATE SET
+            titulo = excluded.titulo,
+            preco = excluded.preco,
+            preco_original = excluded.preco_original,
+            desconto = excluded.desconto,
+            url = excluded.url,
+            imagem = excluded.imagem,
+            seller_id = excluded.seller_id,
+            categoria_id = excluded.categoria_id,
+            categoria_nome = excluded.categoria_nome,
+            fonte = excluded.fonte,
+            criado_em = excluded.criado_em
+    """, (
+        offer.get("item_id"),
+        offer.get("titulo"),
+        offer.get("preco"),
+        offer.get("preco_original"),
+        offer.get("desconto"),
+        offer.get("url"),
+        offer.get("imagem"),
+        offer.get("seller_id"),
+        offer.get("categoria_id"),
+        offer.get("categoria_nome"),
+        offer.get("fonte"),
+        now_ts(),
+    ))
 
-def product_to_item(
-    product_id,
-    category_id,
-    category_name,
-):
-
-    response = get_product(
-        product_id
-    )
-
-    if not response["ok"]:
-
-        return {
-            "ok": False,
-            "error": response[
-                "error"
-            ],
-        }
-
-    product = (
-        response["data"]
-        or {}
-    )
-
-    buy_box = product.get(
-        "buy_box_winner"
-    )
-
-    if not isinstance(
-        buy_box,
-        dict,
-    ):
-
-        return {
-            "ok": False,
-            "reason": "sem_buy_box",
-            "product_id": product_id,
-        }
-
-    item_id = buy_box.get(
-        "item_id"
-    )
-
-    if not item_id:
-
-        return {
-            "ok": False,
-            "reason": "sem_item_id",
-            "product_id": product_id,
-        }
-
-    return analyze_item(
-        item_id,
-        source="highlights_product_buy_box",
-        category_id=category_id,
-        category_name=category_name,
-    )
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
@@ -966,435 +1377,865 @@ def product_to_item(
 def discover_offers(
     query,
     min_discount=10,
-    max_categories=8,
+    max_categories=MAX_CATEGORIES
 ):
+    query = normalize_query(query)
 
-    query = normalize_query(
-        query
-    )
-
-    categories = (
-        discover_categories(
-            query
-        )
-    )
-
-    if not categories:
-
+    if not query:
         return {
             "ok": False,
-            "error": (
-                "Não foi possível encontrar "
-                "uma categoria para essa busca."
-            ),
-            "categories": [],
-            "results": [],
-            "stats": {},
+            "erro": "Digite um produto.",
         }
 
-    results = []
+    category_result = discover_categories(
+        query,
+        max_results=max_categories,
+    )
 
-    seen_items = set()
+    categories = category_result["categories"]
 
     stats = {
-        "categorias_encontradas": len(
-            categories
-        ),
+        "categorias_encontradas": len(categories),
         "categorias_analisadas": 0,
-        "itens_highlights": 0,
-        "produtos_highlights": 0,
-        "itens_analisados": 0,
-        "buy_box_analisadas": 0,
+        "produtos_ranking": 0,
+        "items_analisados": 0,
+        "user_products": 0,
+        "buy_box_encontradas": 0,
+        "ofertas_encontradas": 0,
         "sem_desconto": 0,
         "sem_preco_original": 0,
+        "sem_item": 0,
         "erros": 0,
-        "ofertas_encontradas": 0,
     }
 
-    category_results = []
+    offers = []
 
-    for category in categories[
-        :max_categories
-    ]:
+    seen_items = set()
+    seen_user_products = set()
 
-        category_id = category[
-            "category_id"
-        ]
+    category_debug = []
 
-        category_name = category[
-            "category_name"
-        ]
+    for category in categories:
 
-        stats[
-            "categorias_analisadas"
-        ] += 1
+        if len(offers) >= MAX_OFFERS:
+            break
 
-        highlights = get_highlights(
+        category_id = category.get(
+            "id"
+        )
+
+        category_name = category.get(
+            "name"
+        )
+
+        if not category_id:
+            continue
+
+        stats["categorias_analisadas"] += 1
+
+        highlight = get_highlights(
             category_id
         )
 
         category_info = {
-            "category_id": category_id,
-            "category_name": category_name,
-            "status": highlights.get(
-                "status"
+            "id": category_id,
+            "nome": category_name,
+            "fonte_categoria": category.get(
+                "source"
             ),
+            "status": highlight["status"],
+            "erro": highlight["error"],
             "items": 0,
-            "products": 0,
         }
 
-        if not highlights["ok"]:
-
-            stats["erros"] += 1
-
-            category_results.append(
+        if not highlight["ok"]:
+            category_debug.append(
                 category_info
             )
 
+            stats["erros"] += 1
+
             continue
 
-        content = highlights[
-            "content"
-        ]
+        data = highlight["data"]
 
-        for entry in content:
+        content = []
 
-            if not isinstance(
-                entry,
-                dict,
-            ):
-                continue
+        if isinstance(data, dict):
+            content = data.get(
+                "content"
+            ) or []
 
-            entry_id = entry.get(
-                "id"
-            )
+        if not isinstance(content, list):
+            content = []
 
-            entry_type = str(
-                entry.get(
-                    "type"
-                )
-                or ""
-            ).upper()
+        category_info["items"] = len(
+            content
+        )
 
-            if not entry_id:
-                continue
+        stats["produtos_ranking"] += len(
+            content
+        )
 
-            # ------------------------------------------------
-            # ITEM
-            # ------------------------------------------------
-
-            if entry_type == "ITEM":
-
-                category_info[
-                    "items"
-                ] += 1
-
-                stats[
-                    "itens_highlights"
-                ] += 1
-
-                item_ids = (
-                    extract_item_ids(
-                        entry_id
-                    )
-                )
-
-                if not item_ids:
-                    continue
-
-                item_id = item_ids[0]
-
-                if item_id in seen_items:
-                    continue
-
-                seen_items.add(
-                    item_id
-                )
-
-                offer = analyze_item(
-                    item_id,
-                    source="highlights_item",
-                    category_id=category_id,
-                    category_name=category_name,
-                )
-
-                if not offer.get(
-                    "ok"
-                ):
-
-                    stats["erros"] += 1
-                    continue
-
-                stats[
-                    "itens_analisados"
-                ] += 1
-
-                discount = offer.get(
-                    "discount"
-                )
-
-                if discount is None:
-
-                    stats[
-                        "sem_preco_original"
-                    ] += 1
-
-                    continue
-
-                if discount < min_discount:
-
-                    stats[
-                        "sem_desconto"
-                    ] += 1
-
-                    continue
-
-                results.append(
-                    offer
-                )
-
-            # ------------------------------------------------
-            # PRODUCT
-            # ------------------------------------------------
-
-            elif entry_type == "PRODUCT":
-
-                category_info[
-                    "products"
-                ] += 1
-
-                stats[
-                    "produtos_highlights"
-                ] += 1
-
-                product_result = (
-                    product_to_item(
-                        entry_id,
-                        category_id,
-                        category_name,
-                    )
-                )
-
-                if not product_result.get(
-                    "ok"
-                ):
-
-                    if product_result.get(
-                        "reason"
-                    ) in (
-                        "sem_buy_box",
-                        "sem_item_id",
-                    ):
-
-                        continue
-
-                    stats["erros"] += 1
-                    continue
-
-                stats[
-                    "buy_box_analisadas"
-                ] += 1
-
-                item_id = product_result.get(
-                    "item_id"
-                )
-
-                if item_id in seen_items:
-                    continue
-
-                seen_items.add(
-                    item_id
-                )
-
-                discount = (
-                    product_result.get(
-                        "discount"
-                    )
-                )
-
-                if discount is None:
-
-                    stats[
-                        "sem_preco_original"
-                    ] += 1
-
-                    continue
-
-                if discount < min_discount:
-
-                    stats[
-                        "sem_desconto"
-                    ] += 1
-
-                    continue
-
-                results.append(
-                    product_result
-                )
-
-            # ------------------------------------------------
-            # USER PRODUCT
-            # ------------------------------------------------
-
-            elif entry_type == "USER_PRODUCT":
-
-                # USER_PRODUCT não é um item MLB diretamente.
-                # Não tentamos fazer scraping ou adivinhação.
-                continue
-
-        category_results.append(
+        category_debug.append(
             category_info
         )
 
-    results.sort(
-        key=lambda x: (
-            x.get(
-                "discount"
-            )
-            if x.get(
-                "discount"
-            ) is not None
-            else -1
-        ),
-        reverse=True,
-    )
+        # ----------------------------------------------------
+        # Ranking
+        # ----------------------------------------------------
 
-    stats[
-        "ofertas_encontradas"
-    ] = len(
-        results
+        for ranked in content:
+
+            if len(offers) >= MAX_OFFERS:
+                break
+
+            ranked_id = ranked.get(
+                "id"
+            )
+
+            ranked_type = (
+                ranked.get("type")
+                or ""
+            ).upper()
+
+            position = ranked.get(
+                "position"
+            )
+
+            if not ranked_id:
+                continue
+
+            # =================================================
+            # ITEM
+            # =================================================
+
+            if ranked_type == "ITEM":
+
+                if ranked_id in seen_items:
+                    continue
+
+                seen_items.add(
+                    ranked_id
+                )
+
+                stats["items_analisados"] += 1
+
+                result = analyze_item(
+                    ranked_id,
+                    category_id=category_id,
+                    category_name=category_name,
+                    source="highlights_item",
+                    position=position,
+                )
+
+                if not result.get("ok"):
+                    stats["erros"] += 1
+                    continue
+
+                if result.get(
+                    "desconto"
+                ) is None:
+                    stats["sem_preco_original"] += 1
+                    continue
+
+                if result.get(
+                    "desconto",
+                    0
+                ) < min_discount:
+                    stats["sem_desconto"] += 1
+                    continue
+
+                offers.append(
+                    result
+                )
+
+                stats["ofertas_encontradas"] += 1
+
+                save_offer(
+                    result
+                )
+
+            # =================================================
+            # PRODUCT
+            # =================================================
+
+            elif ranked_type == "PRODUCT":
+
+                product = get_product(
+                    ranked_id
+                )
+
+                if not product["ok"]:
+                    stats["erros"] += 1
+                    continue
+
+                pdata = product["data"]
+
+                if not isinstance(
+                    pdata,
+                    dict
+                ):
+                    continue
+
+                buy_box = pdata.get(
+                    "buy_box_winner"
+                )
+
+                item_id = None
+
+                if isinstance(
+                    buy_box,
+                    dict
+                ):
+                    item_id = buy_box.get(
+                        "item_id"
+                    )
+
+                # Algumas respostas podem trazer
+                # um produto com children_ids.
+                if not item_id:
+
+                    children = (
+                        pdata.get(
+                            "children_ids"
+                        )
+                        or []
+                    )
+
+                    if isinstance(
+                        children,
+                        list
+                    ):
+
+                        for child_id in children:
+
+                            if not str(
+                                child_id
+                            ).startswith("MLB"):
+                                continue
+
+                            if child_id in seen_items:
+                                continue
+
+                            seen_items.add(
+                                child_id
+                            )
+
+                            stats[
+                                "items_analisados"
+                            ] += 1
+
+                            child_result = analyze_item(
+                                child_id,
+                                category_id=category_id,
+                                category_name=category_name,
+                                source="product_child",
+                                position=position,
+                            )
+
+                            if not child_result.get(
+                                "ok"
+                            ):
+                                stats["erros"] += 1
+                                continue
+
+                            discount = child_result.get(
+                                "desconto"
+                            )
+
+                            if discount is None:
+                                stats[
+                                    "sem_preco_original"
+                                ] += 1
+                                continue
+
+                            if discount < min_discount:
+                                stats[
+                                    "sem_desconto"
+                                ] += 1
+                                continue
+
+                            offers.append(
+                                child_result
+                            )
+
+                            stats[
+                                "ofertas_encontradas"
+                            ] += 1
+
+                            save_offer(
+                                child_result
+                            )
+
+                            break
+
+                if not item_id:
+                    stats["sem_item"] += 1
+                    continue
+
+                stats[
+                    "buy_box_encontradas"
+                ] += 1
+
+                if item_id in seen_items:
+                    continue
+
+                seen_items.add(
+                    item_id
+                )
+
+                stats[
+                    "items_analisados"
+                ] += 1
+
+                result = analyze_item(
+                    item_id,
+                    category_id=category_id,
+                    category_name=category_name,
+                    source="highlights_product_buy_box",
+                    position=position,
+                )
+
+                if not result.get("ok"):
+                    stats["erros"] += 1
+                    continue
+
+                discount = result.get(
+                    "desconto"
+                )
+
+                if discount is None:
+                    stats[
+                        "sem_preco_original"
+                    ] += 1
+                    continue
+
+                if discount < min_discount:
+                    stats[
+                        "sem_desconto"
+                    ] += 1
+                    continue
+
+                offers.append(
+                    result
+                )
+
+                stats[
+                    "ofertas_encontradas"
+                ] += 1
+
+                save_offer(
+                    result
+                )
+
+            # =================================================
+            # USER PRODUCT
+            # =================================================
+
+            elif ranked_type == "USER_PRODUCT":
+
+                if ranked_id in seen_user_products:
+                    continue
+
+                seen_user_products.add(
+                    ranked_id
+                )
+
+                stats[
+                    "user_products"
+                ] += 1
+
+                up_result = get_user_product(
+                    ranked_id
+                )
+
+                if not up_result["ok"]:
+                    stats["erros"] += 1
+                    continue
+
+                up = up_result["data"]
+
+                if not isinstance(
+                    up,
+                    dict
+                ):
+                    continue
+
+                # A resposta pode disponibilizar
+                # user_id/seller_id.
+                seller_id = (
+                    up.get("user_id")
+                    or up.get("seller_id")
+                )
+
+                if not seller_id:
+                    stats["sem_item"] += 1
+                    continue
+
+                items_result = (
+                    get_items_from_user_product(
+                        ranked_id,
+                        seller_id,
+                    )
+                )
+
+                if not items_result["ok"]:
+                    stats["erros"] += 1
+                    continue
+
+                items_data = (
+                    items_result["data"]
+                )
+
+                item_ids = []
+
+                if isinstance(
+                    items_data,
+                    dict
+                ):
+                    item_ids = (
+                        items_data.get(
+                            "results"
+                        )
+                        or []
+                    )
+
+                if not isinstance(
+                    item_ids,
+                    list
+                ):
+                    item_ids = []
+
+                if not item_ids:
+                    stats["sem_item"] += 1
+                    continue
+
+                for item_id in item_ids:
+
+                    if len(offers) >= MAX_OFFERS:
+                        break
+
+                    if item_id in seen_items:
+                        continue
+
+                    seen_items.add(
+                        item_id
+                    )
+
+                    stats[
+                        "items_analisados"
+                    ] += 1
+
+                    result = analyze_item(
+                        item_id,
+                        category_id=category_id,
+                        category_name=category_name,
+                        source="user_product_item",
+                        position=position,
+                    )
+
+                    if not result.get("ok"):
+                        stats["erros"] += 1
+                        continue
+
+                    discount = result.get(
+                        "desconto"
+                    )
+
+                    if discount is None:
+                        stats[
+                            "sem_preco_original"
+                        ] += 1
+                        continue
+
+                    if discount < min_discount:
+                        stats[
+                            "sem_desconto"
+                        ] += 1
+                        continue
+
+                    offers.append(
+                        result
+                    )
+
+                    stats[
+                        "ofertas_encontradas"
+                    ] += 1
+
+                    save_offer(
+                        result
+                    )
+
+    # Ordena maior desconto primeiro
+    offers.sort(
+        key=lambda x: (
+            -(safe_float(
+                x.get("desconto")
+            ) or 0),
+            safe_float(
+                x.get("preco")
+            ) or 999999999,
+        )
     )
 
     return {
         "ok": True,
-        "query": query,
-        "categories": categories,
-        "category_results": category_results,
-        "results": results,
+        "consulta": query,
+        "categorias": categories,
+        "tentativas_categorias": category_result[
+            "attempts"
+        ],
+        "categorias_debug": category_debug,
         "stats": stats,
+        "ofertas": offers[:MAX_OFFERS],
     }
 
 
 # ============================================================
-# SALVAR
+# ROTAS DE DIAGNÓSTICO
 # ============================================================
 
-def save_offer(
-    offer
-):
+@app.route("/mercadolivre/teste-categoria")
+def teste_categoria():
 
-    item_id = offer.get(
-        "item_id"
+    query = request.args.get(
+        "q",
+        ""
+    ).strip()
+
+    result = discover_categories(
+        query
     )
+
+    return jsonify({
+        "consulta": query,
+        "tentativas": result[
+            "attempts"
+        ],
+        "categorias": result[
+            "categories"
+        ],
+        "total": len(
+            result["categories"]
+        ),
+    })
+
+
+@app.route("/mercadolivre/teste-arvore-categorias")
+def teste_arvore_categorias():
+
+    query = request.args.get(
+        "q",
+        ""
+    ).strip()
+
+    result = discover_categories_from_tree(
+        query,
+        limit=20,
+    )
+
+    return jsonify({
+        "consulta": query,
+        "status": result["status"],
+        "erro": result["error"],
+        "categorias": result["categories"],
+        "total": len(
+            result["categories"]
+        ),
+    })
+
+
+@app.route("/mercadolivre/teste-highlights")
+def teste_highlights():
+
+    category_id = request.args.get(
+        "category_id",
+        ""
+    ).strip()
+
+    if not category_id:
+        return jsonify({
+            "ok": False,
+            "erro": "Informe ?category_id=MLB123"
+        }), 400
+
+    result = get_highlights(
+        category_id
+    )
+
+    return jsonify({
+        "ok": result["ok"],
+        "status": result["status"],
+        "erro": result["error"],
+        "url": result.get("url"),
+        "resposta": result["data"],
+    })
+
+
+@app.route("/mercadolivre/teste-busca")
+def teste_busca():
+
+    query = request.args.get(
+        "q",
+        ""
+    ).strip()
+
+    if not query:
+        return jsonify({
+            "ok": False,
+            "erro": "Informe ?q=produto"
+        }), 400
+
+    result = discover_offers(
+        query,
+        min_discount=0,
+    )
+
+    return jsonify(
+        result
+    )
+
+
+@app.route("/mercadolivre/teste-preco")
+def teste_preco():
+
+    item_id = request.args.get(
+        "item_id",
+        ""
+    ).strip()
+
+    product_id = request.args.get(
+        "product_id",
+        ""
+    ).strip()
+
+    response = {
+        "item_id": item_id or None,
+        "product_id": product_id or None,
+    }
+
+    if product_id:
+
+        product = get_product(
+            product_id
+        )
+
+        response["produto"] = {
+            "status": product["status"],
+            "erro": product["error"],
+            "data": product["data"],
+        }
+
+        if product["ok"]:
+
+            pdata = product["data"]
+
+            if isinstance(
+                pdata,
+                dict
+            ):
+
+                response["buy_box"] = (
+                    pdata.get(
+                        "buy_box_winner"
+                    )
+                )
+
+                response[
+                    "children_ids"
+                ] = pdata.get(
+                    "children_ids"
+                )
+
+        return jsonify(
+            response
+        )
 
     if not item_id:
-        return
 
-    conn = db()
+        return jsonify({
+            "ok": False,
+            "erro": "Informe ?item_id=MLB... ou ?product_id=MLB..."
+        }), 400
 
-    conn.execute(
-        """
-        INSERT INTO ofertas (
-            item_id,
-            title,
-            price,
-            original_price,
-            discount,
-            currency,
-            permalink,
-            thumbnail,
-            seller_id,
-            product_id,
-            category_id,
-            category_name,
-            source
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
-        ON CONFLICT(item_id)
-        DO UPDATE SET
-            title = excluded.title,
-            price = excluded.price,
-            original_price = excluded.original_price,
-            discount = excluded.discount,
-            currency = excluded.currency,
-            permalink = excluded.permalink,
-            thumbnail = excluded.thumbnail,
-            seller_id = excluded.seller_id,
-            product_id = excluded.product_id,
-            category_id = excluded.category_id,
-            category_name = excluded.category_name,
-            source = excluded.source
-        """,
-        (
-            offer.get(
-                "item_id"
-            ),
-            offer.get(
-                "title"
-            ),
-            offer.get(
-                "price"
-            ),
-            offer.get(
-                "original_price"
-            ),
-            offer.get(
-                "discount"
-            ),
-            offer.get(
-                "currency"
-            ),
-            offer.get(
-                "permalink"
-            ),
-            offer.get(
-                "thumbnail"
-            ),
-            str(
-                offer.get(
-                    "seller_id"
-                )
-                or ""
-            ),
-            offer.get(
-                "product_id"
-            ),
-            offer.get(
-                "category_id"
-            ),
-            offer.get(
-                "category_name"
-            ),
-            offer.get(
-                "source"
-            ),
-        ),
+    item = get_item(
+        item_id
     )
 
-    conn.commit()
-    conn.close()
+    response["item"] = {
+        "status": item["status"],
+        "erro": item["error"],
+        "data": item["data"],
+    }
+
+    sale = get_sale_price(
+        item_id
+    )
+
+    response["sale_price"] = {
+        "status": sale["status"],
+        "erro": sale["error"],
+        "data": sale["data"],
+    }
+
+    prices = get_prices(
+        item_id
+    )
+
+    response["prices"] = {
+        "status": prices["status"],
+        "erro": prices["error"],
+        "data": prices["data"],
+    }
+
+    return jsonify(
+        response
+    )
+
+
+@app.route("/mercadolivre/item")
+def teste_item():
+
+    item_id = request.args.get(
+        "item_id",
+        ""
+    ).strip()
+
+    if not item_id:
+        return jsonify({
+            "ok": False,
+            "erro": "Informe ?item_id=MLB..."
+        }), 400
+
+    result = analyze_item(
+        item_id,
+        source="teste_manual",
+    )
+
+    return jsonify(
+        result
+    )
+
+
+@app.route("/mercadolivre/diagnostico")
+def diagnostico():
+
+    token = get_access_token()
+
+    response = {
+        "app": {
+            "client_id_configurado": bool(
+                ML_CLIENT_ID
+            ),
+            "client_secret_configurado": bool(
+                ML_CLIENT_SECRET
+            ),
+            "redirect_uri": ML_REDIRECT_URI,
+            "site": ML_SITE,
+        },
+        "oauth": {
+            "token_disponivel": bool(
+                token
+            ),
+        },
+    }
+
+    if token:
+
+        me = api_get(
+            "/users/me"
+        )
+
+        response["usuario"] = {
+            "ok": me["ok"],
+            "status": me["status"],
+            "erro": me["error"],
+            "data": me["data"],
+        }
+
+    return jsonify(
+        response
+    )
 
 
 # ============================================================
-# HTML
+# BUSCA PRINCIPAL
 # ============================================================
 
-HTML = """
-<!doctype html>
+@app.route("/buscar", methods=["GET", "POST"])
+def buscar():
 
+    query = ""
+
+    if request.method == "POST":
+        query = request.form.get(
+            "q",
+            ""
+        ).strip()
+
+        min_discount = request.form.get(
+            "min_discount",
+            "10"
+        )
+
+        try:
+            min_discount = float(
+                min_discount
+            )
+        except Exception:
+            min_discount = 10
+
+    else:
+        query = request.args.get(
+            "q",
+            ""
+        ).strip()
+
+        try:
+            min_discount = float(
+                request.args.get(
+                    "min_discount",
+                    "10"
+                )
+            )
+        except Exception:
+            min_discount = 10
+
+    if not query:
+        return redirect("/")
+
+    result = discover_offers(
+        query,
+        min_discount=min_discount,
+    )
+
+    return render_template_string(
+        HTML,
+        resultado=result,
+        query=query,
+        min_discount=min_discount,
+    )
+
+
+# ============================================================
+# PÁGINA PRINCIPAL
+# ============================================================
+
+HTML = r"""
+<!DOCTYPE html>
 <html lang="pt-BR">
 
 <head>
 
-<meta charset="utf-8">
+<meta charset="UTF-8">
 
 <meta
-name="viewport"
-content="width=device-width,initial-scale=1"
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
 >
 
-<title>{{ app_name }}</title>
+<title>Caçador de Ofertas</title>
 
 <style>
 
@@ -1404,63 +2245,55 @@ content="width=device-width,initial-scale=1"
 
 body {
     margin: 0;
-    background: #f5f6f8;
-    color: #202124;
-    font-family: Arial, sans-serif;
+    background: #0f1115;
+    color: #f5f5f5;
+    font-family: Arial, Helvetica, sans-serif;
 }
 
 .container {
-    width: min(1000px, 94%);
-    margin: 25px auto 50px;
+    width: min(1100px, 94%);
+    margin: 0 auto;
+    padding: 24px 0 60px;
 }
 
-.header {
-    background: #111827;
-    color: white;
-    border-radius: 18px;
-    padding: 22px;
-    margin-bottom: 18px;
+h1 {
+    margin-bottom: 5px;
 }
 
-.header h1 {
-    margin: 0 0 8px;
-    font-size: 25px;
-}
-
-.header p {
-    margin: 0;
-    opacity: .82;
+.subtitle {
+    color: #9ca3af;
+    margin-bottom: 25px;
 }
 
 .card {
-    background: white;
-    border-radius: 18px;
-    padding: 20px;
+    background: #181b21;
+    border: 1px solid #282d36;
+    border-radius: 16px;
+    padding: 18px;
     margin-bottom: 18px;
-    box-shadow: 0 3px 15px rgba(0,0,0,.06);
 }
 
-label {
-    display: block;
-    font-weight: bold;
-    margin-bottom: 7px;
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 160px 130px;
+    gap: 10px;
 }
 
 input,
 button {
-    width: 100%;
-    padding: 14px;
-    border-radius: 11px;
-    font-size: 16px;
+    border: 0;
+    border-radius: 10px;
+    padding: 13px;
+    font-size: 15px;
 }
 
 input {
-    border: 1px solid #d7dbe2;
-    margin-bottom: 15px;
+    background: #242832;
+    color: white;
+    outline: none;
 }
 
 button {
-    border: 0;
     background: #3483fa;
     color: white;
     font-weight: bold;
@@ -1468,100 +2301,142 @@ button {
 }
 
 button:hover {
-    opacity: .92;
+    opacity: .9;
 }
 
 .stats {
     display: grid;
-    grid-template-columns:
-        repeat(auto-fit, minmax(145px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
 }
 
 .stat {
-    background: #f3f4f6;
-    border-radius: 13px;
-    padding: 14px;
+    background: #111318;
+    padding: 15px;
+    border-radius: 12px;
 }
 
 .stat strong {
     display: block;
-    font-size: 24px;
-    margin-bottom: 5px;
+    font-size: 25px;
+    margin-top: 5px;
 }
 
-.category {
-    background: #f8fafc;
-    border: 1px solid #e4e7eb;
-    padding: 12px;
-    border-radius: 11px;
-    margin-top: 8px;
+.muted {
+    color: #9ca3af;
+    font-size: 13px;
 }
 
 .offer {
-    border: 1px solid #e2e5e9;
-    border-radius: 15px;
-    padding: 15px;
-    margin-top: 12px;
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    gap: 15px;
+    align-items: center;
+    background: #111318;
+    border-radius: 14px;
+    padding: 12px;
+    margin-top: 10px;
 }
 
-.offer h3 {
-    margin: 0 0 9px;
-    font-size: 17px;
+.offer img {
+    width: 110px;
+    height: 110px;
+    object-fit: contain;
+    background: white;
+    border-radius: 10px;
 }
 
 .price {
-    font-size: 23px;
+    font-size: 22px;
     font-weight: bold;
 }
 
-.old {
+.old-price {
     color: #777;
     text-decoration: line-through;
 }
 
 .discount {
     display: inline-block;
-    margin-top: 8px;
     background: #00a650;
-    color: white;
-    border-radius: 8px;
-    padding: 5px 9px;
+    padding: 6px 9px;
+    border-radius: 7px;
     font-weight: bold;
+    margin-top: 5px;
+}
+
+.link {
+    display: inline-block;
+    margin-top: 10px;
+    color: #66a6ff;
+    text-decoration: none;
+}
+
+.category {
+    background: #111318;
+    padding: 12px;
+    border-radius: 10px;
+    margin-top: 8px;
 }
 
 .warning {
-    background: #fff7e6;
-    border: 1px solid #ffd591;
+    background: #3a2d0a;
+    border: 1px solid #69520c;
+    color: #ffd76a;
     padding: 14px;
-    border-radius: 12px;
-    margin-top: 12px;
+    border-radius: 10px;
+    margin-bottom: 15px;
 }
 
 .success {
-    background: #e9f8ef;
-    border: 1px solid #a8e0bb;
+    background: #0b3020;
+    border: 1px solid #11633d;
+    color: #79e2ad;
     padding: 14px;
-    border-radius: 12px;
-    margin-top: 12px;
+    border-radius: 10px;
+    margin-bottom: 15px;
 }
 
-.small {
-    font-size: 13px;
-    color: #666;
-    line-height: 1.5;
+.error {
+    background: #3b1418;
+    border: 1px solid #6d2028;
+    color: #ff9da6;
+    padding: 14px;
+    border-radius: 10px;
+    margin-bottom: 15px;
 }
 
-a {
-    color: #3483fa;
-    text-decoration: none;
-    font-weight: bold;
+pre {
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #cbd5e1;
+    font-size: 12px;
 }
 
-hr {
-    border: 0;
-    border-top: 1px solid #eee;
-    margin: 18px 0;
+@media (max-width: 750px) {
+
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .offer {
+        grid-template-columns: 80px 1fr;
+    }
+
+    .offer img {
+        width: 80px;
+        height: 80px;
+    }
+
+    .offer > div:last-child {
+        grid-column: 2;
+    }
+
 }
 
 </style>
@@ -1572,357 +2447,296 @@ hr {
 
 <div class="container">
 
-<div class="header">
+<h1>🛒 Caçador de Ofertas</h1>
 
-<h1>
-🛒 Caçador de Ofertas
-</h1>
-
-<p>
-Busca por categoria + Mais Vendidos + análise de preço
-</p>
-
+<div class="subtitle">
+Mercado Livre • busca automática • descontos
 </div>
-
 
 <div class="card">
 
-<form
-method="get"
-action="/buscar"
->
+<form action="/buscar" method="POST">
 
-<label>
-Produto
-</label>
+<div class="form-grid">
 
 <input
-name="q"
-placeholder="Ex.: fone bluetooth"
-value="{{ query }}"
+    type="text"
+    name="q"
+    value="{{ query or '' }}"
+    placeholder="Digite: fone, celular, air fryer, TV..."
+    required
 >
 
-<label>
-Desconto mínimo (%)
-</label>
-
 <input
-name="desconto"
-type="number"
-min="0"
-max="99"
-step="1"
-value="{{ desconto }}"
+    type="number"
+    name="min_discount"
+    value="{{ min_discount or 10 }}"
+    min="0"
+    max="99"
+    step="1"
+    placeholder="% desconto"
 >
 
 <button type="submit">
-🔎 Procurar ofertas
+    🔎 Procurar ofertas
 </button>
-
-</form>
-
-<p class="small">
-
-Exemplos:
-<strong>fone bluetooth</strong>,
-<strong>celular</strong>,
-<strong>TV</strong>,
-<strong>notebook</strong>,
-<strong>air fryer</strong>.
-
-</p>
 
 </div>
-
-
-<div class="card">
-
-<h2>
-📌 Analisar anúncio diretamente
-</h2>
-
-<p class="small">
-Cole um ou vários IDs de anúncios.
-Exemplo: MLB123456789.
-</p>
-
-<form
-method="get"
-action="/buscar"
->
-
-<input
-name="ids"
-placeholder="MLB123456789, MLB987654321"
->
-
-<input
-name="desconto"
-type="number"
-min="0"
-max="99"
-value="{{ desconto }}"
->
-
-<button type="submit">
-💰 Analisar anúncios
-</button>
 
 </form>
 
 </div>
 
 
-{% if searched %}
+{% if resultado %}
+
+{% if resultado.get("erro") %}
+
+<div class="error">
+    {{ resultado.get("erro") }}
+</div>
+
+{% endif %}
+
+
+{% if resultado.get("stats") %}
 
 <div class="card">
 
-<h2>
-📊 Resultado
-</h2>
+<h2>📊 Resultado</h2>
 
 <div class="stats">
 
 <div class="stat">
+Categorias
 <strong>
-{{ stats.get("categorias_encontradas", 0) }}
+{{ resultado.stats.categorias_encontradas }}
 </strong>
-Categorias encontradas
 </div>
 
 <div class="stat">
+Rankings
 <strong>
-{{ stats.get("categorias_analisadas", 0) }}
+{{ resultado.stats.produtos_ranking }}
 </strong>
-Categorias analisadas
 </div>
 
 <div class="stat">
-<strong>
-{{ stats.get("itens_highlights", 0) }}
-</strong>
-Itens encontrados
-</div>
-
-<div class="stat">
-<strong>
-{{ stats.get("produtos_highlights", 0) }}
-</strong>
-Produtos
-</div>
-
-<div class="stat">
-<strong>
-{{ stats.get("itens_analisados", 0) }}
-</strong>
 Itens analisados
+<strong>
+{{ resultado.stats.items_analisados }}
+</strong>
 </div>
 
 <div class="stat">
-<strong>
-{{ stats.get("ofertas_encontradas", 0) }}
-</strong>
 Ofertas
+<strong>
+{{ resultado.stats.ofertas_encontradas }}
+</strong>
+</div>
+
+</div>
+
+<br>
+
+<div class="stats">
+
+<div class="stat">
+Buy Box
+<strong>
+{{ resultado.stats.buy_box_encontradas }}
+</strong>
 </div>
 
 <div class="stat">
+User Products
 <strong>
-{{ stats.get("sem_desconto", 0) }}
+{{ resultado.stats.user_products }}
 </strong>
+</div>
+
+<div class="stat">
 Sem desconto
+<strong>
+{{ resultado.stats.sem_desconto }}
+</strong>
 </div>
 
 <div class="stat">
-<strong>
-{{ stats.get("erros", 0) }}
-</strong>
 Erros
-</div>
-
-</div>
-
-</div>
-
-
-{% if categories %}
-
-<div class="card">
-
-<h2>
-🗂️ Categorias encontradas
-</h2>
-
-{% for category in categories %}
-
-<div class="category">
-
 <strong>
-{{ category.category_name }}
+{{ resultado.stats.erros }}
 </strong>
-
-<br>
-
-<span class="small">
-{{ category.category_id }}
-
-{% if category.domain_name %}
-<br>
-Domínio: {{ category.domain_name }}
-{% endif %}
-
-</span>
-
 </div>
 
-{% endfor %}
+</div>
 
 </div>
 
 {% endif %}
 
 
-{% if category_results %}
+{% if resultado.get("ofertas") %}
 
 <div class="card">
 
-<h2>
-🏆 Rankings analisados
-</h2>
+<h2>🔥 Ofertas encontradas</h2>
 
-{% for category in category_results %}
-
-<div class="category">
-
-<strong>
-{{ category.category_name }}
-</strong>
-
-<br>
-
-<span class="small">
-
-Categoria:
-{{ category.category_id }}
-
-<br>
-
-Itens:
-{{ category.items }}
-
-&nbsp; • &nbsp;
-
-Produtos:
-{{ category.products }}
-
-</span>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-{% endif %}
-
-
-{% if warning %}
-
-<div class="card">
-
-<div class="warning">
-
-<strong>
-ℹ️ Nenhuma oferta encontrada
-</strong>
-
-<p>
-A API encontrou categorias e consultou os rankings,
-mas nenhum anúncio analisado apresentou um desconto
-igual ou superior ao limite escolhido ou o preço
-original não estava disponível para essa consulta.
-</p>
-
-</div>
-
-</div>
-
-{% endif %}
-
-{% endif %}
-
-
-{% if results %}
-
-<div class="card">
-
-<h2>
-🔥 Ofertas encontradas
-</h2>
-
-{% for item in results %}
+{% for oferta in resultado.ofertas %}
 
 <div class="offer">
 
-<h3>
-{{ item.title or item.item_id }}
-</h3>
+<div>
 
-{% if item.original_price %}
+{% if oferta.imagem %}
 
-<div class="old">
-
-R$
-{{ "%.2f"|format(item.original_price) }}
-
-</div>
-
-{% endif %}
-
-<div class="price">
-
-R$
-{{ "%.2f"|format(item.price or 0) }}
-
-</div>
-
-{% if item.discount is not none %}
-
-<div class="discount">
-
-{{ "%.1f"|format(item.discount) }}% OFF
-
-</div>
-
-{% endif %}
-
-<p class="small">
-
-ID:
-{{ item.item_id }}
-
-<br>
-
-Categoria:
-{{ item.category_name or "-" }}
-
-<br>
-
-Fonte:
-{{ item.source }}
-
-</p>
-
-{% if item.permalink %}
-
-<a
-href="{{ item.permalink }}"
-target="_blank"
-rel="noopener"
+<img
+    src="{{ oferta.imagem }}"
+    loading="lazy"
 >
 
-Abrir anúncio →
+{% endif %}
 
+</div>
+
+<div>
+
+<strong>
+{{ oferta.titulo }}
+</strong>
+
+<br><br>
+
+{% if oferta.preco_original %}
+
+<span class="old-price">
+R$ {{ "%.2f"|format(oferta.preco_original) }}
+</span>
+
+<br>
+
+{% endif %}
+
+<span class="price">
+R$ {{ "%.2f"|format(oferta.preco) }}
+</span>
+
+<br>
+
+<span class="discount">
+{{ "%.0f"|format(oferta.desconto) }}% OFF
+</span>
+
+<br>
+
+<span class="muted">
+{{ oferta.categoria_nome or "Categoria não informada" }}
+</span>
+
+<br>
+
+<a
+    class="link"
+    href="{{ oferta.url }}"
+    target="_blank"
+>
+    Ver oferta →
 </a>
+
+</div>
+
+<div>
+
+<span class="muted">
+Ranking: {{ oferta.position or "-" }}
+</span>
+
+</div>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+{% elif resultado.get("stats") %}
+
+<div class="warning">
+
+A busca encontrou produtos/rankings, mas nenhum item atingiu
+{{ min_discount }}% de desconto com preço original disponível.
+
+</div>
+
+{% endif %}
+
+
+{% if resultado.get("categorias") %}
+
+<div class="card">
+
+<h2>📂 Categorias utilizadas</h2>
+
+{% for categoria in resultado.categorias %}
+
+<div class="category">
+
+<strong>
+{{ categoria.name or "Sem nome" }}
+</strong>
+
+<br>
+
+<span class="muted">
+ID: {{ categoria.id }}
+•
+Fonte: {{ categoria.source }}
+{% if categoria.leaf %}
+•
+Categoria folha
+{% endif %}
+</span>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+{% endif %}
+
+
+{% if resultado.get("tentativas_categorias") %}
+
+<div class="card">
+
+<h2>🔧 Diagnóstico da categoria</h2>
+
+{% for tentativa in resultado.tentativas_categorias %}
+
+<div class="category">
+
+<strong>
+{{ tentativa.metodo }}
+</strong>
+
+<br>
+
+<span class="muted">
+Consulta: {{ tentativa.q }}
+•
+HTTP {{ tentativa.status }}
+•
+Resultados: {{ tentativa.total }}
+</span>
+
+{% if tentativa.erro %}
+
+<br>
+
+<span class="muted">
+Erro: {{ tentativa.erro }}
+</span>
 
 {% endif %}
 
@@ -1935,37 +2749,55 @@ Abrir anúncio →
 {% endif %}
 
 
+{% if resultado.get("categorias_debug") %}
+
 <div class="card">
 
-<h2>
-🔐 Mercado Livre
-</h2>
+<h2>🔍 Diagnóstico dos rankings</h2>
 
-{% if token_ok %}
-
-<div class="success">
-
-✅ Access Token disponível.
-
-</div>
-
-{% else %}
-
-<div class="warning">
-
-❌ Access Token não encontrado.
-
-<br><br>
-
-<a href="/mercadolivre/login">
-
-Entrar com Mercado Livre →
-
-</a>
+<pre>{{ resultado.categorias_debug | tojson(indent=2) }}</pre>
 
 </div>
 
 {% endif %}
+
+{% endif %}
+
+
+<div class="card">
+
+<h3>🔗 Diagnóstico rápido</h3>
+
+<p class="muted">
+Depois desta atualização, você pode testar diretamente:
+</p>
+
+<p>
+<a
+    class="link"
+    href="/mercadolivre/teste-categoria?q=fone"
+>
+teste categoria — fone
+</a>
+</p>
+
+<p>
+<a
+    class="link"
+    href="/mercadolivre/teste-arvore-categorias?q=fone"
+>
+teste árvore — fone
+</a>
+</p>
+
+<p>
+<a
+    class="link"
+    href="/mercadolivre/diagnostico"
+>
+diagnóstico OAuth
+</a>
+</p>
 
 </div>
 
@@ -1984,268 +2816,76 @@ Entrar com Mercado Livre →
 @app.route("/")
 def home():
 
+    tokens = get_tokens()
+
+    conectado = bool(
+        tokens
+        and tokens.get("access_token")
+    )
+
+    nickname = (
+        tokens.get("nickname")
+        if tokens
+        else None
+    )
+
+    if not conectado:
+
+        return """
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta
+                name="viewport"
+                content="width=device-width, initial-scale=1"
+            >
+            <title>Caçador de Ofertas</title>
+            <style>
+                body {
+                    background:#101216;
+                    color:white;
+                    font-family:Arial;
+                    padding:30px;
+                    text-align:center;
+                }
+                a {
+                    display:inline-block;
+                    padding:14px 20px;
+                    background:#3483fa;
+                    color:white;
+                    text-decoration:none;
+                    border-radius:10px;
+                    margin-top:20px;
+                }
+            </style>
+        </head>
+
+        <body>
+
+        <h1>🛒 Caçador de Ofertas</h1>
+
+        <p>
+        Conecte sua conta do Mercado Livre para começar.
+        </p>
+
+        <a href="/mercadolivre/login">
+        🔐 Conectar Mercado Livre
+        </a>
+
+        </body>
+        </html>
+        """
+
     return render_template_string(
         HTML,
-        app_name=APP_NAME,
+        resultado=None,
         query="",
-        desconto=10,
-        searched=False,
-        results=[],
-        categories=[],
-        category_results=[],
-        stats={},
-        warning=False,
-        token_ok=bool(
-            current_token()
-        ),
+        min_discount=10,
     )
 
 
 # ============================================================
-# BUSCAR
-# ============================================================
-
-@app.route("/buscar")
-def buscar():
-
-    query = normalize_query(
-        request.args.get(
-            "q",
-            "",
-        )
-    )
-
-    ids_text = request.args.get(
-        "ids",
-        "",
-    )
-
-    desconto = safe_float(
-        request.args.get(
-            "desconto",
-            "10",
-        )
-    )
-
-    if desconto is None:
-        desconto = 10
-
-    desconto = max(
-        0,
-        min(
-            desconto,
-            99,
-        ),
-    )
-
-    results = []
-
-    categories = []
-
-    category_results = []
-
-    stats = {
-        "categorias_encontradas": 0,
-        "categorias_analisadas": 0,
-        "itens_highlights": 0,
-        "produtos_highlights": 0,
-        "itens_analisados": 0,
-        "buy_box_analisadas": 0,
-        "sem_desconto": 0,
-        "sem_preco_original": 0,
-        "erros": 0,
-        "ofertas_encontradas": 0,
-    }
-
-    # ========================================================
-    # IDS DIRETOS
-    # ========================================================
-
-    item_ids = extract_item_ids(
-        ids_text
-    )
-
-    if item_ids:
-
-        stats[
-            "categorias_encontradas"
-        ] = 0
-
-        for item_id in item_ids[:50]:
-
-            offer = analyze_item(
-                item_id,
-                source="item_direto",
-            )
-
-            if not offer.get(
-                "ok"
-            ):
-
-                stats[
-                    "erros"
-                ] += 1
-
-                continue
-
-            stats[
-                "itens_analisados"
-            ] += 1
-
-            discount = offer.get(
-                "discount"
-            )
-
-            if discount is None:
-
-                stats[
-                    "sem_preco_original"
-                ] += 1
-
-                continue
-
-            if discount < desconto:
-
-                stats[
-                    "sem_desconto"
-                ] += 1
-
-                continue
-
-            results.append(
-                offer
-            )
-
-            save_offer(
-                offer
-            )
-
-    # ========================================================
-    # BUSCA POR PRODUTO
-    # ========================================================
-
-    elif query:
-
-        discovery = discover_offers(
-            query=query,
-            min_discount=desconto,
-            max_categories=8,
-        )
-
-        if not discovery.get(
-            "ok"
-        ):
-
-            return render_template_string(
-                HTML,
-                app_name=APP_NAME,
-                query=query,
-                desconto=desconto,
-                searched=True,
-                results=[],
-                categories=[],
-                category_results=[],
-                stats={
-                    "erros": 1
-                },
-                warning=True,
-                token_ok=bool(
-                    current_token()
-                ),
-            )
-
-        results = discovery[
-            "results"
-        ]
-
-        categories = discovery[
-            "categories"
-        ]
-
-        category_results = (
-            discovery[
-                "category_results"
-            ]
-        )
-
-        stats = discovery[
-            "stats"
-        ]
-
-        for offer in results:
-
-            save_offer(
-                offer
-            )
-
-    results.sort(
-        key=lambda x: (
-            x.get(
-                "discount"
-            )
-            if x.get(
-                "discount"
-            ) is not None
-            else -1
-        ),
-        reverse=True,
-    )
-
-    stats[
-        "ofertas_encontradas"
-    ] = len(
-        results
-    )
-
-    warning = (
-        len(results) == 0
-    )
-
-    return render_template_string(
-        HTML,
-        app_name=APP_NAME,
-        query=query,
-        desconto=desconto,
-        searched=True,
-        results=results,
-        categories=categories,
-        category_results=category_results,
-        stats=stats,
-        warning=warning,
-        token_ok=bool(
-            current_token()
-        ),
-    )
-
-
-# ============================================================
-# OFERTAS SALVAS
-# ============================================================
-
-@app.route("/ofertas")
-def ofertas():
-
-    conn = db()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM ofertas
-        ORDER BY discount DESC, created_at DESC
-        LIMIT 200
-        """
-    ).fetchall()
-
-    conn.close()
-
-    return jsonify([
-        dict(row)
-        for row in rows
-    ])
-
-
-# ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.route("/health")
@@ -2253,564 +2893,19 @@ def health():
 
     return jsonify({
         "ok": True,
-        "app": APP_NAME,
-        "site": ML_SITE,
-        "api": ML_API,
-        "token_disponivel": bool(
-            current_token()
-        ),
-        "playwright": False,
-        "metodo_busca": (
-            "domain_discovery + highlights"
-        ),
+        "app": "cacador-de-ofertas",
+        "timestamp": now_ts(),
     })
 
 
 # ============================================================
-# OAUTH LOGIN
-# ============================================================
-
-@app.route("/mercadolivre/login")
-def mercadolivre_login():
-
-    if not CLIENT_ID:
-
-        return jsonify({
-            "erro": (
-                "ML_CLIENT_ID não configurado."
-            )
-        }), 500
-
-    if not CLIENT_SECRET:
-
-        return jsonify({
-            "erro": (
-                "ML_CLIENT_SECRET não configurado."
-            )
-        }), 500
-
-    verifier, challenge = (
-        create_pkce()
-    )
-
-    state = secrets.token_urlsafe(
-        32
-    )
-
-    oauth_sessions[state] = {
-        "code_verifier": verifier,
-        "created_at": time.time(),
-    }
-
-    params = {
-        "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-
-    return redirect(
-        ML_AUTH
-        + "?"
-        + urlencode(params)
-    )
-
-
-# ============================================================
-# OAUTH CALLBACK
-# ============================================================
-
-@app.route(
-    "/mercadolivre/callback"
-)
-def mercadolivre_callback():
-
-    error = request.args.get(
-        "error"
-    )
-
-    if error:
-
-        return jsonify({
-            "ok": False,
-            "erro": error,
-            "descricao": request.args.get(
-                "error_description"
-            ),
-        }), 400
-
-    code = request.args.get(
-        "code"
-    )
-
-    state = request.args.get(
-        "state"
-    )
-
-    if not code:
-
-        return jsonify({
-            "erro": (
-                "Código OAuth não recebido."
-            )
-        }), 400
-
-    if not state:
-
-        return jsonify({
-            "erro": (
-                "State não recebido."
-            )
-        }), 400
-
-    session = oauth_sessions.get(
-        state
-    )
-
-    if not session:
-
-        return jsonify({
-            "erro": (
-                "State OAuth inválido "
-                "ou expirado."
-            )
-        }), 400
-
-    verifier = session.get(
-        "code_verifier"
-    )
-
-    try:
-
-        response = requests.post(
-            ML_TOKEN,
-            data={
-                "grant_type": (
-                    "authorization_code"
-                ),
-                "client_id": CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": REDIRECT_URI,
-                "code_verifier": verifier,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        try:
-
-            data = response.json()
-
-        except Exception:
-
-            data = {
-                "raw": response.text[:5000]
-            }
-
-        if response.status_code != 200:
-
-            return jsonify({
-                "ok": False,
-                "status": response.status_code,
-                "resposta": data,
-            }), 400
-
-        save_token_memory(
-            data
-        )
-
-        oauth_sessions.pop(
-            state,
-            None,
-        )
-
-        return redirect("/")
-
-    except Exception as e:
-
-        return jsonify({
-            "ok": False,
-            "erro": str(e),
-        }), 500
-
-
-# ============================================================
-# STATUS
-# ============================================================
-
-@app.route(
-    "/mercadolivre/status"
-)
-def mercadolivre_status():
-
-    token = current_token()
-
-    if not token:
-
-        return jsonify({
-            "autenticado": False,
-            "mensagem": (
-                "Nenhum token disponível."
-            ),
-        })
-
-    me = api_get(
-        "/users/me"
-    )
-
-    return jsonify({
-        "autenticado": me["ok"],
-        "status": me["status"],
-        "usuario": (
-            me["data"]
-            if me["ok"]
-            else me["error"]
-        ),
-    })
-
-
-# ============================================================
-# TESTE DE CATEGORIA
-# ============================================================
-
-@app.route(
-    "/mercadolivre/teste-categoria"
-)
-def teste_categoria():
-
-    query = normalize_query(
-        request.args.get(
-            "q",
-            "fone",
-        )
-    )
-
-    categories = (
-        discover_categories(
-            query
-        )
-    )
-
-    return jsonify({
-        "consulta": query,
-        "categorias": categories,
-        "total": len(
-            categories
-        ),
-    })
-
-
-# ============================================================
-# TESTE HIGHLIGHTS
-# ============================================================
-
-@app.route(
-    "/mercadolivre/teste-highlights"
-)
-def teste_highlights():
-
-    category_id = (
-        request.args.get(
-            "category_id",
-            "",
-        )
-        .strip()
-        .upper()
-    )
-
-    if not category_id:
-
-        query = normalize_query(
-            request.args.get(
-                "q",
-                "fone",
-            )
-        )
-
-        categories = (
-            discover_categories(
-                query
-            )
-        )
-
-        if not categories:
-
-            return jsonify({
-                "ok": False,
-                "erro": (
-                    "Nenhuma categoria encontrada."
-                ),
-            }), 404
-
-        category = categories[0]
-
-        category_id = category[
-            "category_id"
-        ]
-
-    highlights = get_highlights(
-        category_id
-    )
-
-    return jsonify({
-        "category_id": category_id,
-        "resultado": highlights,
-    })
-
-
-# ============================================================
-# TESTE BUSCA COMPLETA
-# ============================================================
-
-@app.route(
-    "/mercadolivre/teste-busca"
-)
-def teste_busca():
-
-    query = normalize_query(
-        request.args.get(
-            "q",
-            "fone",
-        )
-    )
-
-    resultado = discover_offers(
-        query=query,
-        min_discount=0,
-        max_categories=8,
-    )
-
-    return jsonify({
-        "consulta": query,
-        "resultado": resultado,
-    })
-
-
-# ============================================================
-# TESTE DE PREÇO
-# ============================================================
-
-@app.route(
-    "/mercadolivre/teste-preco"
-)
-def teste_preco():
-
-    item_id = request.args.get(
-        "item_id",
-        "",
-    )
-
-    ids = extract_item_ids(
-        item_id
-    )
-
-    if not ids:
-
-        return jsonify({
-            "erro": (
-                "Informe ?item_id=MLB123456789"
-            )
-        }), 400
-
-    item_id = ids[0]
-
-    item = get_item(
-        item_id
-    )
-
-    sale = get_sale_price(
-        item_id
-    )
-
-    prices = get_prices(
-        item_id
-    )
-
-    return jsonify({
-        "item_id": item_id,
-
-        "item": {
-            "status": item["status"],
-            "ok": item["ok"],
-            "data": (
-                item["data"]
-                if item["ok"]
-                else item["error"]
-            ),
-        },
-
-        "sale_price": {
-            "status": sale["status"],
-            "ok": sale["ok"],
-            "data": (
-                sale["data"]
-                if sale["ok"]
-                else sale["error"]
-            ),
-        },
-
-        "prices": {
-            "status": prices["status"],
-            "ok": prices["ok"],
-            "data": (
-                prices["data"]
-                if prices["ok"]
-                else prices["error"]
-            ),
-        },
-    })
-
-
-# ============================================================
-# ITEM DIRETO
-# ============================================================
-
-@app.route(
-    "/mercadolivre/item"
-)
-def mercadolivre_item():
-
-    item_id = request.args.get(
-        "item_id",
-        "",
-    )
-
-    ids = extract_item_ids(
-        item_id
-    )
-
-    if not ids:
-
-        return jsonify({
-            "erro": (
-                "Informe um item_id válido."
-            )
-        }), 400
-
-    result = analyze_item(
-        ids[0],
-        source="item_direto",
-    )
-
-    return jsonify(
-        result
-    )
-
-
-# ============================================================
-# DIAGNÓSTICO
-# ============================================================
-
-@app.route(
-    "/mercadolivre/diagnostico"
-)
-def diagnostico():
-
-    result = {
-        "app": APP_NAME,
-
-        "api": ML_API,
-
-        "site": ML_SITE,
-
-        "metodo_busca": [
-            "domain_discovery",
-            "highlights",
-            "items",
-            "sale_price",
-            "prices",
-        ],
-
-        "playwright": False,
-
-        "oauth": {
-            "client_id_configurado": bool(
-                CLIENT_ID
-            ),
-            "client_secret_configurado": bool(
-                CLIENT_SECRET
-            ),
-            "redirect_uri": REDIRECT_URI,
-            "pkce": True,
-        },
-
-        "token_disponivel": bool(
-            current_token()
-        ),
-    }
-
-    if current_token():
-
-        me = api_get(
-            "/users/me"
-        )
-
-        result[
-            "users_me"
-        ] = {
-            "ok": me["ok"],
-            "status": me["status"],
-            "data": (
-                me["data"]
-                if me["ok"]
-                else me["error"]
-            ),
-        }
-
-    return jsonify(
-        result
-    )
-
-
-# ============================================================
-# 404
-# ============================================================
-
-@app.errorhandler(404)
-def not_found(error):
-
-    return jsonify({
-        "ok": False,
-        "erro": (
-            "Rota não encontrada."
-        ),
-        "path": request.path,
-    }), 404
-
-
-# ============================================================
-# 500
-# ============================================================
-
-@app.errorhandler(500)
-def server_error(error):
-
-    return jsonify({
-        "ok": False,
-        "erro": (
-            "Erro interno."
-        ),
-        "detalhes": str(error),
-    }), 500
-
-
-# ============================================================
-# START
+# INICIALIZAÇÃO
 # ============================================================
 
 if __name__ == "__main__":
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "8080",
-        )
-    )
-
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=PORT,
         debug=False,
     )
