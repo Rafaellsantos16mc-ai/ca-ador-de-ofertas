@@ -8,6 +8,7 @@ import re
 import html as html_lib
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, quote
 
 import requests
@@ -811,14 +812,22 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None):
     O mesmo cupom pode continuar sendo usado em vários produtos quando cada
     produto tiver sua própria associação pública.
     """
-    if not public_cards:
-        return None
+    # A página individual do produto é a fonte mais direta para o selo
+    # "Cupom ... OFF" e não depende do HTML dinâmico da landing page.
+    # O permalink é passado em public_cards quando disponível.
+    permalink = None
+    if isinstance(public_cards, dict):
+        permalink = public_cards.get("permalink")
+        cards = public_cards.get("cards") or []
+    else:
+        cards = public_cards or []
 
-    matched = match_public_coupon(title, price, public_cards, item_id)
+    page_coupon = best_product_page_coupon(title, price, permalink) if permalink else None
+    matched = page_coupon or match_public_coupon(title, price, cards, item_id)
     if not matched:
         return None
 
-    d = calculate_public_coupon(matched, price)
+    d = float(matched.get("desconto_estimado") or calculate_public_coupon(matched, price))
     if d <= 0:
         return None
 
@@ -1057,6 +1066,85 @@ def public_coupon_product_cards():
 
 PUBLIC_PRODUCT_COUPON_CACHE = {}
 PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
+PRODUCT_PAGE_COUPON_CACHE = {}
+PRODUCT_PAGE_COUPON_LOCK = threading.Lock()
+
+
+def fetch_product_page_coupon(title, price, permalink=None):
+    """Confirma cupom diretamente na página pública do produto.
+
+    A página /l/descontaco-cupons é renderizada dinamicamente e o requests
+    simples pode receber apenas o esqueleto da página. A página individual
+    do produto costuma trazer o selo de cupom no conteúdo público. Fazemos
+    poucas consultas, em paralelo, somente para os produtos selecionados.
+    """
+    key = f"{norm(title)}|{round(float(price or 0),2)}|{permalink or ''}"
+    with PRODUCT_PAGE_COUPON_LOCK:
+        if key in PRODUCT_PAGE_COUPON_CACHE:
+            return PRODUCT_PAGE_COUPON_CACHE[key]
+
+    urls = []
+    if permalink:
+        urls.append(permalink)
+    if not urls:
+        result = None
+        with PRODUCT_PAGE_COUPON_LOCK:
+            PRODUCT_PAGE_COUPON_CACHE[key] = result
+        return result
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    result = None
+    try:
+        r = requests.get(urls[0], headers=headers, timeout=12, allow_redirects=True)
+        if r.status_code == 200:
+            text = normalize_coupon_html(r.text)
+            # Aceita apenas selo explícito de cupom; descontos normais/Pix
+            # não entram como cupom.
+            found = []
+            for m in re.finditer(r"Cupom\s+(?:R\$\s*[\d\.]+(?:,[\d]{2})?|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)", text, re.I):
+                c = detect_public_coupon(m.group(0))
+                if c:
+                    # Confirma que a ocorrência está próxima do nome/preço
+                    # do mesmo produto para evitar herdar cupom de outro card.
+                    around = text[max(0, m.start()-1200):m.start()+500]
+                    sim = title_similarity(title, around)
+                    if sim >= 0.35:
+                        c["source_url"] = r.url
+                        c["match_score"] = round(min(1.0, sim + 0.35), 3)
+                        found.append(c)
+            if found:
+                # Para o mesmo produto, o maior desconto em reais será
+                # calculado depois; aqui guardamos todos os candidatos.
+                result = found
+    except Exception as e:
+        print("[CUPOM PÁGINA PRODUTO]", repr(e))
+
+    with PRODUCT_PAGE_COUPON_LOCK:
+        PRODUCT_PAGE_COUPON_CACHE[key] = result
+    return result
+
+
+def best_product_page_coupon(title, price, permalink):
+    found = fetch_product_page_coupon(title, price, permalink)
+    if not found:
+        return None
+    best = None
+    best_discount = 0
+    for c in found:
+        d = calculate_public_coupon(c, price)
+        if d > best_discount:
+            best_discount = d
+            best = dict(c)
+            best["desconto_estimado"] = d
+    if not best:
+        return None
+    best["percentual_efetivo"] = round((best_discount / float(price))*100, 2) if price else 0
+    best["match_type"] = "pagina_produto"
+    return best
 
 
 def _search_public_listing_for_coupon(title, price, item_id=None):
@@ -1204,7 +1292,7 @@ def search_products_direct(q, limit=20):
 
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    public_cards = public_coupon_product_cards() if apply_coupons else []
+    public_cards = []
 
     products = {}
     for q in queries:
@@ -1282,7 +1370,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             # como "frete não informado" e não pode ser tratado como uma oferta
             # de menor custo real sem essa confirmação.
 
-            cup = choose_best_coupon(title, price, public_cards, item["item_id"]) if apply_coupons else None
+            if apply_coupons:
+                product_permalink = item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}"
+                cup = choose_best_coupon(title, price, {"cards": public_cards, "permalink": product_permalink}, item["item_id"])
+            else:
+                cup = None
             cup_disc = float(cup.get("desconto_estimado") or 0) if cup else 0
             coupon_final = round(max(0, total_price - cup_disc), 2) if cup else None
 
