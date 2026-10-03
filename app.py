@@ -1337,10 +1337,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     lista consistente de produtos; cupons ficam em etapa separada.
     """
     products = {}
-    target_candidates = 90
+    # Mais candidatos para compensar produtos de catálogo que não expõem
+    # vendedores pelo endpoint /products/{id}/items.
+    target_candidates = 180
 
+    # 1) Busca textual: barata e ampla.
     for q in queries:
-        results = search_products_direct(q, 30)
+        results = search_products_direct(q, 20)
         for raw in results:
             if not isinstance(raw, dict):
                 continue
@@ -1353,10 +1356,49 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "category_name": None,
                 "query": q,
             }
-            if len(products) >= target_candidates:
-                break
-        if len(products) >= target_candidates:
+
+    # 2) Reforço com MAIS VENDIDOS. A API /highlights entrega os 20
+    # principais produtos/itens por categoria e é justamente a fonte oficial
+    # indicada pelo ML para descobrir produtos de alto giro.
+    # Descobrimos no máximo uma categoria relevante por consulta para não
+    # transformar a atualização em centenas de chamadas.
+    highlight_categories = {}
+    for q in queries:
+        if len(highlight_categories) >= 9:
             break
+        try:
+            cats = discover_categories(q)
+            if cats:
+                c = cats[0]
+                cid = c.get("category_id")
+                if cid and cid not in highlight_categories:
+                    highlight_categories[cid] = c.get("category_name") or cid
+        except Exception as e:
+            print("[HIGHLIGHT CATEGORY ERRO]", q, repr(e))
+
+    for cid, cname in highlight_categories.items():
+        try:
+            hs = highlights(cid)
+            for raw in hs[:20]:
+                if not isinstance(raw, dict):
+                    continue
+                pid = raw.get("id") or raw.get("product_id") or raw.get("catalog_product_id")
+                if not pid:
+                    continue
+                if pid not in products:
+                    products[pid] = {
+                        "raw": raw,
+                        "category_id": cid,
+                        "category_name": cname,
+                        "query": cname,
+                    }
+        except Exception as e:
+            print("[HIGHLIGHTS ERRO]", cid, repr(e))
+
+    # Limite de segurança: bastante maior que antes, sem deixar a busca
+    # crescer indefinidamente.
+    if len(products) > target_candidates:
+        products = dict(list(products.items())[:target_candidates])
 
     print("[PRODUTOS CANDIDATOS]", len(products))
 
@@ -1499,10 +1541,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         total_real = float(o.get("total_price") or o.get("price") or 999999)
         return (
             0 if o.get("shipping_known") else 1,
-            total_real,
             0 if o.get("free_shipping") else 1,
-            -(o.get("discount") or 0),
+            total_real,
             -(o.get("giro_score") or 0),
+            -(o.get("discount") or 0),
             -(o.get("relevance_score") or 0),
             o.get("price") or 999999,
         )
