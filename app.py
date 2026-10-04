@@ -2137,7 +2137,7 @@ def ad_text(o, affiliate=""):
 # ============================================================
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-AUTO_WHATSAPP_INTERVAL = max(300, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "1800") or 1800))
+AUTO_WHATSAPP_INTERVAL = 900  # 15 minutos
 AUTO_WHATSAPP_LIMIT = max(1, int(os.getenv("AUTO_WHATSAPP_LIMIT", "3") or 3))
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
