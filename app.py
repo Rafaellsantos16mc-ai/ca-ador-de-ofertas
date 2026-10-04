@@ -1504,6 +1504,99 @@ def _category_id_for(cat):
     return best_id
 
 
+def _user_product_catalog_id(user_product_id):
+    """Resolve um USER_PRODUCT (MLBU/MLAU/etc.) para PRODUCT_ID/ITEM_ID.
+
+    O ranking /highlights pode retornar USER_PRODUCT. Esse ID não pode ser
+    consultado em /items/{id}. Primeiro consultamos /user-products/{id} e
+    procuramos catalog_product_id e/ou item_ids na resposta.
+    """
+    uid = str(user_product_id or "").strip()
+    if not uid:
+        return None, None
+
+    data, status, _ = ml_get(f"/user-products/{uid}")
+    if status != 200 or not isinstance(data, dict):
+        return None, None
+
+    # Alguns retornos já trazem diretamente o vínculo com catálogo.
+    direct = data.get("catalog_product_id") or data.get("product_id")
+    if direct:
+        return str(direct).strip(), "PRODUCT"
+
+    # Procura recursivamente campos de item/catalog_product_id em estruturas
+    # de UP, sem assumir uma única versão do formato da API.
+    found_product = None
+    found_item = None
+
+    def walk(value):
+        nonlocal found_product, found_item
+        if found_product:
+            return
+        if isinstance(value, dict):
+            cp = value.get("catalog_product_id") or value.get("product_id")
+            if cp and str(cp).startswith("MLB"):
+                found_product = str(cp).strip()
+                return
+            iid = value.get("item_id") or (value.get("id") if str(value.get("id") or "").startswith("MLB") else None)
+            if iid and not found_item:
+                found_item = str(iid).strip()
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+                if found_product:
+                    return
+
+    walk(data)
+    if found_product:
+        return found_product, "PRODUCT"
+
+    # Se o UP só expuser item_id, consulte a publicação real para obter
+    # catalog_product_id.
+    if found_item:
+        item, st, _ = ml_get(f"/items/{found_item}")
+        if st == 200 and isinstance(item, dict):
+            cp = item.get("catalog_product_id") or item.get("product_id")
+            if cp:
+                return str(cp).strip(), "PRODUCT"
+        return found_item, "ITEM"
+
+    return None, None
+
+
+def _highlight_product_id(row):
+    """Converte PRODUCT, ITEM ou USER_PRODUCT do ranking para PRODUCT_ID."""
+    if not isinstance(row, dict):
+        return None, None
+
+    raw_id = str(row.get("id") or row.get("product_id") or row.get("item_id") or "").strip()
+    kind = str(row.get("type") or "").upper().strip()
+    if not raw_id:
+        return None, kind or None
+
+    if kind == "PRODUCT":
+        return raw_id, "PRODUCT"
+
+    if kind == "USER_PRODUCT":
+        pid, resolved = _user_product_catalog_id(raw_id)
+        return pid, resolved or "USER_PRODUCT"
+
+    # ITEM: consulta a publicação real e recupera catalog_product_id.
+    if kind == "ITEM" or raw_id.startswith("MLB"):
+        data, status, _ = ml_get(f"/items/{raw_id}")
+        if status == 200 and isinstance(data, dict):
+            pid = data.get("catalog_product_id") or data.get("product_id")
+            if pid:
+                return str(pid).strip(), "PRODUCT"
+        # Se não tiver catálogo, mantém o próprio item como marcador para
+        # ranking; ele poderá ser consultado diretamente por /highlights/item.
+        return raw_id, "ITEM"
+
+    return None, kind or None
+
+
 def _load_category_signals(cat):
     # Tenta todas as categorias candidatas até encontrar um ranking útil.
     candidates = _category_candidates(cat)
@@ -1524,20 +1617,37 @@ def _load_category_signals(cat):
         except Exception as e:
             print("[HIGHLIGHTS]", cat, cid, repr(e))
             continue
+        print(f"[HIGHLIGHTS RANKING] {cat} | categoria={cid} | itens={len(rows or [])}")
         if len(rows or []) > selected_count:
             selected_count = len(rows or [])
             selected_cid = cid
             tmp = {}
+            mapped_count = 0
             for item in (rows or [])[:20]:
                 if not isinstance(item, dict):
                     continue
-                pid = str(item.get("id") or "").strip()
-                if pid:
-                    tmp[pid] = {
-                        "position": int(item.get("position") or 99),
-                        "type": item.get("type"),
-                        "category_id": cid,
-                    }
+                try:
+                    pid, resolved_type = _highlight_product_id(item)
+                except Exception as e:
+                    print("[HIGHLIGHT MAP]", cat, repr(e))
+                    pid, resolved_type = None, None
+                if not pid:
+                    continue
+                mapped_count += 1
+                try:
+                    position = int(item.get("position") or 99)
+                except Exception:
+                    position = 99
+                previous = tmp.get(pid)
+                current = {
+                    "position": position,
+                    "type": resolved_type or item.get("type"),
+                    "category_id": cid,
+                    "source_id": item.get("id"),
+                }
+                if previous is None or position < previous.get("position", 99):
+                    tmp[pid] = current
+            print(f"[HIGHLIGHTS MAP] {cat} | categoria={cid} | mapeados={mapped_count} | produtos={len(tmp)}")
             best = tmp
         if selected_count >= 20:
             break
@@ -1609,15 +1719,18 @@ def _keyword_match(title, keyword):
 
 
 def _direct_best_seller(product_id):
-    """Consulta a posição do produto no ranking sem depender do /highlights/category."""
+    """Consulta a posição do produto; usa também as publicações ligadas ao produto."""
     pid = str(product_id or "").strip()
     if not pid:
         return None
     with _BESTSELLER_CACHE_LOCK:
         if pid in _BESTSELLER_CACHE:
             return _BESTSELLER_CACHE[pid]
-    data, status, _ = ml_get(f"/highlights/{SITE_ID}/product/{pid}")
+
     result = None
+
+    # Endpoint oficial para PRODUCT_ID.
+    data, status, _ = ml_get(f"/highlights/{SITE_ID}/product/{pid}")
     if status == 200 and isinstance(data, dict):
         try:
             result = {
@@ -1627,6 +1740,36 @@ def _direct_best_seller(product_id):
             }
         except Exception:
             result = None
+
+    # Se o produto não tiver posição própria, tenta as publicações reais
+    # ligadas a ele. O endpoint /highlights/{site}/item/{item_id} é o
+    # endpoint oficial para o ranking de uma publicação.
+    if result is None:
+        try:
+            candidates = product_items(pid) or []
+        except Exception:
+            candidates = []
+        best = None
+        for value in candidates[:10]:
+            item = _item_from_api_value(value)
+            if not item or not item.get("item_id"):
+                continue
+            iid = item.get("item_id")
+            d, st, _ = ml_get(f"/highlights/{SITE_ID}/item/{iid}")
+            if st != 200 or not isinstance(d, dict):
+                continue
+            try:
+                pos = int(d.get("position"))
+            except Exception:
+                continue
+            if best is None or pos < best["position"]:
+                best = {
+                    "position": pos,
+                    "category_id": d.get("id"),
+                    "label": d.get("label"),
+                }
+        result = best
+
     with _BESTSELLER_CACHE_LOCK:
         _BESTSELLER_CACHE[pid] = result
     return result
@@ -1750,54 +1893,87 @@ def _fetch_product_fast(pid, raw=None, base=None):
     p = dict(p)
     p.setdefault("name", p.get("title") or p.get("name") or product_id)
 
-    candidates = []
-    try:
-        candidates = product_items(product_id) or []
-    except Exception as e:
-        print("[PRODUCT ITEMS]", product_id, repr(e))
-        candidates = []
-
+    # A fonte oficial mais estável para uma publicação de catálogo é o
+    # buy_box_winner do /products/{product_id}. O endpoint /products/{id}/items
+    # não é necessário para que um produto tenha uma oferta válida e, em
+    # muitos produtos, pode não retornar publicações.
     normalized = []
-    for value in candidates:
+
+    bb = p.get("buy_box_winner") or p.get("buy_box")
+    item = _build_item_from_buy_box(bb)
+    if item:
         try:
-            item = _item_from_api_value(value)
-            if not item:
-                continue
-            price = item.get("price") or item.get("sale_price") or item.get("regular_price")
-            try:
-                price = float(price) if price is not None else None
-            except Exception:
-                price = None
-            if not valid_catalog_price(price):
-                continue
-            item["price"] = price
-            if item.get("original_price") is None and item.get("regular_price") is not None:
-                try:
-                    item["original_price"] = float(item.get("regular_price"))
-                except Exception:
-                    pass
-            sh = item.get("shipping") or {}
-            if not isinstance(sh, dict):
-                sh = {}
-            item["free_shipping"] = bool(item.get("free_shipping") or sh.get("free_shipping"))
-            item["shipping_cost"] = 0 if item["free_shipping"] else (item.get("shipping_cost") if item.get("shipping_cost") is not None else sh.get("cost"))
+            item["price"] = float(item.get("price")) if item.get("price") is not None else None
+        except Exception:
+            item["price"] = None
+        if valid_catalog_price(item.get("price")):
             normalized.append(item)
+
+    # Fallback para publicações associadas, caso existam e o buy box não seja
+    # utilizável. Mantemos isso como fallback para não depender desse endpoint.
+    if not normalized:
+        try:
+            candidates = product_items(product_id) or []
         except Exception as e:
-            print("[ITEM]", product_id, repr(e))
+            print("[PRODUCT ITEMS]", product_id, repr(e))
+            candidates = []
 
-    # Buy Box é apenas fallback, nunca condição obrigatória.
-    if not normalized:
-        bb = p.get("buy_box_winner") or p.get("buy_box")
-        item = _build_item_from_buy_box(bb)
-        if item:
+        for value in candidates:
             try:
-                item["price"] = float(item.get("price")) if item.get("price") is not None else None
-            except Exception:
-                item["price"] = None
-            if valid_catalog_price(item.get("price")):
+                item = _item_from_api_value(value)
+                if not item:
+                    continue
+                price = item.get("price") or item.get("sale_price") or item.get("regular_price")
+                try:
+                    price = float(price) if price is not None else None
+                except Exception:
+                    price = None
+                if not valid_catalog_price(price):
+                    continue
+                item["price"] = price
+                if item.get("original_price") is None and item.get("regular_price") is not None:
+                    try:
+                        item["original_price"] = float(item.get("regular_price"))
+                    except Exception:
+                        pass
+                sh = item.get("shipping") or {}
+                if not isinstance(sh, dict):
+                    sh = {}
+                item["free_shipping"] = bool(item.get("free_shipping") or sh.get("free_shipping"))
+                item["shipping_cost"] = 0 if item["free_shipping"] else (item.get("shipping_cost") if item.get("shipping_cost") is not None else sh.get("cost"))
                 normalized.append(item)
+            except Exception as e:
+                print("[ITEM]", product_id, repr(e))
+
+    # Último fallback: o catálogo pode informar a faixa de preço mesmo quando
+    # não existe buy_box_winner. Nesse caso a oferta aponta para a página do
+    # produto, sem inventar vendedor, frete ou item_id.
+    if not normalized:
+        rng = p.get("buy_box_winner_price_range") or {}
+        mn = rng.get("min") if isinstance(rng, dict) else None
+        if isinstance(mn, dict):
+            try:
+                range_price = float(mn.get("price")) if mn.get("price") is not None else None
+            except Exception:
+                range_price = None
+            if valid_catalog_price(range_price):
+                normalized.append({
+                    "item_id": None,
+                    "seller_id": None,
+                    "price": range_price,
+                    "original_price": None,
+                    "condition": "new",
+                    "listing_type_id": None,
+                    "free_shipping": False,
+                    "shipping_cost": None,
+                    "permalink": p.get("permalink") or f"https://www.mercadolivre.com.br/p/{product_id}",
+                    "user_product_id": None,
+                    "sold_quantity": 0,
+                    "catalog_fallback": True,
+                })
 
     if not normalized:
+        print(f"[SEM OFERTA] {product_id} | buy_box=0 | faixa_preco=0 | itens=0")
         return None
 
     # Melhor publicação: frete grátis primeiro, depois menor total/preço.
@@ -1922,6 +2098,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Demanda é enriquecimento; se falhar, não elimina produto.
     try:
         signals = load_demand_signals()
+        for _cat, _sig in signals.items():
+            print(f"[DEMANDA SINAL] {_cat} | categoria={_sig.get('category_id')} | mais_vendidos={len(_sig.get('best', {}))} | tendencias={len(_sig.get('trends', []))}")
     except Exception as e:
         print("[DEMANDA GLOBAL]", repr(e))
         signals = {cat: {"category_id": None, "best": {}, "trends": []} for cat in categories}
@@ -2021,6 +2199,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "total_price": total_price,
                 "relevance_score": rel,
                 "sold_quantity": item.get("sold_quantity") or 0,
+                "catalog_fallback": bool(item.get("catalog_fallback")),
                 "giro_score": 0,
                 "trend_score": ds["trend_score"],
                 "trend_keyword": ds["trend_keyword"],
