@@ -137,6 +137,17 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS whatsapp_publicacoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT UNIQUE,
+            last_price REAL NOT NULL,
+            last_permalink TEXT,
+            last_title TEXT,
+            published_count INTEGER DEFAULT 1,
+            last_published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # Compatibilidade com bancos criados pelas versões anteriores.
     try:
         conn.execute("ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0")
@@ -2120,6 +2131,200 @@ def ad_text(o, affiliate=""):
         lines += ["",f"💥 PREÇO ESTIMADO COM CUPOM: {brl(o['preco_com_cupom'])}"]
     lines += ["","⚠️ Consulte as condições e confirme o cupom no checkout.","","🛒 PEGAR OFERTA:",affiliate or "Gere o link pelo Gerador oficial do Mercado Livre."]
     return "\n".join(lines)
+
+# ============================================================
+# PUBLICAÇÃO AUTOMÁTICA NO WHATSAPP
+# ============================================================
+
+AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+AUTO_WHATSAPP_INTERVAL = max(300, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "1800") or 1800))
+AUTO_WHATSAPP_LIMIT = max(1, int(os.getenv("AUTO_WHATSAPP_LIMIT", "3") or 3))
+AUTO_WHATSAPP_LOCK = threading.Lock()
+AUTO_WHATSAPP_THREAD = None
+
+
+def _whatsapp_send_text(text):
+    """Envia uma mensagem ao grupo selecionado pelo WhatsApp Bot."""
+    if not WHATSAPP_BOT_URL:
+        return False, "WHATSAPP_BOT_URL não configurada."
+    if not WHATSAPP_BOT_KEY:
+        return False, "WHATSAPP_BOT_KEY não configurada."
+    try:
+        response = requests.post(
+            f"{WHATSAPP_BOT_URL}/api/send-offer",
+            headers={
+                "Content-Type": "application/json",
+                "x-bot-key": WHATSAPP_BOT_KEY,
+            },
+            json={"text": text},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return False, f"Falha de comunicação: {exc}"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"ok": False, "error": response.text[:500] or "Resposta inválida."}
+
+    if response.ok and payload.get("ok"):
+        return True, payload.get("message") or "Enviado."
+    return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
+
+
+def _whatsapp_should_publish(product_id, price):
+    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
+        (str(product_id),),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return True
+    try:
+        old_price = float(row["last_price"])
+        new_price = float(price)
+    except (TypeError, ValueError):
+        return False
+    return new_price < old_price - 0.01
+
+
+def _whatsapp_mark_published(offer):
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO whatsapp_publicacoes
+            (product_id, last_price, last_permalink, last_title, published_count, last_published_at)
+        VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(product_id) DO UPDATE SET
+            last_price=excluded.last_price,
+            last_permalink=excluded.last_permalink,
+            last_title=excluded.last_title,
+            published_count=whatsapp_publicacoes.published_count + 1,
+            last_published_at=CURRENT_TIMESTAMP
+    """, (
+        str(offer.get("product_id") or ""),
+        float(offer.get("price") or 0),
+        offer.get("permalink") or "",
+        offer.get("title") or "Produto",
+    ))
+    conn.commit()
+    conn.close()
+
+
+def _whatsapp_publish_scan(result):
+    """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
+
+    Se o WhatsApp falhar, a rodada é interrompida imediatamente e os produtos
+    que ainda não foram enviados permanecem disponíveis para a próxima rodada.
+    """
+    offers = list((result or {}).get("ofertas") or [])
+    sent = 0
+    skipped = 0
+
+    for offer in offers:
+        if sent >= AUTO_WHATSAPP_LIMIT:
+            break
+
+        product_id = str(offer.get("product_id") or "").strip()
+        if not product_id:
+            continue
+
+        price = offer.get("price")
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+
+        if not _whatsapp_should_publish(product_id, price):
+            skipped += 1
+            continue
+
+        text = ad_text(offer, offer.get("affiliate_link") or offer.get("permalink") or "")
+        ok, detail = _whatsapp_send_text(text)
+        if not ok:
+            print("[AUTO WHATSAPP] Envio interrompido:", detail)
+            return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
+
+        _whatsapp_mark_published(offer)
+        sent += 1
+        print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
+
+    return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
+
+
+def executar_caca_automatica():
+    """Executa uma rodada completa de busca + publicação."""
+    if not AUTO_WHATSAPP_ENABLED:
+        return {"ok": True, "desativado": True, "enviadas": 0}
+
+    if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
+        print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
+        return {"ok": True, "ocupado": True, "enviadas": 0}
+
+    try:
+        print("[AUTO WHATSAPP] Iniciando nova caça automática...")
+        result = scan_queries(list(CATALOG.keys()), apply_coupons=False)
+        publish = _whatsapp_publish_scan(result)
+        print(
+            f"[AUTO WHATSAPP] Rodada finalizada: "
+            f"ofertas={len(result.get('ofertas', []))}, "
+            f"enviadas={publish.get('enviadas', 0)}"
+        )
+        return publish
+    except Exception as exc:
+        print("[AUTO WHATSAPP] Erro na rodada:", repr(exc))
+        return {"ok": False, "enviadas": 0, "erro": str(exc)}
+    finally:
+        AUTO_WHATSAPP_LOCK.release()
+
+
+def iniciar_automacao_whatsapp():
+    """Inicia uma única thread de publicação automática por processo Gunicorn."""
+    global AUTO_WHATSAPP_THREAD
+    if not AUTO_WHATSAPP_ENABLED or AUTO_WHATSAPP_THREAD is not None:
+        return
+
+    def worker():
+        print(
+            f"[AUTO WHATSAPP] Ativo: a cada {AUTO_WHATSAPP_INTERVAL}s, "
+            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada."
+        )
+        while True:
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
+            executar_caca_automatica()
+
+    AUTO_WHATSAPP_THREAD = threading.Thread(
+        target=worker,
+        name="whatsapp-auto-publisher",
+        daemon=True,
+    )
+    AUTO_WHATSAPP_THREAD.start()
+
+
+@app.route("/api/whatsapp/automacao")
+def api_whatsapp_automacao():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT product_id, last_price, last_title, published_count, last_published_at
+        FROM whatsapp_publicacoes
+        ORDER BY last_published_at DESC
+        LIMIT 100
+    """).fetchall()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "ativo": AUTO_WHATSAPP_ENABLED,
+        "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
+        "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
+        "publicadas": [dict(row) for row in rows],
+    })
+
+
+# A thread começa depois que o módulo terminou de carregar as rotas e o banco.
+iniciar_automacao_whatsapp()
 
 # ============================================================
 # JOBS DE CAÇA EM SEGUNDO PLANO
