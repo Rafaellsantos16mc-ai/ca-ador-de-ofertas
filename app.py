@@ -23,13 +23,24 @@ ML_REDIRECT_URI = os.getenv(
     "ML_REDIRECT_URI",
     "https://ca-ador-de-ofertas-production-ad83.up.railway.app/mercadolivre/callback"
 ).strip()
-# O Mercado Livre exige que o redirect_uri usado no OAuth seja a URL exata
-# do callback. Se alguém informar apenas a URL base no Railway, corrigimos
-# automaticamente para o callback deste aplicativo.
-if ML_REDIRECT_URI and not ML_REDIRECT_URI.rstrip("/").endswith("/mercadolivre/callback"):
-    ML_REDIRECT_URI = ML_REDIRECT_URI.rstrip("/") + "/mercadolivre/callback"
 
 ML_API = "https://api.mercadolibre.com"
+
+# ============================================================
+# INTEGRAÇÃO COM WHATSAPP BOT
+# ============================================================
+
+WHATSAPP_BOT_URL = os.getenv(
+    "WHATSAPP_BOT_URL",
+    ""
+).strip().rstrip("/")
+
+WHATSAPP_BOT_KEY = os.getenv(
+    "WHATSAPP_BOT_KEY",
+    ""
+).strip()
+
+WHATSAPP_TEST_LAST = 0
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
@@ -320,6 +331,7 @@ def is_requested_product(title, query, category=None):
 
     return True
 
+
 def query_category(q):
     """Retorna a categoria do catálogo que corresponde à consulta."""
     nq = norm(q)
@@ -345,6 +357,7 @@ def query_category(q):
                 best_category = category
 
     return best_category
+
 
 def profile_for(q):
     t = norm(q)
@@ -666,6 +679,7 @@ def number(s):
         return None
     return float(m.group(1).replace(",", "."))
 
+
 def normalize_coupon_html(raw_html):
     """Converte HTML do Mercado Livre em texto preservando ALT das imagens.
 
@@ -704,6 +718,7 @@ def looks_like_coupon_code(code):
     bad = {"NAOCOUPOM", "CUPOMVALIDO", "VALIDO", "DESCONTO"}
     return code not in bad
 
+
 def coupon_blocks(text):
     """Retorna blocos individuais iniciados por 'Cupom CODE'.
 
@@ -737,6 +752,7 @@ def coupon_blocks(text):
                 block = block[:pos].strip()
         blocks.append((code, block))
     return blocks
+
 
 def parse_coupon_block(code, block, source_url=COUPONS_URL):
     # Percentual: procura a primeira oferta explícita do bloco.
@@ -813,6 +829,7 @@ def parse_coupon_block(code, block, source_url=COUPONS_URL):
         "source_url": source_url,
         "conditions": block[:2500],
     }
+
 
 def sync_coupons():
     """Caça cupons em várias áreas públicas do Mercado Livre.
@@ -908,6 +925,7 @@ def sync_coupons():
         "erros":errors
     }
 
+
 def coupons():
     c = get_db()
     rows = c.execute(
@@ -915,6 +933,7 @@ def coupons():
     ).fetchall()
     c.close()
     return [dict(x) for x in rows]
+
 
 def coupon_discount(cupom, price):
     try:
@@ -942,6 +961,7 @@ def coupon_discount(cupom, price):
         return round(max(0, max(candidates, default=0)), 2)
     except Exception:
         return 0
+
 
 def best_coupon(price):
     choices = []
@@ -1209,8 +1229,10 @@ def public_coupon_product_cards():
         print("[CARD]", c["title"][:90], "|", brl(c["price"]), "|", c["coupon"]["label"])
     return out
 
+
 PUBLIC_PRODUCT_COUPON_CACHE = {}
 PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
+
 
 def _search_public_listing_for_coupon(title, price, item_id=None):
     """Fallback por busca pública do Mercado Livre.
@@ -1276,6 +1298,7 @@ def detect_public_coupon(text):
         return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
     return None
 
+
 def parse_public_money(text):
     if not text:
         return None
@@ -1287,6 +1310,7 @@ def parse_public_money(text):
         return float(v.replace(".", "").replace(",", ".")) if "," in v else float(v)
     except Exception:
         return None
+
 
 def title_similarity(a, b):
     ta = {x for x in norm(a).split() if len(x) >= 3 and x not in STOP_WORDS}
@@ -1301,7 +1325,9 @@ def title_similarity(a, b):
             score += 0.10
     return min(score, 1.0)
 
+
 STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","um","uma","original","novo","oficial"}
+
 
 def match_public_coupon(title, price, cards, item_id=None):
     best = None
@@ -1338,6 +1364,7 @@ def calculate_public_coupon(coupon, price):
         d = float(price) * float(coupon["value"]) / 100
     return round(min(max(d, 0), float(price)), 2)
 
+
 def search_products_direct(q, limit=30):
     """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
     data, status, _ = ml_get("/products/search", {
@@ -1353,6 +1380,7 @@ def search_products_direct(q, limit=30):
     results = data.get("results") or []
     print(f"[BUSCA] {q} -> {len(results)} candidatos")
     return results
+
 
 # ============================================================
 # DEMANDA + BUSCA — VERSÃO CORRIGIDA
@@ -1409,6 +1437,7 @@ _ITEMS_CACHE_LOCK = threading.Lock()
 _BESTSELLER_CACHE = {}
 _BESTSELLER_CACHE_LOCK = threading.Lock()
 
+
 def _demand_category_from_text(text):
     t = norm(text)
     best, hits = None, 0
@@ -1417,6 +1446,7 @@ def _demand_category_from_text(text):
         if h > hits:
             best, hits = cat, h
     return best
+
 
 def _category_candidates(cat):
     """Descobre várias categorias e não fica preso à primeira resposta."""
@@ -1438,6 +1468,7 @@ def _category_candidates(cat):
             rows.append({"category_id": cid, "category_name": name, "score": score})
     rows.sort(key=lambda x: (-x["score"], x["category_id"]))
     return rows[:8]
+
 
 def _category_id_for(cat):
     now = time.time()
@@ -1474,6 +1505,7 @@ def _category_id_for(cat):
             _CATEGORY_CACHE["ids"][cat] = best_id
             _CATEGORY_CACHE["at"] = now
     return best_id
+
 
 def _load_category_signals(cat):
     # Tenta todas as categorias candidatas até encontrar um ranking útil.
@@ -1540,6 +1572,7 @@ def _load_category_signals(cat):
 
     return {"category_id": selected_cid, "best": best, "trends": trends}
 
+
 def load_demand_signals(force=False):
     now = time.time()
     with _DEMAND_LOCK:
@@ -1563,6 +1596,7 @@ def load_demand_signals(force=False):
         _DEMAND_CACHE["categories"] = result
     return result
 
+
 def _keyword_match(title, keyword):
     t = norm(title)
     k = norm(keyword)
@@ -1575,6 +1609,7 @@ def _keyword_match(title, keyword):
         return 0
     hits = sum(1 for w in words if w in t)
     return hits / len(words)
+
 
 def _direct_best_seller(product_id):
     """Consulta a posição do produto no ranking sem depender do /highlights/category."""
@@ -1598,6 +1633,7 @@ def _direct_best_seller(product_id):
     with _BESTSELLER_CACHE_LOCK:
         _BESTSELLER_CACHE[pid] = result
     return result
+
 
 def demand_score(title, category, product_id, signals, allow_direct=False):
     sig = signals.get(category, {}) if isinstance(signals, dict) else {}
@@ -1639,6 +1675,7 @@ def demand_score(title, category, product_id, signals, allow_direct=False):
         "demand_score": (1000 if both else 0) + best_score * 8 + trend_score * 4,
     }
 
+
 def _search_category(cat):
     """Busca várias sementes da categoria para não retornar apenas 1 produto."""
     queries = CATEGORY_SEED.get(cat, [])[:4]
@@ -1660,6 +1697,7 @@ def _search_category(cat):
             out.append((raw, q))
     print(f"[BUSCA CATEGORIA] {cat} -> {len(out)} candidatos únicos")
     return out
+
 
 def _fetch_product_fast(pid, raw=None, base=None):
     base = base or {"category_id": None, "category_name": None, "query": ""}
@@ -1740,6 +1778,7 @@ def _fetch_product_fast(pid, raw=None, base=None):
         _PRODUCT_CACHE[cache_key] = result
     return result
 
+
 def _resolve_scan_categories(queries):
     """Resolve corretamente uma ou várias categorias sem perder as demais.
 
@@ -1774,6 +1813,7 @@ def _resolve_scan_categories(queries):
         cat = query_category(values[0])
         return [cat] if cat else list(CATALOG.keys())
     return list(CATALOG.keys())
+
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     categories = _resolve_scan_categories(queries)
@@ -2050,6 +2090,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     }
     print(f"[RESULTADO] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
+
 
 def auto_scan(category=None, min_discount=0):
     # A seleção passa pelo nome da categoria; não depende de uma função
@@ -2424,6 +2465,194 @@ def health():
         "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
+
+# ============================================================
+# TESTE DE COMUNICAÇÃO COM WHATSAPP
+# ============================================================
+
+@app.route("/whatsapp/teste", methods=["GET", "POST"])
+def whatsapp_teste():
+
+    global WHATSAPP_TEST_LAST
+
+    if request.method == "GET":
+
+        return """
+        <!doctype html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport"
+                  content="width=device-width,initial-scale=1">
+            <title>Teste WhatsApp</title>
+
+            <style>
+                body{
+                    font-family:-apple-system,BlinkMacSystemFont,
+                    "Segoe UI",sans-serif;
+                    background:#111827;
+                    color:#fff;
+                    padding:24px;
+                }
+
+                .card{
+                    max-width:520px;
+                    margin:auto;
+                    background:#1f2937;
+                    padding:24px;
+                    border-radius:20px;
+                    text-align:center;
+                }
+
+                button{
+                    width:100%;
+                    padding:16px;
+                    border:0;
+                    border-radius:12px;
+                    background:#059669;
+                    color:#fff;
+                    font-size:18px;
+                    font-weight:700;
+                    margin-top:20px;
+                }
+
+                p{
+                    color:#cbd5e1;
+                    line-height:1.5;
+                }
+            </style>
+        </head>
+
+        <body>
+
+        <div class="card">
+
+            <h1>📲 Teste WhatsApp</h1>
+
+            <p>
+                Este teste envia uma mensagem fixa para
+                o grupo selecionado no WhatsApp Bot.
+            </p>
+
+            <form method="post"
+                  action="/whatsapp/teste">
+
+                <button type="submit">
+                    🟢 TESTAR ENVIO PARA WHATSAPP
+                </button>
+
+            </form>
+
+        </div>
+
+        </body>
+        </html>
+        """
+
+
+    agora = time.time()
+
+    if agora - WHATSAPP_TEST_LAST < 60:
+
+        return (
+            "<h2>⏳ Aguarde um pouco.</h2>"
+            "<p>O teste pode ser executado novamente em alguns segundos.</p>"
+            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
+        ), 429
+
+
+    if not WHATSAPP_BOT_URL:
+
+        return (
+            "<h2>❌ WHATSAPP_BOT_URL não configurada.</h2>"
+        ), 500
+
+
+    if not WHATSAPP_BOT_KEY:
+
+        return (
+            "<h2>❌ WHATSAPP_BOT_KEY não configurada.</h2>"
+        ), 500
+
+
+    WHATSAPP_TEST_LAST = agora
+
+
+    try:
+
+        resposta = requests.post(
+
+            WHATSAPP_BOT_URL +
+            "/api/send-offer",
+
+            headers={
+                "x-bot-key":
+                    WHATSAPP_BOT_KEY
+            },
+
+            json={
+                "text":
+                    "🟢 TESTE DE INTEGRAÇÃO — "
+                    "Caçador de Ofertas conectado "
+                    "ao WhatsApp com sucesso!"
+            },
+
+            timeout=20
+        )
+
+
+        try:
+            dados = resposta.json()
+        except Exception:
+            dados = resposta.text
+
+
+        if resposta.ok:
+
+            return (
+                "<h2>✅ Enviado com sucesso!</h2>"
+                "<p>"
+                "O Caçador de Ofertas conseguiu "
+                "enviar a mensagem para o WhatsApp Bot."
+                "</p>"
+                "<p>"
+                "Agora confira o grupo do WhatsApp."
+                "</p>"
+                "<p><a href='/whatsapp/teste'>Voltar</a></p>"
+            )
+
+
+        return (
+            "<h2>❌ O WhatsApp Bot recusou o envio.</h2>"
+            "<p>Status HTTP: "
+            + str(resposta.status_code)
+            + "</p>"
+            "<pre>"
+            + html_lib.escape(
+                str(dados)
+            )
+            + "</pre>"
+            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
+        ), 502
+
+
+    except Exception as error:
+
+        print(
+            "[WHATSAPP TESTE] ERRO:",
+            repr(error)
+        )
+
+        return (
+            "<h2>❌ Não foi possível conectar ao WhatsApp Bot.</h2>"
+            "<p>"
+            + html_lib.escape(
+                str(error)
+            )
+            + "</p>"
+            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
+        ), 502
+
 
 @app.errorhandler(404)
 def e404(e): return jsonify({"erro":"Rota não encontrada.","rota":request.path}),404
