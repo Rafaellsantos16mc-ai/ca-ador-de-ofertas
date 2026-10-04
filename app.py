@@ -35,8 +35,19 @@ WHATSAPP_BOT_URL = os.getenv(
     "https://whatsapp-bot-production-c647.up.railway.app"
 ).strip().rstrip("/")
 WHATSAPP_BOT_KEY = os.getenv("WHATSAPP_BOT_KEY", "").strip()
+
+# ============================================================
+# IMAGEM NATURAL PARA WHATSAPP / OPENAI
+# ============================================================
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://ca-ador-de-ofertas-production-ad83.up.railway.app"
+).strip().rstrip("/")
+WHATSAPP_IMAGE_DIR = os.path.join("/tmp", "cacador_whatsapp_images")
+os.makedirs(WHATSAPP_IMAGE_DIR, exist_ok=True)
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
@@ -2163,6 +2174,174 @@ def ad_text(o, affiliate=""):
     return "\n".join(lines)
 
 # ============================================================
+# IMAGEM NATURAL PARA WHATSAPP
+# ============================================================
+
+def _image_mime_from_response(response):
+    content_type = (response.headers.get("content-type") or "image/jpeg").split(";")[0].strip().lower()
+    if content_type in {"image/jpeg", "image/png", "image/webp"}:
+        return content_type
+    return "image/jpeg"
+
+
+def _cleanup_whatsapp_images(max_age_seconds=86400):
+    try:
+        now = time.time()
+        for name in os.listdir(WHATSAPP_IMAGE_DIR):
+            path = os.path.join(WHATSAPP_IMAGE_DIR, name)
+            try:
+                if os.path.isfile(path) and now - os.path.getmtime(path) > max_age_seconds:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _save_generated_whatsapp_image(image_bytes, extension="png"):
+    extension = extension if extension in {"png", "jpg", "jpeg", "webp"} else "png"
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    path = os.path.join(WHATSAPP_IMAGE_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(image_bytes)
+    return f"{PUBLIC_BASE_URL}/whatsapp/image/{filename}"
+
+
+def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
+    """Transforma a foto original do Mercado Livre em uma foto natural de produto.
+
+    Mantém a identidade do produto e cria apenas o contexto fotográfico. Se a
+    geração não estiver disponível ou falhar, retorna a foto original para
+    que a oferta continue sendo publicada normalmente.
+    """
+    original = str(image_url or "").strip()
+    if not original:
+        return ""
+
+    if not OPENAI_API_KEY:
+        print("[OPENAI IMAGEM] OPENAI_API_KEY não configurada; usando foto original.")
+        return original
+
+    try:
+        source = requests.get(
+            original,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        source.raise_for_status()
+        source_type = (source.headers.get("content-type") or "image/jpeg").split(";")[0].lower()
+        if source_type not in {"image/jpeg", "image/png", "image/webp"}:
+            source_type = "image/jpeg"
+
+        title_hint = ""
+        first_line = str(offer_text or "").strip().splitlines()
+        for line in first_line:
+            clean = line.strip()
+            if clean and not clean.startswith(("🔥", "💰", "💸", "🏷️", "🚚", "🎟️", "💥", "⚠️", "🛒", "👉")):
+                title_hint = clean
+                break
+        if not title_hint:
+            title_hint = "produto de oferta"
+
+        prompt = f"""Create a photorealistic natural product photograph for a WhatsApp shopping offer, using the supplied Mercado Livre product photo as the exact product reference.
+
+PRODUCT CONTEXT: {title_hint}
+
+CRITICAL PRODUCT FIDELITY:
+- Preserve the exact product identity, shape, proportions, packaging, bottle/container, cap, colors, materials, and visible branding from the source image.
+- Do not redesign, replace, relabel, recolor, duplicate, or invent the product.
+- Keep the product clearly recognizable as the same item shown in the source.
+- Do not add a second different product.
+
+PHOTO STYLE:
+- Make it look like a real photograph taken by a professional product photographer, not a CGI render and not an obvious AI-generated image.
+- Use a simple, tasteful real-world lifestyle setting appropriate to the product.
+- Use natural soft daylight, realistic shadows, believable reflections and depth of field.
+- Keep the product as the clear visual focus.
+- For perfumes or cosmetics, prefer an elegant real vanity, shelf or bathroom setting; a natural hand holding the original product is also acceptable when it looks realistic.
+- For electronics, home, kitchen, tools, automotive or fashion products, choose a realistic everyday environment that naturally fits that product.
+
+IMPORTANT:
+- No promotional banner.
+- No price.
+- No discount text.
+- No captions.
+- No artificial graphic elements.
+- No watermark.
+- No extra logos except branding that already exists on the original product.
+- Do not change any readable product label or packaging text unnecessarily.
+- Composition should be attractive, clean and suitable for sharing in WhatsApp.
+"""
+
+        files = {
+            "image[]": (
+                "produto_original." + ("png" if source_type == "image/png" else "webp" if source_type == "image/webp" else "jpg"),
+                source.content,
+                source_type,
+            )
+        }
+        data = {
+            "model": OPENAI_IMAGE_MODEL,
+            "prompt": prompt,
+            "size": "1024x1024",
+            "quality": "medium",
+            "output_format": "png",
+        }
+
+        response = requests.post(
+            "https://api.openai.com/v1/images/edits",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files=files,
+            data=data,
+            timeout=120,
+        )
+
+        if not response.ok:
+            print(
+                "[OPENAI IMAGEM] Falha:",
+                response.status_code,
+                response.text[:1000],
+            )
+            return original
+
+        payload = response.json()
+        item = (payload.get("data") or [None])[0]
+        if not isinstance(item, dict):
+            print("[OPENAI IMAGEM] Resposta sem imagem.")
+            return original
+
+        b64 = item.get("b64_json")
+        if not b64:
+            print("[OPENAI IMAGEM] Resposta não trouxe b64_json.")
+            return original
+
+        image_bytes = base64.b64decode(b64)
+        generated_url = _save_generated_whatsapp_image(image_bytes, "png")
+        _cleanup_whatsapp_images()
+
+        print("[OPENAI IMAGEM] Imagem natural criada com sucesso.")
+        return generated_url
+
+    except Exception as exc:
+        print("[OPENAI IMAGEM] Erro; usando foto original:", repr(exc))
+        return original
+
+
+@app.route("/whatsapp/image/<filename>")
+def whatsapp_image(filename):
+    """Entrega temporariamente as imagens geradas para o WhatsApp Bot."""
+    if not re.fullmatch(r"[a-f0-9]{32}\.(?:png|jpg|jpeg|webp)", filename or "", re.I):
+        return "Imagem inválida.", 400
+
+    path = os.path.join(WHATSAPP_IMAGE_DIR, filename)
+    if not os.path.isfile(path):
+        return "Imagem não encontrada.", 404
+
+    from flask import send_file
+    return send_file(path, max_age=3600)
+
+
+# ============================================================
 # PUBLICAÇÃO AUTOMÁTICA NO WHATSAPP
 # ============================================================
 
@@ -2173,89 +2352,31 @@ AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 
-def _gerar_imagem_whatsapp(image_url, title="Produto", category=""):
-    """Transforma a foto oficial em uma foto promocional natural.
-
-    Se a API não estiver configurada, se a foto não puder ser baixada ou se a
-    geração falhar, retorna a foto original para não interromper a oferta.
-    """
-    if not image_url:
-        return ""
-    if not OPENAI_API_KEY:
-        print("[OPENAI IMAGEM] OPENAI_API_KEY não configurada; usando foto original.")
-        return image_url
-    if str(image_url).startswith("data:image/"):
-        return image_url
-
-    try:
-        img = requests.get(
-            str(image_url),
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=25,
-        )
-        if img.status_code != 200 or not img.content:
-            print("[OPENAI IMAGEM] Falha ao baixar foto original:", img.status_code)
-            return image_url
-
-        content_type = (img.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip().lower()
-        ext = ".png" if content_type == "image/png" else ".webp" if content_type == "image/webp" else ".jpg"
-        filename = "produto" + ext
-        prompt = (
-            "Create a photorealistic product lifestyle photo for a WhatsApp shopping offer. "
-            "Use the provided Mercado Livre product photo as the strict product reference. "
-            "Keep the exact product identity, shape, colors, logo, packaging, labels and proportions. "
-            "Do not redesign, replace or invent the product. Place the product naturally in an attractive, "
-            "realistic everyday scene appropriate for the product category, with soft natural lighting, "
-            "real photographic depth, premium but believable composition, and a clean background. "
-            "The result must look like a real photograph taken for social media, not an AI advertisement, "
-            "not a banner and not a catalog mockup. Do not add any text, prices, discount badges, logos, "
-            "watermarks or promotional graphics. Show the product clearly and prominently. "
-            f"Product name: {title}. Category: {category or 'general retail product'}."
-        )
-
-        response = requests.post(
-            "https://api.openai.com/v1/images/edits",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files={"image": (filename, img.content, content_type)},
-            data={
-                "model": OPENAI_IMAGE_MODEL,
-                "prompt": prompt,
-                "size": "1024x1024",
-                "quality": "low",
-                "output_format": "jpeg",
-                "output_compression": "82",
-            },
-            timeout=120,
-        )
-        if not response.ok:
-            print("[OPENAI IMAGEM] API:", response.status_code, response.text[:1000])
-            return image_url
-
-        payload = response.json()
-        items = payload.get("data") or []
-        b64 = items[0].get("b64_json") if items and isinstance(items[0], dict) else None
-        if not b64:
-            print("[OPENAI IMAGEM] API não retornou b64_json.")
-            return image_url
-
-        print("[OPENAI IMAGEM] Foto promocional gerada com sucesso.")
-        return "data:image/jpeg;base64," + b64
-    except Exception as exc:
-        print("[OPENAI IMAGEM] Erro; usando foto original:", repr(exc))
-        return image_url
-
-
-def _whatsapp_send_text(text, image_url="", title="Produto", category=""):
+def _whatsapp_send_text(text, image_url=""):
     """Envia texto ou foto com legenda ao grupo selecionado pelo WhatsApp Bot."""
     if not WHATSAPP_BOT_URL:
         return False, "WHATSAPP_BOT_URL não configurada."
     if not WHATSAPP_BOT_KEY:
         return False, "WHATSAPP_BOT_KEY não configurada."
-    promotional_image = _gerar_imagem_whatsapp(
-        str(image_url or "").strip(),
-        title=title,
-        category=category,
-    ) if image_url else ""
+    print(
+        "[AUTO WHATSAPP] Início do envio | "
+        f"texto={len(str(text or ''))} caracteres | "
+        f"imagem_original={'SIM' if image_url else 'NÃO'}"
+    )
+
+    prepared_image = gerar_imagem_natural_whatsapp(
+        image_url,
+        text,
+    )
+
+    print(
+        "[AUTO WHATSAPP] Imagem preparada:",
+        prepared_image[:500] if prepared_image else "(sem imagem)"
+    )
+    print(
+        "[AUTO WHATSAPP] Enviando para Bot:",
+        f"{WHATSAPP_BOT_URL}/api/send-offer"
+    )
 
     try:
         response = requests.post(
@@ -2264,10 +2385,16 @@ def _whatsapp_send_text(text, image_url="", title="Produto", category=""):
                 "Content-Type": "application/json",
                 "x-bot-key": WHATSAPP_BOT_KEY,
             },
-            json={"text": text, "image": promotional_image},
+            json={"text": text, "image": prepared_image},
             timeout=150,
         )
+        print(
+            "[AUTO WHATSAPP] Resposta do Bot:",
+            response.status_code,
+            response.text[:1000]
+        )
     except requests.RequestException as exc:
+        print("[AUTO WHATSAPP] Falha de comunicação:", repr(exc))
         return False, f"Falha de comunicação: {exc}"
 
     try:
@@ -2351,12 +2478,7 @@ def _whatsapp_publish_scan(result):
             continue
 
         text = ad_text(offer, offer.get("affiliate_link") or offer.get("permalink") or "")
-        ok, detail = _whatsapp_send_text(
-            text,
-            offer.get("image") or "",
-            offer.get("title") or "Produto",
-            offer.get("category_name") or "",
-        )
+        ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
             return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
@@ -2560,20 +2682,97 @@ def api_anuncio():
 
 @app.route("/api/enviar-whatsapp", methods=["POST"])
 def api_enviar_whatsapp():
-    """Gera a foto promocional natural e envia a oferta ao WhatsApp Bot."""
+    """Envia para o grupo selecionado no WhatsApp Bot."""
+    if not WHATSAPP_BOT_URL:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_URL não configurada no Railway."
+        }), 500
+
+    if not WHATSAPP_BOT_KEY:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_KEY não configurada no Railway."
+        }), 500
+
     data = request.get_json(silent=True) or {}
     text = str(data.get("text") or "").strip()
     image = str(data.get("image") or "").strip()
-    title = str(data.get("title") or "Produto").strip()
-    category = str(data.get("category") or "").strip()
 
     if not text:
-        return jsonify({"ok": False, "erro": "O anúncio está vazio."}), 400
+        return jsonify({
+            "ok": False,
+            "erro": "O anúncio está vazio."
+        }), 400
 
-    ok, detail = _whatsapp_send_text(text, image, title, category)
-    if ok:
-        return jsonify({"ok": True, "mensagem": detail})
-    return jsonify({"ok": False, "erro": detail}), 502
+    print(
+        "[WHATSAPP] Início do envio | "
+        f"texto={len(text)} caracteres | "
+        f"imagem_original={'SIM' if image else 'NÃO'}"
+    )
+
+    prepared_image = gerar_imagem_natural_whatsapp(
+        image,
+        text,
+    )
+
+    print(
+        "[WHATSAPP] Imagem preparada:",
+        prepared_image[:500] if prepared_image else "(sem imagem)"
+    )
+    print(
+        "[WHATSAPP] Enviando para Bot:",
+        f"{WHATSAPP_BOT_URL}/api/send-offer"
+    )
+
+    try:
+        response = requests.post(
+            f"{WHATSAPP_BOT_URL}/api/send-offer",
+            headers={
+                "Content-Type": "application/json",
+                "x-bot-key": WHATSAPP_BOT_KEY,
+            },
+            json={"text": text, "image": prepared_image},
+            timeout=150,
+        )
+        print(
+            "[WHATSAPP] Resposta do Bot:",
+            response.status_code,
+            response.text[:1000]
+        )
+    except requests.RequestException as exc:
+        print("[WHATSAPP] Falha de comunicação:", repr(exc))
+        return jsonify({
+            "ok": False,
+            "erro": "Não foi possível conectar ao WhatsApp Bot.",
+            "detalhes": str(exc),
+        }), 502
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {
+            "ok": False,
+            "erro": response.text[:1000] or "Resposta inválida do WhatsApp Bot.",
+        }
+
+    if response.ok and payload.get("ok"):
+        print("[WHATSAPP] Oferta enviada com sucesso.")
+        return jsonify({
+            "ok": True,
+            "mensagem": payload.get("message") or "Oferta enviada para o WhatsApp.",
+        })
+
+    print(
+        "[WHATSAPP] Bot recusou envio:",
+        response.status_code,
+        payload,
+    )
+    return jsonify({
+        "ok": False,
+        "erro": payload.get("error") or payload.get("erro") or "O WhatsApp Bot recusou o envio.",
+        "status_http": response.status_code,
+    }), 502
 
 # ============================================================
 # TESTES / DIAGNÓSTICO
@@ -2723,7 +2922,7 @@ function seller(o,mi,oi){
  <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
- <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}','${encodeURIComponent(String(o.title||'Produto'))}','${encodeURIComponent(String(o.category_name||''))}')">📲 Enviar para WhatsApp</button>
+ <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
  </div>`;
 }
@@ -2751,7 +2950,7 @@ async function anuncio(id,o){
   alert('❌ '+e.message);
  }
 }
-async function enviarWhatsApp(id,imageEncoded,titleEncoded,categoryEncoded){
+async function enviarWhatsApp(id,imageEncoded){
  const el=document.getElementById('ad_'+id);
  const text=el.textContent.trim();
  if(!text){alert('Gere o anúncio primeiro.');return;}
@@ -2762,7 +2961,7 @@ async function enviarWhatsApp(id,imageEncoded,titleEncoded,categoryEncoded){
  try{
   let image='';
   try{image=decodeURIComponent(imageEncoded||'');}catch(e){}
-  const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,image,title:decodeURIComponent(titleEncoded||'Produto'),category:decodeURIComponent(categoryEncoded||'')})});
+  const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,image})});
   const d=await r.json();
   if(!r.ok || !d.ok) throw new Error(d.erro||'O WhatsApp recusou o envio.');
   b.textContent='✅ Enviado para WhatsApp';
