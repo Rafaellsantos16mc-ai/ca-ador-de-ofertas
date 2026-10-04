@@ -1349,20 +1349,31 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
-def search_products_direct(q, limit=30):
-    """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
-    data, status, _ = ml_get("/products/search", {
-        "site_id": SITE_ID,
+def search_products_direct(q, limit=50, offset=0):
+    """Busca anúncios reais do marketplace.
+
+    IMPORTANTE: /products/search é busca de catálogo e devolve PRODUCT_ID.
+    Para o caçador de ofertas precisamos de anúncios reais, com ITEM_ID,
+    preço, vendedor, link e frete. Por isso a busca principal usa
+    /sites/MLB/search.
+    """
+    try:
+        lim = min(max(int(limit or 50), 1), 50)
+        off = max(int(offset or 0), 0)
+    except Exception:
+        lim, off = 50, 0
+
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
         "q": q,
-        "status": "active",
-        "limit": min(int(limit or 30), 50),
-        "offset": 0,
+        "limit": lim,
+        "offset": off,
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA] {q} -> HTTP {status}")
+        print(f"[BUSCA ANÚNCIOS] {q} -> HTTP {status}")
         return []
+
     results = data.get("results") or []
-    print(f"[BUSCA] {q} -> {len(results)} candidatos")
+    print(f"[BUSCA ANÚNCIOS] {q} -> {len(results)} anúncios reais")
     return results
 
 
@@ -1661,103 +1672,109 @@ def demand_score(title, category, product_id, signals, allow_direct=False):
 
 
 def _search_category(cat):
-    """Busca várias sementes da categoria para não retornar apenas 1 produto."""
+    """Busca várias sementes e mantém ITEM_ID + CATALOG_PRODUCT_ID."""
     queries = CATEGORY_SEED.get(cat, [])[:4]
     out = []
     seen = set()
     for q in queries:
         try:
-            rows = search_products_direct(q, 20)
+            rows = search_products_direct(q, 50)
         except Exception as e:
             print("[BUSCA CATEGORIA]", cat, q, repr(e))
             continue
         for raw in rows or []:
             if not isinstance(raw, dict):
                 continue
-            pid = str(raw.get("id") or raw.get("product_id") or "").strip()
-            if not pid or pid in seen:
+            item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+            if not item_id or item_id in seen:
                 continue
-            seen.add(pid)
+            seen.add(item_id)
             out.append((raw, q))
-    print(f"[BUSCA CATEGORIA] {cat} -> {len(out)} candidatos únicos")
+    print(f"[BUSCA CATEGORIA] {cat} -> {len(out)} anúncios únicos")
     return out
 
 
-def _fetch_product_fast(pid, raw=None, base=None):
+def _fetch_product_fast(item_id, raw=None, base=None):
+    """Normaliza um anúncio real sem depender de Buy Box ou catálogo."""
     base = base or {"category_id": None, "category_name": None, "query": ""}
-    cache_key = str(pid)
+    item_id = str(item_id or (raw or {}).get("id") or "").strip()
+    if not item_id:
+        return None
+
+    cache_key = f"item:{item_id}"
     with _PRODUCT_CACHE_LOCK:
         if cache_key in _PRODUCT_CACHE:
             return _PRODUCT_CACHE[cache_key]
 
-    # 1) aproveita qualquer buy box que já tenha vindo na busca.
-    if isinstance(raw, dict):
-        bb = raw.get("buy_box_winner") or raw.get("buy_box")
-        item = _build_item_from_buy_box(bb)
-        if item is not None:
-            p = dict(raw)
-            p.setdefault("name", raw.get("title") or pid)
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+    raw = raw if isinstance(raw, dict) else {}
+    shipping = raw.get("shipping") or {}
+    if not isinstance(shipping, dict):
+        shipping = {}
 
-    # 2) detalhe do catálogo.
-    p = product(pid)
-    if p:
-        bb = p.get("buy_box_winner") or p.get("buy_box")
-        item = _build_item_from_buy_box(bb)
-        if item is not None:
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+    free = bool(raw.get("free_shipping") or shipping.get("free_shipping"))
+    shipping_cost = shipping.get("cost")
+    if shipping_cost is None:
+        shipping_cost = raw.get("shipping_cost")
+    if free:
+        shipping_cost = 0
 
-    # 3) tenta publicações associadas ao produto.
-    with _ITEMS_CACHE_LOCK:
-        cached_items = _ITEMS_CACHE.get(cache_key)
-    items = cached_items if cached_items is not None else product_items(pid)
-    if cached_items is None:
-        with _ITEMS_CACHE_LOCK:
-            _ITEMS_CACHE[cache_key] = items
+    price = raw.get("price")
+    original = raw.get("original_price")
+    if original is None:
+        original = raw.get("regular_price")
 
-    best = None
-    for candidate in items or []:
-        item = normalize_item(candidate)
-        if not item:
-            continue
-        item["sold_quantity"] = candidate.get("sold_quantity") or 0
-        if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
-            best = item
+    if price is None:
+        sale, sale_original = get_current_sale_price(item_id)
+        if sale is not None:
+            price = sale
+            if original is None:
+                original = sale_original
 
-    # 4) Mesmo sem buy box, se a própria busca trouxer preço/permalink,
-    # aproveita. Isso impede que um produto válido desapareça só porque o
-    # catálogo não expôs um vencedor para o token atual.
-    if best is None and isinstance(raw, dict):
-        raw_price = raw.get("price") or raw.get("sale_price")
-        try:
-            raw_price = float(raw_price) if raw_price is not None else None
-        except Exception:
-            raw_price = None
-        if valid_catalog_price(raw_price):
-            best = {
-                "item_id": raw.get("item_id"),
-                "seller_id": raw.get("seller_id"),
-                "price": raw_price,
-                "original_price": raw.get("original_price") or raw.get("regular_price"),
-                "condition": raw.get("condition"),
-                "free_shipping": bool(raw.get("free_shipping")),
-                "shipping_cost": raw.get("shipping_cost"),
-                "permalink": raw.get("permalink"),
-                "sold_quantity": raw.get("sold_quantity") or 0,
-            }
+    try:
+        price = float(price) if price is not None else None
+    except Exception:
+        price = None
+    try:
+        original = float(original) if original is not None else None
+    except Exception:
+        original = None
 
-    if best is None:
+    if price is None or price <= 0:
         return None
-    if p is None:
-        p = dict(raw or {})
-    p.setdefault("name", (raw or {}).get("title") or pid)
-    result = (pid, p, best, base)
+
+    catalog_product_id = (
+        raw.get("catalog_product_id")
+        or raw.get("catalog_product_id")
+        or raw.get("product_id")
+    )
+    catalog_product_id = str(catalog_product_id).strip() if catalog_product_id else None
+
+    p = dict(raw)
+    p["id"] = item_id
+    p["name"] = raw.get("title") or raw.get("name") or item_id
+    p["title"] = p["name"]
+    p["catalog_product_id"] = catalog_product_id
+
+    # O anúncio já traz thumbnail. Mantemos a mesma estrutura de pictures
+    # usada pelo restante do app, sem fazer chamada extra ao catálogo.
+    if not p.get("pictures") and raw.get("thumbnail"):
+        p["pictures"] = [{"url": raw.get("thumbnail"), "secure_url": raw.get("thumbnail")}]
+
+    item = {
+        "item_id": item_id,
+        "seller_id": raw.get("seller_id"),
+        "price": price,
+        "original_price": original,
+        "condition": raw.get("condition"),
+        "listing_type_id": raw.get("listing_type_id"),
+        "free_shipping": free,
+        "shipping_cost": shipping_cost,
+        "permalink": raw.get("permalink"),
+        "user_product_id": raw.get("user_product_id"),
+        "sold_quantity": raw.get("sold_quantity") or raw.get("sold_quantity") or 0,
+    }
+
+    result = (catalog_product_id or item_id, p, item, base)
     with _PRODUCT_CACHE_LOCK:
         _PRODUCT_CACHE[cache_key] = result
     return result
@@ -1831,7 +1848,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if not is_requested_product(title, source_query, cat):
                 continue
             seen.add(pid)
-            ds = demand_score(title, cat, pid, signals)
+            catalog_pid = str(raw.get("catalog_product_id") or raw.get("product_id") or "").strip() or None
+            demand_pid = catalog_pid or pid
+            ds = demand_score(title, cat, demand_pid, signals)
             rel = relevance(title, source_query)
             try:
                 p0 = float(raw.get("price")) if raw.get("price") is not None else 0
@@ -1876,7 +1895,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         fmap = {}
         for row in shortlist:
             _, pid, raw, cat, ds, source_query = row
-            fmap[ex.submit(demand_score, raw.get("name") or raw.get("title") or pid, cat, pid, signals, True)] = row
+            catalog_pid = str(raw.get("catalog_product_id") or raw.get("product_id") or "").strip() or None
+            demand_pid = catalog_pid or pid
+            allow_direct = bool(catalog_pid)
+            fmap[ex.submit(demand_score, raw.get("name") or raw.get("title") or pid, cat, demand_pid, signals, allow_direct)] = row
         for fut in as_completed(fmap):
             row = fmap[fut]
             try:
@@ -1959,7 +1981,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             total_price = total(price, shipping) if known else price
             free = bool(item.get("free_shipping"))
             rel = relevance(title, source_query)
-            ds = demand_score(title, cat, pid, signals)
+            catalog_pid = str(p.get("catalog_product_id") or "").strip() or None
+            ds = demand_score(title, cat, catalog_pid or item.get("item_id") or pid, signals, bool(catalog_pid))
 
             pics = p.get("pictures") or []
             image = None
@@ -2445,7 +2468,7 @@ def health():
         "status":"ok","app":"Cacador de Ofertas",
         "mercado_livre_conectado":bool(access_token()),
         "catalogo_categorias":len(CATALOG),
-        "fluxo":"products/{product_id}/items",
+        "fluxo":"sites/MLB/search -> anúncios reais (ITEM_ID)",
         "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
