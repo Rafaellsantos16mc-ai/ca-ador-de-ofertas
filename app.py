@@ -533,21 +533,22 @@ def product(pid):
     return data if status == 200 and isinstance(data, dict) else None
 
 def _build_item_from_buy_box(bb):
-    """Normaliza o buy_box_winner retornado pelo catálogo em formato de item."""
+    """Normaliza buy_box_winner do catálogo em formato de publicação."""
     if not isinstance(bb, dict):
         return None
 
+    item_obj = bb.get("item") if isinstance(bb.get("item"), dict) else {}
+    seller_obj = bb.get("seller") if isinstance(bb.get("seller"), dict) else {}
     item_id = (
         bb.get("item_id")
         or bb.get("id")
-        or (bb.get("item") or {}).get("item_id") if isinstance(bb.get("item"), dict) else None
+        or item_obj.get("item_id")
+        or item_obj.get("id")
     )
     if not item_id:
-        # Alguns retornos podem trazer o item dentro de winner
         winner = bb.get("winner")
         if isinstance(winner, dict):
             item_id = winner.get("item_id") or winner.get("id")
-
     if not item_id:
         return None
 
@@ -559,12 +560,10 @@ def _build_item_from_buy_box(bb):
         shipping.get("free_shipping")
         or bb.get("free_shipping") is True
         or bb.get("shipping_free") is True
+        or "mandatory_free_shipping" in (shipping.get("tags") or [])
     )
-
     cost = 0 if free else (
-        shipping.get("cost")
-        if shipping.get("cost") is not None
-        else bb.get("shipping_cost")
+        shipping.get("cost") if shipping.get("cost") is not None else bb.get("shipping_cost")
     )
 
     price = bb.get("price")
@@ -572,21 +571,20 @@ def _build_item_from_buy_box(bb):
         price = bb.get("sale_price")
     if price is None:
         price = bb.get("regular_price")
-
     original = bb.get("original_price")
     if original is None:
         original = bb.get("regular_price")
 
     return {
-        "item_id": item_id,
-        "seller_id": bb.get("seller_id") or bb.get("seller", {}).get("id") if isinstance(bb.get("seller"), dict) else bb.get("seller_id"),
+        "item_id": str(item_id),
+        "seller_id": bb.get("seller_id") or seller_obj.get("id"),
         "price": price,
         "original_price": original,
-        "condition": bb.get("condition"),
+        "condition": bb.get("condition") or "new",
         "listing_type_id": bb.get("listing_type_id"),
         "free_shipping": free,
         "shipping_cost": cost,
-        "permalink": bb.get("permalink"),
+        "permalink": bb.get("permalink") or item_obj.get("permalink"),
         "user_product_id": bb.get("user_product_id"),
         "sold_quantity": bb.get("sold_quantity") or bb.get("sales") or 0,
     }
@@ -1868,11 +1866,34 @@ def _item_from_api_value(value):
     return None
 
 
-def _fetch_product_fast(pid, raw=None, base=None):
-    """Obtém uma publicação real ligada a um PRODUCT_ID.
+def _normalize_product_buy_box(p):
+    """Extrai uma oferta válida de um produto de catálogo."""
+    if not isinstance(p, dict):
+        return None
+    bb = p.get("buy_box_winner") or p.get("buy_box")
+    item = _build_item_from_buy_box(bb)
+    if not item:
+        return None
+    try:
+        item["price"] = float(item.get("price")) if item.get("price") is not None else None
+    except Exception:
+        item["price"] = None
+    if not valid_catalog_price(item.get("price")):
+        return None
+    if item.get("original_price") is not None:
+        try:
+            item["original_price"] = float(item["original_price"])
+        except Exception:
+            item["original_price"] = None
+    return item
 
-    O Buy Box não é requisito. Primeiro procuramos /products/{id}/items e
-    escolhemos uma publicação válida com preço >= R$69,90.
+
+def _fetch_product_fast(pid, raw=None, base=None):
+    """Obtém uma publicação real de um PRODUCT_ID.
+
+    Além do produto encontrado na busca, verifica filhos do catálogo. Isso é
+    importante porque o Mercado Livre possui páginas-pai que não são
+    compráveis: o anúncio vendável fica em um dos children_ids.
     """
     base = base or {"category_id": None, "category_name": None, "query": ""}
     product_id = str(pid or (raw or {}).get("_product_id") or (raw or {}).get("id") or "").strip()
@@ -1885,39 +1906,69 @@ def _fetch_product_fast(pid, raw=None, base=None):
             return _PRODUCT_CACHE[cache_key]
 
     p = product(product_id)
-    if not p and isinstance(raw, dict):
-        p = dict(raw)
+    if not isinstance(p, dict):
+        p = dict(raw) if isinstance(raw, dict) else None
     if not isinstance(p, dict):
         return None
 
     p = dict(p)
     p.setdefault("name", p.get("title") or p.get("name") or product_id)
 
-    # A fonte oficial mais estável para uma publicação de catálogo é o
-    # buy_box_winner do /products/{product_id}. O endpoint /products/{id}/items
-    # não é necessário para que um produto tenha uma oferta válida e, em
-    # muitos produtos, pode não retornar publicações.
     normalized = []
+    source_product_id = product_id
+    source_product = p
 
-    bb = p.get("buy_box_winner") or p.get("buy_box")
-    item = _build_item_from_buy_box(bb)
-    if item:
-        try:
-            item["price"] = float(item.get("price")) if item.get("price") is not None else None
-        except Exception:
-            item["price"] = None
-        if valid_catalog_price(item.get("price")):
-            normalized.append(item)
+    # 1. Produto encontrado diretamente.
+    direct = _normalize_product_buy_box(p)
+    if direct:
+        normalized.append(direct)
 
-    # Fallback para publicações associadas, caso existam e o buy box não seja
-    # utilizável. Mantemos isso como fallback para não depender desse endpoint.
+    # 2. Se for página-pai ou não tiver vencedor, procura produtos-filhos.
+    # Limitamos para manter a atualização rápida e evitamos duplicações.
+    if not normalized:
+        children = p.get("children_ids") or []
+        if isinstance(children, list):
+            children = [str(x).strip() for x in children if str(x).strip()]
+        else:
+            children = []
+        children = children[:8]
+
+        child_results = []
+        for child_id in children:
+            try:
+                child = product(child_id)
+                child_item = _normalize_product_buy_box(child)
+                if child_item:
+                    child_results.append((child_id, child, child_item))
+            except Exception as e:
+                print("[FILHO CATÁLOGO]", product_id, child_id, repr(e))
+
+        if child_results:
+            def child_key(row):
+                item = row[2]
+                free = 0 if item.get("free_shipping") else 1
+                try:
+                    price = float(item.get("price") or 999999)
+                except Exception:
+                    price = 999999
+                try:
+                    ship = float(item.get("shipping_cost") or 0)
+                except Exception:
+                    ship = 0
+                return (free, price + ship)
+            source_product_id, source_product, best_child_item = sorted(child_results, key=child_key)[0]
+            normalized.append(best_child_item)
+            print(f"[FILHO CATÁLOGO] {product_id} -> {source_product_id} | oferta encontrada")
+        elif children:
+            print(f"[FILHO CATÁLOGO] {product_id} -> {len(children)} filhos verificados | sem oferta")
+
+    # 3. Fallback para /products/{id}/items.
     if not normalized:
         try:
             candidates = product_items(product_id) or []
         except Exception as e:
             print("[PRODUCT ITEMS]", product_id, repr(e))
             candidates = []
-
         for value in candidates:
             try:
                 item = _item_from_api_value(value)
@@ -1940,16 +1991,16 @@ def _fetch_product_fast(pid, raw=None, base=None):
                 if not isinstance(sh, dict):
                     sh = {}
                 item["free_shipping"] = bool(item.get("free_shipping") or sh.get("free_shipping"))
-                item["shipping_cost"] = 0 if item["free_shipping"] else (item.get("shipping_cost") if item.get("shipping_cost") is not None else sh.get("cost"))
+                item["shipping_cost"] = 0 if item["free_shipping"] else (
+                    item.get("shipping_cost") if item.get("shipping_cost") is not None else sh.get("cost")
+                )
                 normalized.append(item)
             except Exception as e:
                 print("[ITEM]", product_id, repr(e))
 
-    # Último fallback: o catálogo pode informar a faixa de preço mesmo quando
-    # não existe buy_box_winner. Nesse caso a oferta aponta para a página do
-    # produto, sem inventar vendedor, frete ou item_id.
+    # 4. Último fallback: faixa oficial do catálogo, sem inventar vendedor.
     if not normalized:
-        rng = p.get("buy_box_winner_price_range") or {}
+        rng = source_product.get("buy_box_winner_price_range") or p.get("buy_box_winner_price_range") or {}
         mn = rng.get("min") if isinstance(rng, dict) else None
         if isinstance(mn, dict):
             try:
@@ -1958,52 +2009,48 @@ def _fetch_product_fast(pid, raw=None, base=None):
                 range_price = None
             if valid_catalog_price(range_price):
                 normalized.append({
-                    "item_id": None,
-                    "seller_id": None,
-                    "price": range_price,
-                    "original_price": None,
-                    "condition": "new",
-                    "listing_type_id": None,
-                    "free_shipping": False,
-                    "shipping_cost": None,
-                    "permalink": p.get("permalink") or f"https://www.mercadolivre.com.br/p/{product_id}",
-                    "user_product_id": None,
-                    "sold_quantity": 0,
+                    "item_id": None, "seller_id": None, "price": range_price,
+                    "original_price": None, "condition": "new", "listing_type_id": None,
+                    "free_shipping": False, "shipping_cost": None,
+                    "permalink": source_product.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{source_product_id}",
+                    "user_product_id": None, "sold_quantity": int(source_product.get("sold_quantity") or 0),
                     "catalog_fallback": True,
                 })
 
     if not normalized:
         print(f"[SEM OFERTA] {product_id} | buy_box=0 | faixa_preco=0 | itens=0")
+        with _PRODUCT_CACHE_LOCK:
+            _PRODUCT_CACHE[cache_key] = None
         return None
 
-    # Melhor publicação: frete grátis primeiro, depois menor total/preço.
     def item_key(x):
         free = 0 if x.get("free_shipping") else 1
         try:
             price = float(x.get("price") or 999999)
         except Exception:
             price = 999999
-        ship = x.get("shipping_cost")
         try:
-            ship = float(ship) if ship is not None else 0
+            ship = float(x.get("shipping_cost") or 0)
         except Exception:
             ship = 0
         return (free, price + ship)
 
     best = sorted(normalized, key=item_key)[0]
-
     if not best.get("permalink"):
-        best["permalink"] = f"https://www.mercadolivre.com.br/p/{product_id}"
+        best["permalink"] = source_product.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{source_product_id}"
 
-    pics = p.get("pictures") or []
-    if not pics and p.get("thumbnail"):
-        p["pictures"] = [{"url": p.get("thumbnail"), "secure_url": p.get("thumbnail")}]
+    # O resultado continua identificado pelo PRODUCT_ID original para que o
+    # ranking de demanda continue casando corretamente.
+    pics = source_product.get("pictures") or p.get("pictures") or []
+    if not pics and source_product.get("thumbnail"):
+        pics = [{"url": source_product.get("thumbnail"), "secure_url": source_product.get("thumbnail")}]
+    if pics:
+        source_product["pictures"] = pics
 
-    result = (product_id, p, best, base)
+    result = (product_id, source_product, best, base)
     with _PRODUCT_CACHE_LOCK:
         _PRODUCT_CACHE[cache_key] = result
     return result
-
 
 def _resolve_scan_categories(queries):
     """Resolve corretamente uma ou várias categorias sem perder as demais.
@@ -2637,7 +2684,7 @@ def health():
         "status":"ok","app":"Cacador de Ofertas",
         "mercado_livre_conectado":bool(access_token()),
         "catalogo_categorias":len(CATALOG),
-        "fluxo":"sites/MLB/search -> anúncios reais (ITEM_ID)",
+        "fluxo":"products/search -> products/{product_id} -> buy_box/children -> publicações reais",
         "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
