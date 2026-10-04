@@ -1,61 +1,41 @@
-# Caçador de Ofertas — MVP 1
+# Caçador de Ofertas — MVP 2
 
-Esta é uma versão propositalmente simples e estável.
+Esta versão mantém a confirmação manual da MVP 1 e adiciona uma primeira busca automática de anúncios do Mercado Livre.
 
-## O que já funciona
-- Dashboard.
-- Cadastro de ofertas.
-- Cálculo automático do percentual de desconto.
-- Lista de ofertas pendentes.
-- Botão CONFIRMAR.
-- Botão IGNORAR.
-- Reverter decisão.
-- Fila exclusiva de ofertas confirmadas para a futura integração com WhatsApp.
-- SQLite.
-- `/health`.
-- `/api/status`.
-- `/api/whatsapp/fila`.
-- Funciona sem Mercado Livre e sem WhatsApp nesta primeira etapa.
+## Variável necessária no Railway
 
-## Rodar localmente
+Crie em Variables:
 
-```bash
-pip install -r requirements.txt
-python app.py
-```
+`ML_ACCESS_TOKEN`
 
-Abra:
-`http://localhost:8080`
+Valor: seu Access Token da aplicação do Mercado Livre.
 
-## Railway
+Também é possível configurar:
 
-Suba estes arquivos:
-- app.py
-- requirements.txt
-- railway.toml
+`MIN_PRICE=69.90`
+`MIN_DISCOUNT=10`
 
-O Railway usará o comando:
-`gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120`
+## Fluxo
 
-Não é necessário Procfile.
+1. Abra o site.
+2. Clique em **BUSCAR OFERTAS AGORA**.
+3. O sistema consulta várias buscas de produtos.
+4. Só entram ofertas com preço mínimo e desconto mínimo configurados.
+5. As novas ofertas entram como **PENDENTES**.
+6. Você decide CONFIRMAR ou IGNORAR.
+7. As confirmadas continuam na fila `/api/whatsapp/fila`.
 
-## Testar rapidamente
+## Importante
 
-Depois de abrir o endereço público do Railway:
+A busca automática é propositalmente separada do WhatsApp. Primeiro validamos a obtenção real dos anúncios e a qualidade das ofertas.
 
-1. Cadastre uma oferta usando o formulário.
-2. Ela aparece como PENDENTE.
-3. Clique CONFIRMAR.
-4. Clique "Confirmadas / fila WhatsApp".
-5. A oferta estará disponível em:
+A documentação atual do Mercado Livre exige Authorization Bearer para os recursos privados de API e documenta `/sites/MLB/search` para consultas de itens/listagens. Se a API responder 401/403, a própria aplicação mostra o status no retorno da busca e no endpoint `/mercadolivre/status`.
+
+## Endpoints
+
+`/`
+`/api/buscar` POST
+`/api/ofertas?status=pendente`
 `/api/whatsapp/fila`
-
-## Próxima etapa
-
-Depois que esta base estiver comprovadamente funcionando, a próxima camada pode:
-1. buscar produtos automaticamente;
-2. calcular regras de oferta;
-3. gerar o link de afiliado;
-4. mandar as ofertas confirmadas para WhatsApp.
-
-A integração com WhatsApp fica propositalmente separada da confirmação para não misturar dois problemas ao mesmo tempo.
+`/mercadolivre/status`
+`/health`
