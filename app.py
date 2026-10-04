@@ -2111,25 +2111,53 @@ def auto_scan(category=None, min_discount=0):
 # ============================================================
 
 def ad_text(o, affiliate=""):
-    lines = ["🔥 OFERTA ENCONTRADA!","",f"🛍️ {o.get('title','Produto')}"]
+    """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
+    title = str(o.get("title") or "Produto").strip()
+    lines = [
+        "🔥 OFERTA OCULTA / VIP",
+        "",
+        f"🛍️ {title}",
+    ]
+
     if o.get("original_price"):
-        lines.append(f"💸 De: {brl(o['original_price'])}")
-    lines.append(f"🔥 Por: {brl(o['price'])}")
-    if o.get("discount",0)>0:
+        lines.append(f"~De: {brl(o['original_price'])}~")
+
+    price_line = f"💰 Por: {brl(o['price'])} 🔥"
+    lines.append(price_line)
+
+    if o.get("discount", 0) > 0:
         lines.append(f"🏷️ {o['discount']}% OFF")
+
     if o.get("free_shipping"):
         lines.append("🚚 Frete grátis")
+
     if o.get("cupom"):
-        c=o["cupom"]
-        label = c.get("code") or c.get("label") or "Cupom confirmado"
-        lines += ["",f"🎟️ CUPOM: {label}"]
-        if c.get("discount_percent") or (c.get("type") == "percent"): lines.append(f"🔥 Até {c.get('discount_percent') or c.get('value')}% OFF")
-        if c.get("fixed_discount") or c.get("type") == "fixed": lines.append(f"💰 {brl(c.get('fixed_discount') or c.get('value'))} OFF")
-        if c.get("max_discount"): lines.append(f"💰 Limite do cupom: {brl(c['max_discount'])}")
-        if o.get("desconto_cupom") is not None: lines.append(f"💵 Desconto estimado: {brl(o.get('desconto_cupom'))}")
-        if c.get("min_purchase"): lines.append(f"🛒 Compra mínima: {brl(c['min_purchase'])}")
-        lines += ["",f"💥 PREÇO ESTIMADO COM CUPOM: {brl(o['preco_com_cupom'])}"]
-    lines += ["","⚠️ Consulte as condições e confirme o cupom no checkout.","","🛒 PEGAR OFERTA:",affiliate or "Gere o link pelo Gerador oficial do Mercado Livre."]
+        c = o["cupom"]
+        label = c.get("code") or c.get("label") or "Cupom disponível"
+        lines += ["", f"🎟️ Cupom: {label}"]
+
+        if c.get("discount_percent") or c.get("type") == "percent":
+            value = c.get("discount_percent") or c.get("value")
+            lines.append(f"🔥 Até {value}% OFF")
+
+        if c.get("fixed_discount") or c.get("type") == "fixed":
+            value = c.get("fixed_discount") or c.get("value")
+            lines.append(f"💸 {brl(value)} OFF")
+
+        if o.get("desconto_cupom") is not None and o.get("preco_com_cupom") is not None:
+            lines.append(f"💥 Com cupom: {brl(o['preco_com_cupom'])}")
+
+        if c.get("min_purchase"):
+            lines.append(f"🛒 Compra mínima: {brl(c['min_purchase'])}")
+
+        lines += ["", "⚠️ Consulte as condições e confirme o cupom no checkout."]
+
+    link = str(affiliate or o.get("permalink") or "").strip()
+    if link:
+        lines += ["", "🛒 Pegar promoção:", link]
+    else:
+        lines += ["", "🛒 Pegar promoção:", "Gere o link pelo Gerador oficial do Mercado Livre."]
+
     return "\n".join(lines)
 
 # ============================================================
@@ -2677,7 +2705,7 @@ async function copiarUrl(id,url){
 async function anuncio(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
-  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:''});
+  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:o.permalink || ''});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
   const d=await r.json();
