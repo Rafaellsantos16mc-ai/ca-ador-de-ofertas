@@ -1763,14 +1763,45 @@ def _fetch_product_fast(pid, raw=None, base=None):
     return result
 
 
-def scan_queries(queries, min_discount=0, apply_coupons=False):
-    requested = None
-    if queries:
-        requested = query_category(str(queries[0]))
-        if str(queries[0]) in CATALOG:
-            requested = str(queries[0])
+def _resolve_scan_categories(queries):
+    """Resolve corretamente uma ou várias categorias sem perder as demais.
 
-    categories = [requested] if requested else list(CATALOG.keys())
+    O bug crítico anterior era usar apenas queries[0]. Quando a rotina de
+    atualização enviava uma semente de cada categoria, a primeira semente
+    (smartphone) fazia o scanner trabalhar somente em Celulares.
+    """
+    values = [str(x).strip() for x in (queries or []) if str(x).strip()]
+    if not values:
+        return list(CATALOG.keys())
+
+    # Se vierem os nomes das categorias, respeita exatamente a seleção.
+    direct = []
+    for value in values:
+        if value in CATALOG and value not in direct:
+            direct.append(value)
+    if direct:
+        return direct
+
+    # Se vierem várias sementes, recupera TODAS as categorias representadas.
+    mapped = []
+    for value in values:
+        cat = query_category(value)
+        if cat and cat not in mapped:
+            mapped.append(cat)
+    if mapped:
+        return mapped
+
+    # Uma consulta livre ainda tenta identificar a categoria; se não houver
+    # correspondência, pesquisa todas as categorias para não retornar vazio.
+    if len(values) == 1:
+        cat = query_category(values[0])
+        return [cat] if cat else list(CATALOG.keys())
+    return list(CATALOG.keys())
+
+
+def scan_queries(queries, min_discount=0, apply_coupons=False):
+    categories = _resolve_scan_categories(queries)
+    print(f"[CATEGORIAS RESOLVIDAS] {categories}")
     signals = load_demand_signals()
 
     # Busca 4 sementes por categoria em paralelo.
@@ -2046,7 +2077,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
 
 def auto_scan(category=None, min_discount=0):
-    return scan_queries(_search_seed_queries(category), min_discount, apply_coupons=False)
+    # A seleção passa pelo nome da categoria; não depende de uma função
+    # auxiliar que pode não existir no ambiente de produção.
+    if category and category in CATALOG:
+        queries = [category]
+    else:
+        queries = list(CATALOG.keys())
+    return scan_queries(queries, min_discount, apply_coupons=False)
 
 # ============================================================
 # ANÚNCIO
@@ -2113,10 +2150,12 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro rapidamente...")
 
         if category:
-            queries = CATALOG.get(category, [])[:3]
+            # Uma categoria específica: busca todas as sementes dela.
+            queries = [category]
         else:
-            # Uma busca forte por categoria. Trends/Highlights só ranqueiam.
-            queries = [qs[0] for qs in CATALOG.values() if qs]
+            # TODAS as categorias selecionadas no catálogo. O scanner resolve
+            # cada uma separadamente; não usar somente a primeira semente.
+            queries = list(CATALOG.keys())
 
         update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
         update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
