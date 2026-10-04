@@ -27,20 +27,14 @@ ML_REDIRECT_URI = os.getenv(
 ML_API = "https://api.mercadolibre.com"
 
 # ============================================================
-# INTEGRAÇÃO COM WHATSAPP BOT
+# WHATSAPP BOT
 # ============================================================
 
 WHATSAPP_BOT_URL = os.getenv(
     "WHATSAPP_BOT_URL",
-    ""
+    "https://whatsapp-bot-production-c647.up.railway.app"
 ).strip().rstrip("/")
-
-WHATSAPP_BOT_KEY = os.getenv(
-    "WHATSAPP_BOT_KEY",
-    ""
-).strip()
-
-WHATSAPP_TEST_LAST = 0
+WHATSAPP_BOT_KEY = os.getenv("WHATSAPP_BOT_KEY", "").strip()
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
@@ -2245,6 +2239,75 @@ def api_anuncio():
                 o["preco_com_cupom"]=max(0,float(o["price"])-cup["desconto_estimado"])
     return jsonify({"anuncio":ad_text(o,request.args.get("affiliate_link","").strip())})
 
+
+@app.route("/api/enviar-whatsapp", methods=["POST"])
+def api_enviar_whatsapp():
+    """Envia para o grupo selecionado no WhatsApp Bot."""
+    if not WHATSAPP_BOT_URL:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_URL não configurada no Railway."
+        }), 500
+
+    if not WHATSAPP_BOT_KEY:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_KEY não configurada no Railway."
+        }), 500
+
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text") or "").strip()
+
+    if not text:
+        return jsonify({
+            "ok": False,
+            "erro": "O anúncio está vazio."
+        }), 400
+
+    try:
+        response = requests.post(
+            f"{WHATSAPP_BOT_URL}/api/send-offer",
+            headers={
+                "Content-Type": "application/json",
+                "x-bot-key": WHATSAPP_BOT_KEY,
+            },
+            json={"text": text},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        print("[WHATSAPP] Falha de comunicação:", repr(exc))
+        return jsonify({
+            "ok": False,
+            "erro": "Não foi possível conectar ao WhatsApp Bot.",
+            "detalhes": str(exc),
+        }), 502
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {
+            "ok": False,
+            "erro": response.text[:1000] or "Resposta inválida do WhatsApp Bot.",
+        }
+
+    if response.ok and payload.get("ok"):
+        print("[WHATSAPP] Oferta enviada com sucesso.")
+        return jsonify({
+            "ok": True,
+            "mensagem": payload.get("message") or "Oferta enviada para o WhatsApp.",
+        })
+
+    print(
+        "[WHATSAPP] Bot recusou envio:",
+        response.status_code,
+        payload,
+    )
+    return jsonify({
+        "ok": False,
+        "erro": payload.get("error") or payload.get("erro") or "O WhatsApp Bot recusou o envio.",
+        "status_http": response.status_code,
+    }), 502
+
 # ============================================================
 # TESTES / DIAGNÓSTICO
 # ============================================================
@@ -2393,6 +2456,7 @@ function seller(o,mi,oi){
  <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
  <button onclick="anuncio('${id}',${JSON.stringify(o)})">📢 Gerar anúncio</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
+ <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
  </div>`;
 }
@@ -2405,10 +2469,39 @@ async function copiarUrl(id,url){
  }catch(e){alert('URL do produto: '+url);}
 }
 async function anuncio(id,o){
- const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:''});
- if(o.original_price)p.set('original_price',o.original_price);
- const r=await fetch('/api/gerar-anuncio?'+p); const d=await r.json();
- document.getElementById('ad_'+id).style.display='block';document.getElementById('ad_'+id).textContent=d.anuncio;document.getElementById('copy_'+id).style.display='block';
+ try{
+  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:''});
+  if(o.original_price)p.set('original_price',o.original_price);
+  const r=await fetch('/api/gerar-anuncio?'+p);
+  const d=await r.json();
+  if(!r.ok || !d.anuncio) throw new Error(d.erro||'Não foi possível gerar o anúncio.');
+  document.getElementById('ad_'+id).style.display='block';
+  document.getElementById('ad_'+id).textContent=d.anuncio;
+  document.getElementById('copy_'+id).style.display='block';
+  document.getElementById('wa_'+id).style.display='block';
+ }catch(e){
+  alert('❌ '+e.message);
+ }
+}
+async function enviarWhatsApp(id){
+ const el=document.getElementById('ad_'+id);
+ const text=el.textContent.trim();
+ if(!text){alert('Gere o anúncio primeiro.');return;}
+ const b=document.getElementById('wa_'+id);
+ const old=b.textContent;
+ b.disabled=true;
+ b.textContent='⏳ Enviando...';
+ try{
+  const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+  const d=await r.json();
+  if(!r.ok || !d.ok) throw new Error(d.erro||'O WhatsApp recusou o envio.');
+  b.textContent='✅ Enviado para WhatsApp';
+  setTimeout(()=>{b.textContent=old;b.disabled=false;},2500);
+ }catch(e){
+  b.disabled=false;
+  b.textContent=old;
+  alert('❌ '+e.message);
+ }
 }
 async function copyAd(id){
  const el=document.getElementById('ad_'+id); const text=el.textContent.trim();
@@ -2465,194 +2558,6 @@ def health():
         "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
         "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
     })
-
-# ============================================================
-# TESTE DE COMUNICAÇÃO COM WHATSAPP
-# ============================================================
-
-@app.route("/whatsapp/teste", methods=["GET", "POST"])
-def whatsapp_teste():
-
-    global WHATSAPP_TEST_LAST
-
-    if request.method == "GET":
-
-        return """
-        <!doctype html>
-        <html lang="pt-BR">
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport"
-                  content="width=device-width,initial-scale=1">
-            <title>Teste WhatsApp</title>
-
-            <style>
-                body{
-                    font-family:-apple-system,BlinkMacSystemFont,
-                    "Segoe UI",sans-serif;
-                    background:#111827;
-                    color:#fff;
-                    padding:24px;
-                }
-
-                .card{
-                    max-width:520px;
-                    margin:auto;
-                    background:#1f2937;
-                    padding:24px;
-                    border-radius:20px;
-                    text-align:center;
-                }
-
-                button{
-                    width:100%;
-                    padding:16px;
-                    border:0;
-                    border-radius:12px;
-                    background:#059669;
-                    color:#fff;
-                    font-size:18px;
-                    font-weight:700;
-                    margin-top:20px;
-                }
-
-                p{
-                    color:#cbd5e1;
-                    line-height:1.5;
-                }
-            </style>
-        </head>
-
-        <body>
-
-        <div class="card">
-
-            <h1>📲 Teste WhatsApp</h1>
-
-            <p>
-                Este teste envia uma mensagem fixa para
-                o grupo selecionado no WhatsApp Bot.
-            </p>
-
-            <form method="post"
-                  action="/whatsapp/teste">
-
-                <button type="submit">
-                    🟢 TESTAR ENVIO PARA WHATSAPP
-                </button>
-
-            </form>
-
-        </div>
-
-        </body>
-        </html>
-        """
-
-
-    agora = time.time()
-
-    if agora - WHATSAPP_TEST_LAST < 60:
-
-        return (
-            "<h2>⏳ Aguarde um pouco.</h2>"
-            "<p>O teste pode ser executado novamente em alguns segundos.</p>"
-            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
-        ), 429
-
-
-    if not WHATSAPP_BOT_URL:
-
-        return (
-            "<h2>❌ WHATSAPP_BOT_URL não configurada.</h2>"
-        ), 500
-
-
-    if not WHATSAPP_BOT_KEY:
-
-        return (
-            "<h2>❌ WHATSAPP_BOT_KEY não configurada.</h2>"
-        ), 500
-
-
-    WHATSAPP_TEST_LAST = agora
-
-
-    try:
-
-        resposta = requests.post(
-
-            WHATSAPP_BOT_URL +
-            "/api/send-offer",
-
-            headers={
-                "x-bot-key":
-                    WHATSAPP_BOT_KEY
-            },
-
-            json={
-                "text":
-                    "🟢 TESTE DE INTEGRAÇÃO — "
-                    "Caçador de Ofertas conectado "
-                    "ao WhatsApp com sucesso!"
-            },
-
-            timeout=20
-        )
-
-
-        try:
-            dados = resposta.json()
-        except Exception:
-            dados = resposta.text
-
-
-        if resposta.ok:
-
-            return (
-                "<h2>✅ Enviado com sucesso!</h2>"
-                "<p>"
-                "O Caçador de Ofertas conseguiu "
-                "enviar a mensagem para o WhatsApp Bot."
-                "</p>"
-                "<p>"
-                "Agora confira o grupo do WhatsApp."
-                "</p>"
-                "<p><a href='/whatsapp/teste'>Voltar</a></p>"
-            )
-
-
-        return (
-            "<h2>❌ O WhatsApp Bot recusou o envio.</h2>"
-            "<p>Status HTTP: "
-            + str(resposta.status_code)
-            + "</p>"
-            "<pre>"
-            + html_lib.escape(
-                str(dados)
-            )
-            + "</pre>"
-            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
-        ), 502
-
-
-    except Exception as error:
-
-        print(
-            "[WHATSAPP TESTE] ERRO:",
-            repr(error)
-        )
-
-        return (
-            "<h2>❌ Não foi possível conectar ao WhatsApp Bot.</h2>"
-            "<p>"
-            + html_lib.escape(
-                str(error)
-            )
-            + "</p>"
-            "<p><a href='/whatsapp/teste'>Voltar</a></p>"
-        ), 502
-
 
 @app.errorhandler(404)
 def e404(e): return jsonify({"erro":"Rota não encontrada.","rota":request.path}),404
