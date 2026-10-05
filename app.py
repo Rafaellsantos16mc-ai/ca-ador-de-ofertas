@@ -8,7 +8,7 @@ import re
 import html as html_lib
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, quote
 
 import requests
@@ -1694,7 +1694,7 @@ def load_demand_signals(force=False):
 
     result = {}
     cats = list(CATALOG.keys())
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(cats)))) as ex:
+    with _ThreadPoolExecutor(max_workers=min(6, max(1, len(cats)))) as ex:
         fmap = {ex.submit(_load_category_signals, cat): cat for cat in cats}
         for fut in as_completed(fmap):
             cat = fmap[fut]
@@ -2097,7 +2097,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     # Busca 4 sementes por categoria em paralelo.
     raw_by_cat = {}
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
+    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
         fmap = {ex.submit(_search_category, cat): cat for cat in categories}
         for fut in as_completed(fmap):
             cat = fmap[fut]
@@ -2163,7 +2163,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # candidatos. Antes disso o código fazia uma chamada /highlights/product
     # para praticamente todo resultado de busca e ficava lento.
     demand_checked = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with _ThreadPoolExecutor(max_workers=8) as ex:
         fmap = {}
         for row in shortlist:
             _, pid, raw, cat, ds, source_query = row
@@ -2188,7 +2188,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Enriquece bastante mais candidatos que as versões anteriores. A falha
     # de um produto não derruba os demais.
     fetched = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with _ThreadPoolExecutor(max_workers=8) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
                 "category_name": cat,
@@ -2209,7 +2209,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Validação definitiva no anúncio real. Só produtos aprovados passam
     # para a lista final: Full + MercadoLíder Gold/Platinum + >=100 vendas.
     validated = []
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with _ThreadPoolExecutor(max_workers=12) as ex:
         fmap = {}
         for result, cat, ds0, source_query in fetched:
             try:
@@ -2389,8 +2389,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
         coupon_results = []
         try:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            with _ThreadPoolExecutor(max_workers=5) as executor:
                 futures = [executor.submit(_coupon_for_offer, o) for o in flat]
                 for future in as_completed(futures):
                     try:
