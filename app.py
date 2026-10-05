@@ -3672,7 +3672,7 @@ def teste_search_seller():
     sem alterar a lógica normal do Caçador.
     """
     try:
-        token = get_access_token()
+        token = access_token()
     except Exception as exc:
         return jsonify({
             "ok": False,
