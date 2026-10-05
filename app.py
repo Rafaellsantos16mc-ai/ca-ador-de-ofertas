@@ -3596,7 +3596,7 @@ def afiliado_gerador():
     # O Mercado Livre documenta o Gerador oficial, mas não documenta uma API
     # pública para o nosso app transformar item_id em link de afiliado.
     # Portanto abrimos o gerador oficial em vez de fabricar um link inválido.
-    return redirect(AFFILIATE_GENERATOR_URL)
+    return redirect(AFFILIATE_PORTAL_URL)
 
 @app.route("/afiliado/portal")
 def afiliado_portal():
@@ -3702,7 +3702,8 @@ function seller(o,mi,oi){
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
- <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
+ <a href="/afiliado/portal"><button style="background:#ffe600;color:#222">📲 Abrir Central de Afiliados</button></a>
+ <div class="small" style="margin-top:8px">📱 No iPhone: abra a Central de Afiliados para gerar/compartilhar seu link. O Caçador não fabrica links meli.la.</div>
  <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link meli.la deste produto" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
@@ -3715,7 +3716,7 @@ async function copiarUrl(id,url){
  try{
   if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(url);}
   else{const ta=document.createElement('textarea');ta.value=url;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove();}
-  alert('✅ URL do produto copiada. Agora abra o Gerador oficial e cole a URL.');
+  alert('✅ URL do produto copiada. Agora abra a Central de Afiliados do Mercado Livre para gerar/compartilhar seu link.');
  }catch(e){alert('URL do produto: '+url);}
 }
 async function anuncio(id,o){
@@ -3782,7 +3783,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
-<div class="card"><a href="/afiliado/portal" target="_blank">💰 Central de Afiliados</a><br><br><a href="/afiliado/gerador" target="_blank">🔗 Gerador oficial de links</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
+<div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div></body></html>
 """
 
