@@ -1812,34 +1812,90 @@ BEST_SELLER_CATEGORY_IDS = {
 
 
 ARABIC_PERFUME_TERMS = (
-    "árabe", "arabe", "lattafa", "rasasi", "maison alhambra",
-    "al haramain", "armaf", "afnan", "al wataniah",
-    "fragrance world", "french avenue", "khamrah", "asad",
-    "yara", "hayaati", "hawas", "club de nuit", "shaghaf",
+    "árabe", "arabe", "perfume árabe", "perfume arabe",
+    "lattafa", "rasasi", "maison alhambra", "al haramain",
+    "armaf", "afnan", "al wataniah", "fragrance world",
+    "french avenue", "rayhaan", "rayhaan pacific", "mawla",
+    "mawwal", "orientica", "paris corner", "emir",
+    "khadlaj", "zimaya", "swiss arabian", "ajmal",
+    "khamrah", "asad", "yara", "hayaati", "hawas",
+    "club de nuit", "shaghaf", "oud", "badee al oud",
+    "qaed al fursan", "fakhar", "turathi", "9pm",
 )
 
+# ============================================================
+# FILTRO RIGOROSO — PERFUME DE VERDADE
+# ============================================================
+# A categoria oficial de perfumes do Mercado Livre pode trazer derivados
+# misturados no ranking: hidratantes, desodorantes, body splash, kits etc.
+# Aqui a regra é propositalmente rígida: o título precisa representar um
+# perfume/fragrância como produto principal.
+#
+# IMPORTANTE:
+# - "desodorante colônia" NÃO entra;
+# - "body splash/body mist" ENTRA;
+# - kits/combos/conjuntos NÃO entram;
+# - produtos de banho/cuidado corporal NÃO entram;
+# - acessórios e embalagens/refis NÃO entram.
 PERFUME_POSITIVE_TERMS = (
-    "perfume", "parfum", "eau de parfum", "eau de toilette",
-    "eau de cologne", "deo colônia", "deo colonia", "desodorante colônia",
-    "desodorante colonia", "fragrance",
+    "perfume",
+    "parfum",
+    "eau de parfum",
+    "eau de toilette",
+    "eau de cologne",
+    "eau de cologne",
 )
+
 PERFUME_EXCLUDED_TERMS = (
-    "refil", "refill", "hidratante", "creme", "loção", "locao",
-    "sabonete", "shampoo", "condicionador", "body splash", "body mist",
-    "spray corporal", "desodorante aerosol", "kit banho", "necessaire",
+    "desodorante",
+    "desodorante colônia",
+    "desodorante colonia",
+    "loção",
+    "locao",
+    "sabonete",
+    "condicionador",
+    "refil",
+    "refill",
+    "amostra",
+    "decant",
+    "miniatura",
+    "porta perfume",
+    "necessaire",
+    "estojo vazio",
+    "frasco vazio",
 )
 
 def _is_real_perfume(title):
     text = norm(title or "")
     if not text:
         return False
+
+    # Derivados que continuam fora.
     if any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
         return False
-    return any(norm(term) in text for term in PERFUME_POSITIVE_TERMS)
 
-def _is_arabic_perfume(title):
-    text = norm(title or "")
-    return _is_real_perfume(title) and any(norm(term) in text for term in ARABIC_PERFUME_TERMS)
+    # Permitidos:
+    # - perfume
+    # - body splash
+    # - body mist
+    # - kit com shampoo
+    # - kit com hidratante
+    # - kit com creme
+    return (
+        "perfume" in text
+        or "parfum" in text
+        or "eau de parfum" in text
+        or "eau de toilette" in text
+        or "eau de cologne" in text
+        or "body splash" in text
+        or "body mist" in text
+        or "kit shampoo" in text
+        or "kit com shampoo" in text
+        or "kit hidratante" in text
+        or "kit com hidratante" in text
+        or "kit creme" in text
+        or "kit com creme" in text
+    )
 
 _ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
 _ARABIC_BRAND_CACHE_LOCK = threading.Lock()
@@ -1852,9 +1908,24 @@ def _arabic_brand_ids():
             return list(_ARABIC_BRAND_CACHE.get("ids") or [])
 
     wanted = {norm(x) for x in (
-        "Lattafa", "Rasasi", "Maison Alhambra", "Al Haramain",
-        "Armaf", "Afnan", "Al Wataniah", "Fragrance World",
+        "Lattafa",
+        "Rasasi",
+        "Maison Alhambra",
+        "Al Haramain",
+        "Armaf",
+        "Afnan",
+        "Al Wataniah",
+        "Fragrance World",
         "French Avenue",
+        "Rayhaan",
+        "Mawwal",
+        "Orientica",
+        "Paris Corner",
+        "Emir",
+        "Khadlaj",
+        "Zimaya",
+        "Swiss Arabian",
+        "Ajmal",
     )}
     found = []
     data, status, _ = ml_get(f"/categories/{BEST_SELLER_CATEGORY_IDS['🌸 Perfumes']}/attributes")
