@@ -93,9 +93,14 @@ CATALOG = {
     # FONTE DE VERDADE DO TESTE — MICRO-NICHOS EXATOS ENVIADOS PELO USUÁRIO.
     # Não adicionar outros termos nesta fase.
     "🌸 Perfumes": [
-        "Perfume importado 30ml masculino",
-        "Perfume importado 50ml feminino",
-        "Body splash colônia corporal",
+        "perfume importado masculino",
+        "perfume importado feminino",
+        "eau de parfum masculino",
+        "eau de parfum feminino",
+        "eau de toilette masculino",
+        "eau de toilette feminino",
+        "body splash feminino",
+        "body mist feminino",
     ],
     "🌙 Perfumes Árabes": [
         "Perfume Lattafa Asad",
@@ -1817,9 +1822,8 @@ ARABIC_PERFUME_TERMS = (
 
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
-    "fragrance", "body splash", "colonia corporal", "colônia corporal",
-    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
-    "thera cosmeticos", "nuancielo", "brand collection",
+    "fragrance", "body splash", "body mist", "colonia corporal", "colônia corporal",
+    "spray perfumado",
 )
 PERFUME_EXCLUDED_TERMS = (
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
@@ -2392,37 +2396,40 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
 def _direct_perfume_offer_from_listing(row, cat, position, query):
     """Converte um anúncio real do /sites/MLB/search em oferta de teste.
 
-    Nesta fase só queremos comprovar o retorno dos perfumes: preço mínimo,
-    produto correto, foto real e link real. Nada de Buy Box, Full, Gold,
-    quantidade mínima de vendas ou OpenAI.
+    TESTE EXCLUSIVO DE PERFUMES:
+    - mínimo de R$ 69,90;
+    - sem contratipos;
+    - sem decants/amostras/miniaturas;
+    - sem exigir Full, Gold/Platinum ou 100 vendas;
+    - recupera foto e permalink diretamente do anúncio quando necessário.
     """
     if not isinstance(row, dict):
-        return None
+        return None, "linha_invalida"
 
     item_id = str(row.get("id") or row.get("item_id") or "").strip()
-    title = str(row.get("title") or "").strip()
+    title = str(row.get("title") or row.get("name") or "").strip()
     if not item_id or not title:
-        return None
+        return None, "sem_id_titulo"
 
     if cat == "🌸 Perfumes":
         if not _is_real_perfume(title):
-            return None
+            return None, "titulo_nao_e_perfume"
     elif cat == "🌙 Perfumes Árabes":
         if not _is_arabic_perfume(title):
-            return None
+            return None, "nao_e_marca_arabe"
     else:
-        return None
+        return None, "categoria_invalida"
 
     nt = norm(title)
-    if any(x in nt for x in ("decant", "amostra", "miniatura")):
-        return None
+    if any(x in nt for x in ("decant", "amostra", "miniatura", "contratipo", "inspirado em", "inspirado no")):
+        return None, "produto_nao_desejado"
 
     try:
         price = float(row.get("price")) if row.get("price") is not None else None
     except Exception:
         price = None
     if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
-        return None
+        return None, "preco"
 
     try:
         original = float(row.get("original_price")) if row.get("original_price") is not None else None
@@ -2433,42 +2440,52 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if not isinstance(shipping, dict):
         shipping = {}
     free = bool(shipping.get("free_shipping"))
-    shipping_cost = 0 if free else shipping.get("cost")
+    shipping_cost = shipping.get("cost")
 
-    # Primeiro tenta todas as imagens que a busca já trouxe.
-    image = ""
-    pictures = row.get("pictures") or []
-    if isinstance(pictures, list):
-        for pic in pictures:
-            if isinstance(pic, dict):
-                image = str(pic.get("secure_url") or pic.get("url") or pic.get("secure_thumbnail") or pic.get("thumbnail") or "").strip()
-                if image:
-                    break
-    image = image or str(row.get("secure_thumbnail") or row.get("thumbnail") or row.get("picture_url") or "").strip()
+    def pick_picture(obj):
+        if not isinstance(obj, dict):
+            return ""
+        for key in ("secure_url", "url", "secure_thumbnail", "thumbnail", "picture_url", "image"):
+            v = obj.get(key)
+            if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
+                return v.strip()
+        pics = obj.get("pictures")
+        if isinstance(pics, list):
+            for pic in pics:
+                got = pick_picture(pic)
+                if got:
+                    return got
+        return ""
 
-    # Se a busca não trouxe foto/link confiáveis, consulta o anúncio real.
+    image = pick_picture(row)
+    permalink = str(row.get("permalink") or row.get("url") or "").strip()
     item_detail = None
-    if not image or not row.get("permalink"):
+
+    # O /search nem sempre devolve pictures/permalink. Busca o anúncio real.
+    if not image or not permalink:
         data, status, _ = ml_get(f"/items/{item_id}")
         if status == 200 and isinstance(data, dict):
             item_detail = data
             if not image:
-                for pic in data.get("pictures") or []:
-                    if isinstance(pic, dict):
-                        image = str(pic.get("secure_url") or pic.get("url") or pic.get("secure_thumbnail") or pic.get("thumbnail") or "").strip()
-                        if image:
-                            break
+                image = pick_picture(data)
+            if not permalink:
+                permalink = str(data.get("permalink") or data.get("url") or "").strip()
+            # O preço do /items é a fonte mais confiável quando disponível.
+            try:
+                detail_price = float(data.get("price")) if data.get("price") is not None else None
+                if detail_price is not None and detail_price > 0:
+                    price = detail_price
+            except Exception:
+                pass
+
+    if price < MIN_PRODUCT_PRICE:
+        return None, "preco_detalhe"
 
     if not image:
-        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
-        return None
+        return None, "sem_imagem"
 
-    # Link principal: permalink do /search; se faltar, usa o permalink real do /items.
-    permalink = str(row.get("permalink") or "").strip()
-    if not permalink and isinstance(item_detail, dict):
-        permalink = str(item_detail.get("permalink") or "").strip()
     if not permalink:
-        permalink = f"https://www.mercadolivre.com.br/p/{item_id}"
+        permalink = f"https://www.mercadolivre.com.br/item/{item_id}"
 
     seller = row.get("seller") or {}
     seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
@@ -2479,7 +2496,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         sold = 0
 
     disc = discount(price, original)
-    return {
+    return ({
         "product_id": item_id,
         "item_id": item_id,
         "title": title,
@@ -2492,14 +2509,14 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "original_price": original,
         "discount": disc,
         "seller_id": seller_id,
-        "condition": row.get("condition") or "new",
+        "condition": row.get("condition") or (item_detail or {}).get("condition") or "new",
         "free_shipping": free,
-        "shipping_cost": shipping_cost,
-        "shipping_known": shipping_cost is not None,
-        "total_price": total(price, shipping_cost) if shipping_cost is not None else price,
+        "shipping_cost": 0 if free else shipping_cost,
+        "shipping_known": free or shipping_cost is not None,
+        "total_price": total(price, 0 if free else shipping_cost) if (free or shipping_cost is not None) else price,
         "relevance_score": 1.0,
         "sold_quantity": sold,
-        "logistic_type": shipping.get("logistic_type") or "",
+        "logistic_type": shipping.get("logistic_type") or (item_detail or {}).get("shipping", {}).get("logistic_type", "") if isinstance((item_detail or {}).get("shipping", {}), dict) else "",
         "shipping_mode": shipping.get("mode"),
         "seller_status": None,
         "seller_level_id": None,
@@ -2531,7 +2548,8 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "affiliate_link": "",
         "extra_earnings": 0,
         "micro_nicho": query,
-    }
+    }, "ok")
+
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca somente os 20 mais vendidos de cada categoria.
@@ -2563,8 +2581,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     iid = str(row.get("id") or row.get("item_id") or "").strip() if isinstance(row, dict) else ""
                     if not iid or iid in seen_direct:
                         continue
-                    offer = _direct_perfume_offer_from_listing(row, cat, pos, q)
+                    offer, motivo = _direct_perfume_offer_from_listing(row, cat, pos, q)
                     if not offer:
+                        print("[TESTE DESCARTADO]", cat, "|", q, "|", motivo, "|", str(row.get("title") or "")[:100])
                         continue
                     seen_direct.add(iid)
                     direct.append(offer)
