@@ -1483,20 +1483,23 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios reais do Mercado Livre.
+    """Busca diretamente os anúncios reais, seguindo a estratégia do teste.
 
-    Para perfumes usamos /sites/MLB/search em vez de depender somente do
-    catálogo de produtos. Isso evita que a categoria fique vazia quando os
-    produtos de perfume não aparecem no ranking/catalog search.
+    Equivale à ideia do link público enviado pelo usuário: mais vendidos,
+    produto novo e frete grátis. Não depende de Highlights nem de /products.
     """
-    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
+    params = {
         "q": q,
         "status": "active",
         "limit": min(int(limit or 50), 50),
         "offset": 0,
-    })
+        "sort": "sold_quantity_desc",
+        "shipping_cost": "free",
+        "condition": "new",
+    }
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status}")
+        print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | {data}")
         return []
 
     results = data.get("results") or []
@@ -2375,6 +2378,140 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
             print("[IMAGEM] erro item", iid, repr(exc))
     return ""
 
+
+def _direct_perfume_offer_from_listing(row, cat, position, query):
+    """Transforma diretamente o anúncio /sites/MLB/search em oferta.
+
+    Nesta etapa de teste não passa por catálogo, Buy Box, Full, Gold/Platinum
+    ou mínimo de vendas. O objetivo é comprovar somente que os micro-nichos
+    encontram anúncios reais. Mantemos apenas preço >= R$69,90 e imagem.
+    """
+    if not isinstance(row, dict):
+        return None
+
+    item_id = str(row.get("id") or row.get("item_id") or "").strip()
+    title = str(row.get("title") or "").strip()
+    if not item_id or not title:
+        return None
+
+    if cat == "🌸 Perfumes":
+        if not _is_real_perfume(title):
+            return None
+    else:
+        if not _is_arabic_perfume(title):
+            return None
+
+    # Bloqueio explícito de decant/amostra/miniatura.
+    nt = norm(title)
+    if any(x in nt for x in ("decant", "amostra", "miniatura")):
+        return None
+
+    try:
+        price = float(row.get("price")) if row.get("price") is not None else None
+    except Exception:
+        price = None
+    if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+        return None
+
+    try:
+        original = float(row.get("original_price")) if row.get("original_price") is not None else None
+    except Exception:
+        original = None
+
+    shipping = row.get("shipping") or {}
+    if not isinstance(shipping, dict):
+        shipping = {}
+    free = bool(shipping.get("free_shipping"))
+    shipping_cost = 0 if free else shipping.get("cost")
+
+    image = str(
+        row.get("thumbnail")
+        or row.get("secure_thumbnail")
+        or row.get("picture_url")
+        or ""
+    ).strip()
+
+    # Se a busca não trouxer thumbnail, tenta uma única consulta ao item real.
+    if not image:
+        data, status, _ = ml_get(f"/items/{item_id}")
+        if status == 200 and isinstance(data, dict):
+            pictures = data.get("pictures") or []
+            if pictures and isinstance(pictures[0], dict):
+                image = str(
+                    pictures[0].get("secure_url")
+                    or pictures[0].get("url")
+                    or pictures[0].get("secure_thumbnail")
+                    or pictures[0].get("thumbnail")
+                    or ""
+                ).strip()
+
+    if not image:
+        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
+        return None
+
+    seller = row.get("seller") or {}
+    seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
+    sold = row.get("sold_quantity") or 0
+    try:
+        sold = int(float(sold))
+    except Exception:
+        sold = 0
+
+    disc = discount(price, original)
+    return {
+        "product_id": item_id,
+        "item_id": item_id,
+        "title": title,
+        "modelo_nome": model_name(title),
+        "especificacoes": specs(title),
+        "image": image,
+        "category_name": cat,
+        "permalink": row.get("permalink") or f"https://www.mercadolivre.com.br/p/{item_id}",
+        "price": price,
+        "original_price": original,
+        "discount": disc,
+        "seller_id": seller_id,
+        "condition": row.get("condition") or "new",
+        "free_shipping": free,
+        "shipping_cost": shipping_cost,
+        "shipping_known": shipping_cost is not None,
+        "total_price": total(price, shipping_cost) if shipping_cost is not None else price,
+        "relevance_score": 1.0,
+        "sold_quantity": sold,
+        "logistic_type": shipping.get("logistic_type") or "",
+        "shipping_mode": shipping.get("mode"),
+        "seller_status": None,
+        "seller_level_id": None,
+        "seller_completed_sales": 0,
+        "seller_nickname": None,
+        "quality_validated": False,
+        "giro_score": min(1000, sold * 2),
+        "trend_score": 0,
+        "trend_keyword": None,
+        "trend_bucket": None,
+        "trend_rank": None,
+        "best_seller_position": position,
+        "best_seller_category": None,
+        "appears_both": False,
+        "demand_score": max(0, 1000 - position * 10),
+        "opportunity_score": max(0, 1000 - position * 10) + (20 if free else 0) + min(20, disc),
+        "cupom": None,
+        "desconto_cupom": 0,
+        "percentual_cupom_efetivo": 0,
+        "cupom_match": None,
+        "cupom_uso_limite": None,
+        "cash_discount": 0,
+        "cash_label": None,
+        "cash_final": None,
+        "melhor_forma": None,
+        "maior_desconto": 0,
+        "preco_com_cupom": None,
+        "preco_final_melhor": None,
+        "affiliate_link": "",
+        "extra_earnings": 0,
+        "micro_nicho": query,
+    }
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca somente os 20 mais vendidos de cada categoria.
 
@@ -2384,6 +2521,82 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
+
+    # TESTE ISOLADO: perfumes usam diretamente /sites/MLB/search.
+    # Isso evita que catálogo/Highlights/Buy Box/qualidade eliminem tudo antes
+    # de sabermos se os micro-nichos realmente retornam anúncios.
+    if TESTE_SOMENTE_PERFUMES and set(categories).issubset({"🌸 Perfumes", "🌙 Perfumes Árabes"}):
+        direct = []
+        seen_direct = set()
+        for cat in categories:
+            for q in CATALOG.get(cat, []):
+                search_q = f"{q} -decant"
+                print("[TESTE DIRETO]", cat, "|", search_q)
+                try:
+                    rows = search_real_listings(search_q, limit=50)
+                except Exception as exc:
+                    print("[TESTE DIRETO ERRO]", cat, q, repr(exc))
+                    continue
+                accepted = 0
+                for pos, row in enumerate(rows, start=1):
+                    iid = str(row.get("id") or row.get("item_id") or "").strip() if isinstance(row, dict) else ""
+                    if not iid or iid in seen_direct:
+                        continue
+                    offer = _direct_perfume_offer_from_listing(row, cat, pos, q)
+                    if not offer:
+                        continue
+                    seen_direct.add(iid)
+                    direct.append(offer)
+                    accepted += 1
+                    if accepted >= 20:
+                        break
+                print("[TESTE DIRETO ACEITOS]", cat, q, accepted)
+
+        grouped = {cat: [] for cat in categories}
+        for offer in direct:
+            grouped.setdefault(offer["category_name"], []).append(offer)
+        flat = []
+        for cat in categories:
+            arr = grouped.get(cat, [])
+            arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
+            flat.extend(arr[:20])
+        random.shuffle(flat)
+
+        if apply_coupons and flat:
+            try:
+                public_cards = get_public_coupon_cards_cached()
+            except Exception:
+                public_cards = []
+            for offer in flat:
+                try:
+                    offer, coupon = choose_best_coupon(
+                        offer.get("title") or "", offer.get("price") or 0,
+                        public_cards=public_cards,
+                        item_id=offer.get("item_id"),
+                        permalink=offer.get("permalink"),
+                        allow_fallback=True,
+                    )
+                except Exception:
+                    coupon = None
+                if coupon:
+                    offer["cupom"] = coupon
+
+        stats = {
+            "100+ vendas": sum(1 for o in flat if int(o.get("sold_quantity") or 0) >= MIN_ITEM_SOLD_QUANTITY),
+            "Full": sum(1 for o in flat if str(o.get("logistic_type") or "").lower() == "fulfillment"),
+            "Gold/Platinum": 0,
+            "aparecem nos dois": 0,
+            "cupom candidato": sum(1 for o in flat if o.get("cupom")),
+            "cupons com limite": 0,
+            "maior desconto estimado": max([float(o.get("discount") or 0) for o in flat] or [0]),
+            "menor preço com cupom": "—",
+            "menor preço do produto": brl(min([float(o.get("price")) for o in flat] or [0])),
+            "menor total com frete": brl(min([float(o.get("total_price")) for o in flat] or [0])),
+            "produtos sem cupom": sum(1 for o in flat if not o.get("cupom")),
+            "modo": "teste direto /sites/MLB/search por micro-nicho",
+        }
+        print(f"[TESTE DIRETO RESULTADO] {len(flat)} ofertas válidas")
+        return {"stats": stats, "modelos": [], "ofertas": flat}
 
     raw_by_cat = {}
     with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
