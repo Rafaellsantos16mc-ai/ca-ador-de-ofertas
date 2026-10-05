@@ -2127,8 +2127,6 @@ def ad_text(o, affiliate=""):
     """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
     lines = [
-        "🔥 OFERTA OCULTA / VIP",
-        "",
         f"🛍️ {title}",
     ]
 
