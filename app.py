@@ -2056,8 +2056,7 @@ PERFUME_EXCLUDED_TERMS = (
 PERFUME_BRAND_QUERIES = [
     # Nacionais
     "O Boticário perfume", "Natura perfume", "Eudora perfume",
-    "Avon perfume", "Jequiti perfume", "Hinode perfume",
-    "O.U.i perfume", "Granado perfume", "Phebo perfume",
+    "Jequiti perfume", "O.U.i perfume",
     # Importados
     "Carolina Herrera perfume", "Rabanne perfume", "Paco Rabanne perfume",
     "Dior perfume", "Chanel perfume", "Yves Saint Laurent perfume",
@@ -2192,7 +2191,7 @@ def _search_arabic_perfumes():
     rank_base = 1
     for q in queries:
         try:
-            rows = search_real_listings(q, limit=40)
+            rows = search_real_listings(q, limit=50)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -2830,6 +2829,18 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "micro_nicho": query,
     }
 
+def _arabic_relevance_score(title, ds):
+    """Peso extra para perfumes árabes, priorizando marca + alta + best-seller."""
+    text = norm(title or "")
+    brand_hits = sum(1 for b in ARABIC_PERFUME_TERMS if norm(b) in text)
+    brand_bonus = min(180.0, brand_hits * 45.0)
+    trend_bonus = min(260.0, float(ds.get("trend_score") or 0) * 7.0)
+    bestseller_pos = ds.get("best_seller_position")
+    bestseller_bonus = max(0.0, 220.0 - (float(bestseller_pos or 99) - 1) * 4.0) if bestseller_pos else 0.0
+    both_bonus = 700.0 if ds.get("appears_both") else 0.0
+    return brand_bonus + trend_bonus + bestseller_bonus + both_bonus
+
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
@@ -2895,6 +2906,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     "appears_both": False,
                     "demand_score": max(0, 1000 - position * 10),
                 }
+            if cat == "🌙 Perfumes Árabes":
+                ds["arabic_relevance"] = _arabic_relevance_score(raw.get("title") or raw.get("name") or pid, ds)
+            else:
+                ds["arabic_relevance"] = 0.0
             candidates.append((1000 - position, pid, raw, cat, ds, source_query))
 
     # Mantém exatamente o ranking por posição dentro de cada categoria.
@@ -3012,7 +3027,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "best_seller_category": ds.get("best_seller_category"),
                 "appears_both": bool(ds.get("appears_both")),
                 "demand_score": ds["demand_score"],
-                "opportunity_score": ds["demand_score"] + (20 if free else 0) + min(20, seller_disc),
+                "arabic_relevance": float(ds.get("arabic_relevance") or 0),
+                "opportunity_score": ds["demand_score"] + (20 if free else 0) + min(20, seller_disc) + float(ds.get("arabic_relevance") or 0),
                 "cupom": None,
                 "desconto_cupom": 0,
                 "percentual_cupom_efetivo": 0,
@@ -3127,8 +3143,23 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     def _display_demand_key(o):
         cat = o.get("category_name") or ""
-        if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}:
+        # O desconto real da publicação passa a ser um dos principais
+        # critérios de escolha. Assim o sistema procura oportunidades de
+        # preço realmente boas, sem abandonar os sinais de vendas e tendência.
+        discount_score = min(100.0, max(0.0, float(o.get("discount") or 0)))
+        if cat == "🌙 Perfumes Árabes":
             return (
+                -discount_score,
+                -(float(o.get("arabic_relevance") or 0)),
+                0 if o.get("appears_both") else 1,
+                -(float(o.get("trend_score") or 0)),
+                float(o.get("best_seller_position") or 999),
+                -(float(o.get("demand_score") or 0)),
+                float(o.get("total_price") or 999999),
+            )
+        if cat == "🌸 Perfumes":
+            return (
+                -discount_score,
                 0 if o.get("appears_both") else 1,
                 -(float(o.get("trend_score") or 0)),
                 float(o.get("best_seller_position") or 999),
@@ -3143,8 +3174,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
 
-    # Até 20 por categoria, priorizando os que são simultaneamente mais
-    # vendidos/em alta e depois os demais mais vendidos.
+    # Até 20 por categoria; a categoria árabe recebe 30 para aparecer com
+    # mais frequência. Dentro dela, boas promoções têm prioridade real.
     grouped = {}
     for o in offers:
         grouped.setdefault(o["category_name"], []).append(o)
@@ -3153,7 +3184,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        flat.extend(arr[:20])
+        # A categoria árabe recebe mais espaço para aparecer com mais frequência:
+        # 30 ofertas árabes contra 20 nas demais.
+        limit = 30 if cat == "🌙 Perfumes Árabes" else 20
+        flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
     random.shuffle(flat)
@@ -3245,7 +3279,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "somente 20 mais vendidos por categoria",
+        "modo": "20 por categoria + 30 perfumes árabes, priorizando bons descontos",
     }
     print(f"[RESULTADO TOP 20] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
