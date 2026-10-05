@@ -51,7 +51,10 @@ os.makedirs(WHATSAPP_IMAGE_DIR, exist_ok=True)
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
-DB_FILE = "ofertas.db"
+# Banco persistente: no Railway, monte um Volume em /data.
+# Fora do Railway/sem /data gravável, mantém fallback local para não quebrar.
+PERSISTENT_DATA_DIR = "/data" if os.path.isdir("/data") and os.access("/data", os.W_OK) else os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(PERSISTENT_DATA_DIR, "ofertas.db")
 COUPONS_URL = "https://www.mercadolivre.com.br/l/promocoes"
 COUPON_SOURCE_URLS = [
     "https://www.mercadolivre.com.br/l/promocoes",
