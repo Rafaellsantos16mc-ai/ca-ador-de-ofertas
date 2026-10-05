@@ -1483,6 +1483,28 @@ def search_products_direct(q, limit=30):
     return results
 
 
+def search_real_listings(q, limit=50):
+    """Busca anúncios reais do Mercado Livre.
+
+    Para perfumes usamos /sites/MLB/search em vez de depender somente do
+    catálogo de produtos. Isso evita que a categoria fique vazia quando os
+    produtos de perfume não aparecem no ranking/catalog search.
+    """
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
+        "q": q,
+        "status": "active",
+        "limit": min(int(limit or 50), 50),
+        "offset": 0,
+    })
+    if status != 200 or not isinstance(data, dict):
+        print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status}")
+        return []
+
+    results = data.get("results") or []
+    print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios")
+    return results
+
+
 # ============================================================
 # DEMANDA + BUSCA — VERSÃO CORRIGIDA
 # ============================================================
@@ -1795,8 +1817,10 @@ PERFUME_POSITIVE_TERMS = (
 )
 PERFUME_EXCLUDED_TERMS = (
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
-    "perfume para gato", "colonia pet", "colônia pet", "refil", "refill", "amostra",
-    "decant", "miniatura", "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
+    "perfume para gato", "colonia pet", "colônia pet", "perfume cachorro",
+    "perfume gato", "colonia cachorro", "colônia cachorro", "colonia gato",
+    "colônia gato", "refil", "refill", "amostra", "decant", "miniatura",
+    "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
 )
 
 
@@ -1889,12 +1913,69 @@ def _search_arabic_perfumes():
     return [(row, "🌙 Perfumes Árabes") for row in rows]
 
 def _search_category(cat):
-    """Monta uma fila ampla de candidatos usando somente as buscas da categoria.
-    Highlights entram primeiro; buscas específicas completam a fila para que filtros
-    de preço/tipo/imagem não reduzam a categoria a poucos produtos.
-    """
+    """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
     if cat == "🌙 Perfumes Árabes":
         return _search_arabic_perfumes()
+
+    # Perfumes precisam de uma rota própria: o ranking Highlights de MLB178938
+    # pode trazer poucos/nenhum candidato útil para os filtros finais.
+    # Buscamos anúncios reais por vários termos positivos e deixamos o
+    # enriquecimento /items resolver preço, vendedor e imagem.
+    if cat == "🌸 Perfumes":
+        out = []
+        seen = set()
+        perfume_queries = [
+            "perfume masculino",
+            "perfume feminino",
+            "perfume importado",
+            "perfume nacional",
+            "perfume contratipo",
+            "perfume in the box",
+            "perfume thera cosméticos",
+            "perfume nuancielo",
+            "brand collection perfume",
+            "perfume 30ml",
+            "perfume 50ml",
+            "body splash",
+            "body mist",
+            "kit perfume shampoo",
+            "kit perfume hidratante",
+            "kit perfume creme",
+        ]
+
+        rank_base = 1
+        for q in perfume_queries:
+            try:
+                rows = search_real_listings(q, limit=50)
+            except Exception as exc:
+                print("[PERFUMES BUSCA]", q, repr(exc))
+                continue
+
+            for j, row in enumerate(rows, start=1):
+                if not isinstance(row, dict):
+                    continue
+                item_id = str(row.get("id") or "").strip()
+                if not item_id or item_id in seen:
+                    continue
+                seen.add(item_id)
+                out.append(({
+                    "id": item_id,
+                    "name": row.get("title") or item_id,
+                    "title": row.get("title") or item_id,
+                    "source_type": "ITEM",
+                    "highlight_position": rank_base + j,
+                    "highlight_category_id": BEST_SELLER_CATEGORY_IDS.get(cat),
+                    "permalink": row.get("permalink"),
+                    "thumbnail": row.get("thumbnail"),
+                    "pictures": row.get("pictures") or [],
+                    "price": row.get("price"),
+                    "original_price": row.get("original_price") or row.get("regular_price"),
+                    "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+                }, cat))
+            rank_base += max(50, len(rows))
+
+        print(f"[PERFUMES BUSCA REAL] {len(out)} anúncios candidatos")
+        return out
 
     out = []
     seen = set()
@@ -2485,7 +2566,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             print("[OFERTA TOP 20]", repr(e))
 
     # Perfumes: mostra somente produtos que realmente são perfumes/fragrâncias,
-    # evitando derivados como hidratantes, refis, sabonetes e body splash.
+    # incluindo Body Splash, Body Mist e kits permitidos.
     if "🌸 Perfumes" in categories:
         offers = [
             o for o in offers
