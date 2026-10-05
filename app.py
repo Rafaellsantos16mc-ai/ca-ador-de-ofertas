@@ -1040,6 +1040,8 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
 
     x = dict(matched)
     x["desconto_estimado"] = d
+    x["preco_base_produto"] = round(float(price), 2)
+    x["preco_final_estimado"] = round(float(price) - d, 2)
     x["percentual_efetivo"] = round((d / float(price)) * 100, 2) if float(price) > 0 else 0
     x["match_type"] = "produto_publico"
     return x
@@ -1450,37 +1452,52 @@ STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","
 
 
 def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow_fallback=True):
+    """Associa um cupom somente quando produto e preço batem de verdade.
+
+    Evita que um card de outro perfume/produto seja herdado apenas porque
+    os títulos são parecidos ou porque os preços estão dentro de uma janela
+    muito grande.
+    """
+    try:
+        target_price = float(price)
+    except Exception:
+        target_price = 0.0
+    if target_price <= 0:
+        return None
+
     best = None
-    best_score = 0
+    best_score = 0.0
     for card in cards or []:
-        score = title_similarity(title, card["title"])
-        diff = abs(float(price) - float(card["price"]))
-        tolerance = max(10.0, float(price) * 0.12)
-        if diff <= tolerance:
-            score += 0.25
-        elif diff <= max(20.0, float(price) * 0.20):
-            score += 0.08
+        try:
+            card_price = float(card.get("price") or 0)
+        except Exception:
+            continue
+        if card_price <= 0:
+            continue
+
+        sim = float(title_similarity(title, card.get("title") or ""))
+        diff = abs(target_price - card_price)
+        pct_diff = diff / max(target_price, 1.0)
+
+        # Correspondência forte: título muito parecido e preço praticamente igual.
+        if sim >= 0.90 and pct_diff <= 0.05:
+            score = sim + 0.35
+        # Correspondência aceitável, ainda exigindo preço muito próximo.
+        elif sim >= 0.86 and pct_diff <= 0.03:
+            score = sim + 0.25
+        else:
+            continue
+
         if score > best_score:
             best_score = score
             best = card
-    # O preço de um card público pode mudar alguns reais entre a coleta do
-    # cupom e a coleta do catálogo. Mantemos o vínculo por título forte e
-    # usamos o preço apenas como confirmação, não como filtro rígido.
-    if best is not None and best_score >= 0.72:
-        c = dict(best["coupon"])
-        c["match_score"] = round(best_score, 3)
-        c["public_title"] = best["title"]
-        c["public_price"] = best["price"]
-        c["source_url"] = best["source_url"]
-        return c
 
-    # Segunda fonte: busca pública do próprio Mercado Livre.
-    # Se a página de cupons vier vazia/dinâmica, tenta o anúncio e a busca
-    # pública pelo título.
-    if allow_fallback:
-        fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
-        return fallback
-    return None
+    if best is None or best_score < 1.11:
+        if allow_fallback:
+            fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
+            return fallback
+        return None
+
     c = dict(best["coupon"])
     c["match_score"] = round(best_score, 3)
     c["public_title"] = best["title"]
@@ -2866,14 +2883,17 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if not cup:
                 continue
             d = float(cup.get("desconto_estimado") or 0)
-            if d <= 0:
+            base_price = float(o.get("price") or 0)
+            if d <= 0 or base_price <= 0:
                 continue
+            # O desconto nunca pode ultrapassar o preço do próprio produto.
+            d = min(d, base_price)
             o["cupom"] = cup
             o["desconto_cupom"] = round(d, 2)
-            o["percentual_cupom_efetivo"] = round((d / float(o.get("price") or 1)) * 100, 2)
+            o["percentual_cupom_efetivo"] = round((d / base_price) * 100, 2)
             o["cupom_match"] = cup.get("match_type") or "produto_publico"
             o["cupom_uso_limite"] = cup.get("usage_limit")
-            o["preco_com_cupom"] = max(0, round(float(o.get("price") or 0) - d, 2))
+            o["preco_com_cupom"] = round(base_price - d, 2)
             coupon_count += 1
             if cup.get("max_discount"):
                 coupon_limit_count += 1
