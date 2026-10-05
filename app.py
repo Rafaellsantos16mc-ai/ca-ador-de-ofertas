@@ -1,3 +1,4 @@
+# DEPLOY RETRY: comentário mínimo para gerar um novo commit sem alterar a lógica.
 import os
 import sqlite3
 import secrets
