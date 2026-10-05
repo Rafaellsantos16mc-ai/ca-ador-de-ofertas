@@ -90,22 +90,22 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    # Categorias atuais definidas para o Caçador de Ofertas.
-    # Perfumes permanecem e as 5 novas categorias foram adicionadas.
+    # 7 categorias definidas para o Caçador de Ofertas.
+    # Perfumes permanecem no projeto e seguem as regras definidas pelo usuário.
     "🌸 Perfumes": [
-        "perfumes importados masculinos",
-        "perfumes importados femininos",
+        "Perfumes importados masculinos",
+        "Perfumes importados femininos",
         "Eau de Parfum",
         "Eau de Toilette",
         "Body Splash",
         "Body Mist",
-        "kit perfume com shampoo hidratante creme",
+        "Kit perfume com shampoo hidratante creme",
     ],
     "🌙 Perfumes Árabes": [
-        "Perfume Lattafa Asad",
-        "Perfume Lattafa Yara",
-        "Perfume Maison Alhambra",
-        "Perfume Afnan",
+        "Lattafa Asad",
+        "Lattafa Yara",
+        "Maison Alhambra",
+        "Afnan",
     ],
     "🧴 Saúde, Beleza e Cuidado Pessoal": [
         "creatina monohidratada",
@@ -132,15 +132,14 @@ CATALOG = {
         "películas",
     ],
     "👚 Moda Básica e Kits de Vestuário": [
-        "kits de camisetas lisas 3 peças",
-        "kits de camisetas lisas 5 peças",
+        "kits de camisetas lisas 3/5 peças",
         "cuecas boxer",
         "meias",
         "roupas fitness",
     ],
     "👟 Tênis — Academia, Corrida e Social": [
-        "tênis academia treino",
-        "tênis corrida",
+        "academia treino",
+        "corrida",
         "Nike",
         "Adidas",
         "Asics",
@@ -1748,8 +1747,13 @@ _DEMAND_LOCK = threading.Lock()
 CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 
 DEMAND_ANCHORS = {
-    "🌸 Perfumes": ["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"],
+    "🌸 Perfumes": ["perfume", "parfum", "fragrance", "eau de parfum", "eau de toilette", "body splash", "body mist"],
     "🌙 Perfumes Árabes": ["lattafa", "yara", "asad", "maison alhambra", "afnan"],
+    "🧴 Saúde, Beleza e Cuidado Pessoal": ["creatina", "whey", "protetor solar", "serum", "sérum", "creme para cabelo", "skincare"],
+    "🏡 Achadinhos de Casa e Cozinha": ["organizador", "pote hermético", "mini processador", "lâmpada inteligente", "fita led", "organizador de cozinha"],
+    "📲 Acessórios para Celulares e Eletrônicos": ["carregador turbo", "power bank", "fone bluetooth", "smartwatch", "capinha", "película"],
+    "👚 Moda Básica e Kits de Vestuário": ["camiseta", "cueca boxer", "meias", "roupa fitness"],
+    "👟 Tênis — Academia, Corrida e Social": ["tênis", "academia", "treino", "corrida", "nike", "adidas", "asics", "mizuno", "olympikus", "new balance"],
 }
 
 _PRODUCT_CACHE = {}
@@ -3038,6 +3042,18 @@ def auto_scan(category=None, min_discount=0):
 # ANÚNCIO
 # ============================================================
 
+def valid_affiliate_link(link):
+    """Aceita somente links de afiliado gerados pelo Mercado Livre.
+
+    O fluxo do Caçador exige o link de afiliado antes de gerar ou enviar
+    uma oferta. Não usamos o permalink normal como substituto.
+    """
+    value = str(link or "").strip()
+    if not value:
+        return False
+    return value.startswith("https://meli.la/") or value.startswith("https://www.mercadolivre.com.br/")
+
+
 def ad_text(o, affiliate=""):
     """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
@@ -3079,12 +3095,11 @@ def ad_text(o, affiliate=""):
 
         lines += ["", "⚠️ Consulte as condições e confirme o cupom no checkout."]
 
-    link = str(affiliate or o.get("permalink") or "").strip()
-    if link:
-        lines += ["", "🛒 Pegar promoção:", link]
-    else:
-        lines += ["", "🛒 Pegar promoção:", "Gere o link pelo Gerador oficial do Mercado Livre."]
+    link = str(affiliate or "").strip()
+    if not valid_affiliate_link(link):
+        raise ValueError("Informe o link de afiliado meli.la desta oferta antes de gerar o anúncio.")
 
+    lines += ["", "🛒 Pegar promoção:", link]
     return "\n".join(lines)
 
 # ============================================================
@@ -3454,7 +3469,20 @@ def api_anuncio():
                 o["cupom"]=cup
                 o["desconto_cupom"]=cup["desconto_estimado"]
                 o["preco_com_cupom"]=max(0,float(o["price"])-cup["desconto_estimado"])
-    return jsonify({"anuncio":ad_text(o,request.args.get("affiliate_link","").strip())})
+    affiliate_link = request.args.get("affiliate_link", "").strip()
+    if not valid_affiliate_link(affiliate_link):
+        return jsonify({
+            "ok": False,
+            "erro": "Informe o link de afiliado meli.la desta oferta antes de gerar o anúncio.",
+            "affiliate_required": True
+        }), 400
+
+    try:
+        anuncio = ad_text(o, affiliate_link)
+    except ValueError as exc:
+        return jsonify({"ok": False, "erro": str(exc)}), 400
+
+    return jsonify({"ok": True, "anuncio": anuncio, "affiliate_link": affiliate_link})
 
 
 @app.route("/api/enviar-whatsapp", methods=["POST"])
@@ -3475,6 +3503,19 @@ def api_enviar_whatsapp():
     data = request.get_json(silent=True) or {}
     text = str(data.get("text") or "").strip()
     image = str(data.get("image") or "").strip()
+    affiliate_link = str(data.get("affiliate_link") or "").strip()
+
+    if not valid_affiliate_link(affiliate_link):
+        return jsonify({
+            "ok": False,
+            "erro": "Envio bloqueado: esta oferta não possui um link de afiliado meli.la válido."
+        }), 400
+
+    if affiliate_link not in text:
+        return jsonify({
+            "ok": False,
+            "erro": "Envio bloqueado: o anúncio não contém o mesmo link de afiliado informado."
+        }), 400
 
     if not text:
         return jsonify({
@@ -3677,7 +3718,8 @@ function seller(o,mi,oi){
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
  <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
- <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio</button>
+ <input id="affiliate_${id}" type="url" placeholder="Cole aqui o seu link meli.la deste produto" style="width:100%;box-sizing:border-box;padding:13px;border:1px solid #ccc;border-radius:10px;margin:8px 0;font-size:15px">
+ <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
  <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
@@ -3694,7 +3736,9 @@ async function copiarUrl(id,url){
 async function anuncio(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
-  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:o.permalink || ''});
+  const affiliate=document.getElementById('affiliate_'+id).value.trim();
+  if(!affiliate){alert('Cole primeiro o seu link meli.la gerado pelo Mercado Livre.');return;}
+  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:affiliate});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
   const d=await r.json();
@@ -3718,7 +3762,9 @@ async function enviarWhatsApp(id,imageEncoded){
  try{
   let image='';
   try{image=decodeURIComponent(imageEncoded||'');}catch(e){}
-  const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,image})});
+  const affiliate=document.getElementById('affiliate_'+id).value.trim();
+  if(!affiliate){alert('Informe o seu link meli.la antes de enviar.');return;}
+  const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,image,affiliate_link:affiliate})});
   const d=await r.json();
   if(!r.ok || !d.ok) throw new Error(d.erro||'O WhatsApp recusou o envio.');
   b.textContent='✅ Enviado para WhatsApp';
