@@ -1790,16 +1790,24 @@ def demand_score(title, category, product_id, signals, allow_direct=False):
 
 
 def _search_category(cat):
-    """Busca várias sementes da categoria para não retornar apenas 1 produto."""
+    """Busca candidatos por sementes e também pelos Mais Vendidos oficiais.
+
+    A busca por /products/search encontra produtos de catálogo, mas não é uma
+    fonte suficiente para garantir anúncios reais de alto giro. O endpoint
+    /highlights/category retorna explicitamente ITEM/PRODUCT/USER_PRODUCT dos
+    20 mais vendidos. Mesclamos as duas fontes e deixamos a validação real
+    (item + vendedor) decidir o que entra no resultado final.
+    """
     queries = CATEGORY_SEED.get(cat, [])[:4]
     out = []
     seen = set()
+
     for q in queries:
         try:
             rows = search_products_direct(q, 20)
         except Exception as e:
             print("[BUSCA CATEGORIA]", cat, q, repr(e))
-            continue
+            rows = []
         for raw in rows or []:
             if not isinstance(raw, dict):
                 continue
@@ -1807,7 +1815,43 @@ def _search_category(cat):
             if not pid or pid in seen:
                 continue
             seen.add(pid)
-            out.append((raw, q))
+            raw2 = dict(raw)
+            raw2.setdefault("source_type", "PRODUCT")
+            out.append((raw2, q))
+
+    # Fonte oficial de ranking: até 20 mais vendidos da categoria.
+    try:
+        signals = load_demand_signals()
+        category_id = (signals.get(cat) or {}).get("category_id")
+    except Exception as e:
+        print("[HIGHLIGHTS CATEGORIA]", cat, repr(e))
+        category_id = None
+
+    if category_id:
+        try:
+            ranking = highlights(category_id) or []
+            for row in ranking[:20]:
+                if not isinstance(row, dict):
+                    continue
+                pid = str(row.get("id") or "").strip()
+                typ = str(row.get("type") or "").upper().strip()
+                if not pid or pid in seen:
+                    continue
+                if typ not in {"ITEM", "PRODUCT"}:
+                    continue
+                seen.add(pid)
+                raw = {
+                    "id": pid,
+                    "name": row.get("title") or row.get("name") or pid,
+                    "title": row.get("title") or row.get("name") or pid,
+                    "source_type": typ,
+                    "highlight_position": row.get("position"),
+                    "highlight_category_id": category_id,
+                }
+                out.append((raw, (CATEGORY_SEED.get(cat) or [cat])[0]))
+        except Exception as e:
+            print("[HIGHLIGHTS CATEGORIA]", cat, category_id, repr(e))
+
     print(f"[BUSCA CATEGORIA] {cat} -> {len(out)} candidatos únicos")
     return out
 
@@ -1978,6 +2022,26 @@ def _fetch_product_fast(pid, raw=None, base=None):
     with _PRODUCT_CACHE_LOCK:
         if cache_key in _PRODUCT_CACHE:
             return _PRODUCT_CACHE[cache_key]
+
+    # 0) Highlights pode entregar diretamente um ITEM (anúncio real).
+    source_type = str((raw or {}).get("source_type") or "").upper().strip()
+    if source_type == "ITEM":
+        item_data, status, _ = ml_get(f"/items/{pid}")
+        if status == 200 and isinstance(item_data, dict):
+            item = normalize_item(item_data)
+            if item is not None:
+                p = dict(raw or {})
+                p.update({
+                    "id": pid,
+                    "name": item_data.get("title") or p.get("name") or pid,
+                    "title": item_data.get("title") or p.get("title") or pid,
+                    "pictures": item_data.get("pictures") or [],
+                    "permalink": item_data.get("permalink"),
+                })
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
 
     # 1) aproveita qualquer buy box que já tenha vindo na busca.
     if isinstance(raw, dict):
