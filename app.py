@@ -90,8 +90,7 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    # FONTE DE VERDADE DO TESTE — MICRO-NICHOS EXATOS ENVIADOS PELO USUÁRIO.
-    # Não adicionar outros termos nesta fase.
+    # Perfumes — mantidos exatamente como estavam nesta versão.
     "🌸 Perfumes": [
         "Perfume contratipo inspirado",
         "Perfume importado 30ml masculino",
@@ -102,6 +101,50 @@ CATALOG = {
         "Perfume Lattafa Asad",
         "Perfume Lattafa Yara",
         "Perfume Maison Alhambra",
+    ],
+
+    # NOVAS CATEGORIAS — foco em produtos de alto giro e bom potencial
+    # para anúncios de afiliado. As consultas são positivas e específicas;
+    # o filtro final ainda valida o título do produto.
+    "🧴 Saúde, Beleza e Cuidado Pessoal": [
+        "Creatina monohidratada",
+        "Whey protein",
+        "Protetor solar facial",
+        "Serum facial",
+        "Creme para cabelo",
+        "Kit skincare",
+    ],
+    "🏡 Achadinhos de Casa e Cozinha": [
+        "Organizador acrílico",
+        "Potes herméticos",
+        "Mini processador USB",
+        "Lâmpada inteligente LED",
+        "Fita LED inteligente",
+        "Organizador de cozinha",
+    ],
+    "📲 Acessórios para Celulares e Eletrônicos": [
+        "Carregador turbo de parede",
+        "Power bank bateria portátil",
+        "Fone Bluetooth",
+        "Smartwatch custo benefício",
+        "Capinha para celular",
+        "Película para celular",
+    ],
+    "👚 Moda Básica e Kits de Vestuário": [
+        "Kit camiseta lisa algodão 3 peças",
+        "Kit camiseta lisa algodão 5 peças",
+        "Kit cueca boxer",
+        "Kit meias",
+        "Roupa fitness feminina",
+        "Roupa fitness masculina",
+    ],
+    "👟 Tênis — Academia, Corrida e Social": [
+        "Tênis academia treino",
+        "Tênis corrida custo benefício",
+        "Tênis corrida Nike Adidas Asics Mizuno Olympikus",
+        "Tênis treino New Balance",
+        "Tênis casual social masculino",
+        "Tênis social masculino couro",
     ],
 }
 
@@ -301,9 +344,37 @@ def is_requested_product(title, query, category=None):
         "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
         "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
         "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], []),
+        "🧴 Saúde, Beleza e Cuidado Pessoal": ([
+            "creatina", "whey", "suplemento", "protetor solar", "serum", "skincare",
+            "creme cabelo", "creme para cabelo", "cosmetico", "hidratante",
+        ], ["amostra", "tester", "refil vazio"]),
+        "🏡 Achadinhos de Casa e Cozinha": ([
+            "organizador", "acrilico", "pote hermetico", "potes hermeticos",
+            "processador", "processador usb", "lampada", "fita led", "cozinha",
+        ], []),
+        "📲 Acessórios para Celulares e Eletrônicos": ([
+            "carregador", "carregador turbo", "power bank", "bateria portatil",
+            "fone bluetooth", "fone", "smartwatch", "capinha", "pelicula",
+        ], []),
+        "👚 Moda Básica e Kits de Vestuário": ([
+            "camiseta", "camiseta lisa", "algodao", "cueca boxer", "cueca",
+            "meia", "fitness", "roupa fitness", "kit",
+        ], []),
+        "👟 Tênis — Academia, Corrida e Social": ([
+            "tenis", "corrida", "treino", "academia", "running", "social",
+            "nike", "adidas", "asics", "mizuno", "olympikus", "new balance",
+        ], ["chuteira", "sapato infantil", "tenis infantil"]),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
+
+    # O filtro global de acessórios continua valendo para categorias de
+    # produto principal, mas NÃO pode bloquear a nova categoria específica
+    # de acessórios para celular/eletrônicos.
+    if cat != "📲 Acessórios para Celulares e Eletrônicos":
+        if any(x in t for x in generic_bad):
+            return False
+
     if any(x in t for x in bad):
         return False
 
@@ -1452,11 +1523,18 @@ STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","
 
 
 def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow_fallback=True):
-    """Associa um cupom somente quando produto e preço batem de verdade.
+    """Associa cupom a produto real usando título + proximidade de preço.
 
-    Evita que um card de outro perfume/produto seja herdado apenas porque
-    os títulos são parecidos ou porque os preços estão dentro de uma janela
-    muito grande.
+    A página pública do Mercado Livre mostra cupons vinculados a produtos,
+    mas o preço exibido pode variar em relação ao preço retornado pela API
+    (Pix, promoção, atualização do anúncio). Por isso a versão anterior ficou
+    rígida demais e passou a rejeitar TODOS os cupons.
+
+    Aqui mantemos a proteção contra cupom genérico:
+      - exige palavras relevantes do produto em comum;
+      - rejeita títulos com conflito claro de marca/modelo;
+      - usa preço como confirmação, não como igualdade exata;
+      - nunca cria cupom apenas porque o preço atende a uma faixa.
     """
     try:
         target_price = float(price)
@@ -1465,8 +1543,19 @@ def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow
     if target_price <= 0:
         return None
 
+    generic = {
+        "perfume", "parfum", "eau", "de", "toilette", "fragrance",
+        "original", "novo", "oficial", "kit", "com", "para", "masculino",
+        "feminino", "unissex", "produto", "promocao", "oferta", "ml",
+        "un", "unidade", "cor", "tamanho", "modelo", "premium"
+    }
+
+    target_tokens = [x for x in norm(title).split() if len(x) >= 3 and x not in generic and x not in STOP_WORDS]
+    target_set = set(target_tokens)
+
     best = None
     best_score = 0.0
+
     for card in cards or []:
         try:
             card_price = float(card.get("price") or 0)
@@ -1475,24 +1564,42 @@ def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow
         if card_price <= 0:
             continue
 
-        sim = float(title_similarity(title, card.get("title") or ""))
-        diff = abs(target_price - card_price)
-        pct_diff = diff / max(target_price, 1.0)
+        card_title = str(card.get("title") or "")
+        card_tokens = {x for x in norm(card_title).split() if len(x) >= 3 and x not in generic and x not in STOP_WORDS}
+        common = target_set & card_tokens
+        sim = float(title_similarity(title, card_title))
+        price_diff_pct = abs(target_price - card_price) / max(target_price, 1.0)
 
-        # Correspondência forte: título muito parecido e preço praticamente igual.
-        if sim >= 0.90 and pct_diff <= 0.05:
-            score = sim + 0.35
-        # Correspondência aceitável, ainda exigindo preço muito próximo.
-        elif sim >= 0.86 and pct_diff <= 0.03:
-            score = sim + 0.25
+        # Sem palavra relevante em comum não há associação produto->cupom.
+        if not common:
+            continue
+
+        # Se o título é suficientemente específico, pelo menos uma palavra
+        # relevante já basta; para títulos genéricos exigimos duas.
+        if len(target_set) <= 2 and len(common) < 2 and sim < 0.80:
+            continue
+
+        # Preço próximo reforça a associação, mas não precisa ser idêntico.
+        price_bonus = 0.0
+        if price_diff_pct <= 0.08:
+            price_bonus = 0.25
+        elif price_diff_pct <= 0.18:
+            price_bonus = 0.16
+        elif price_diff_pct <= 0.30:
+            price_bonus = 0.08
         else:
             continue
 
-        if score > best_score:
+        score = sim + min(0.20, len(common) * 0.04) + price_bonus
+
+        # Um título muito parecido com preço muito próximo é a melhor situação.
+        if sim >= 0.72 and price_diff_pct <= 0.30 and score > best_score:
             best_score = score
             best = card
 
-    if best is None or best_score < 1.11:
+    # Limite deliberadamente moderado: ainda exige associação textual e preço,
+    # mas não elimina cupons legítimos quando o preço da API mudou.
+    if best is None or best_score < 0.78:
         if allow_fallback:
             fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
             return fallback
@@ -1667,6 +1774,11 @@ CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 DEMAND_ANCHORS = {
     "🌸 Perfumes": ["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"],
     "🌙 Perfumes Árabes": ["lattafa", "yara", "asad", "maison alhambra", "afnan"],
+    "🧴 Saúde, Beleza e Cuidado Pessoal": ["saude", "beleza", "cosmetico", "suplemento", "creatina", "whey", "protetor solar", "skincare"],
+    "🏡 Achadinhos de Casa e Cozinha": ["casa", "cozinha", "organizador", "pote", "processador", "lampada", "fita led"],
+    "📲 Acessórios para Celulares e Eletrônicos": ["acessorios", "celular", "carregador", "power bank", "fone", "smartwatch", "capinha"],
+    "👚 Moda Básica e Kits de Vestuário": ["moda", "camiseta", "cueca", "meia", "kit", "fitness", "vestuario"],
+    "👟 Tênis — Academia, Corrida e Social": ["tenis", "academia", "corrida", "treino", "social", "nike", "adidas", "asics", "mizuno", "olympikus", "new balance"],
 }
 
 _PRODUCT_CACHE = {}
