@@ -17,8 +17,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 
 app = Flask(__name__)
 
-# Busca completa: todas as categorias do catálogo.
-# O modo de teste de perfumes foi desativado para o fluxo normal.
+# TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 TESTE_SOMENTE_PERFUMES = False
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
@@ -91,72 +90,65 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    "📱 Celulares": [
-        "smartphone", "iphone", "samsung galaxy", "motorola moto",
-        "xiaomi redmi", "poco smartphone", "realme smartphone"
-    ],
+    # Categorias atuais definidas para o Caçador de Ofertas.
+    # Perfumes permanecem e as 5 novas categorias foram adicionadas.
     "🌸 Perfumes": [
-        "perfume masculino", "perfume feminino", "perfume importado",
-        "perfume nacional", "eau de parfum", "eau de toilette",
-        "body splash", "body mist", "kit perfume"
+        "perfumes importados masculinos",
+        "perfumes importados femininos",
+        "Eau de Parfum",
+        "Eau de Toilette",
+        "Body Splash",
+        "Body Mist",
+        "kit perfume com shampoo hidratante creme",
     ],
     "🌙 Perfumes Árabes": [
-        "perfume lattafa asad", "perfume lattafa yara",
-        "perfume maison alhambra", "perfume afnan"
-    ],
-    "🏋️ Academia": [
-        "roupa academia masculina", "roupa academia feminina",
-        "camiseta academia", "short academia", "legging academia",
-        "pre treino", "suplementos"
-    ],
-    "🔧 Ferramentas": [
-        "furadeira", "parafusadeira", "esmerilhadeira",
-        "kit ferramentas", "maleta ferramentas", "serra",
-        "chave de impacto", "multimetro"
-    ],
-    "🎧 Eletrônicos": [
-        "headset", "tablet", "caixa de som bluetooth",
-        "camera digital", "roku", "fire tv"
-    ],
-    "🏠 Casa": [
-        "aspirador de pó", "liquidificador", "cafeteira",
-        "ventilador", "ferro de passar"
-    ],
-    "🍳 Cozinha": [
-        "air fryer", "panela elétrica", "jogo de panelas",
-        "cafeteira", "liquidificador"
-    ],
-    "🚗 Automotivo": [
-        "aspirador automotivo", "suporte celular carro",
-        "carregador automotivo", "ferramentas automotivas",
-        "tapete automotivo", "cera automotiva", "revitalizador automotivo",
-        "pretinho para pneu", "microfibra automotiva", "multimidia",
-        "super led", "camera de ré"
-    ],
-    "👕 Moda": [
-        "camiseta básica", "vestido", "mochila",
-        "bolsa feminina", "oculos de sol"
+        "Perfume Lattafa Asad",
+        "Perfume Lattafa Yara",
+        "Perfume Maison Alhambra",
+        "Perfume Afnan",
     ],
     "🧴 Saúde, Beleza e Cuidado Pessoal": [
-        "creatina monohidratada", "whey protein", "protetor solar",
-        "séruns faciais", "cremes para cabelo", "skincare"
+        "creatina monohidratada",
+        "whey protein",
+        "protetor solar",
+        "séruns faciais",
+        "cremes para cabelo",
+        "skincare",
     ],
     "🏡 Achadinhos de Casa e Cozinha": [
-        "organizadores acrílicos", "potes herméticos", "mini processadores USB",
-        "lâmpadas inteligentes", "fitas LED", "organizadores de cozinha"
+        "organizadores acrílicos",
+        "potes herméticos",
+        "mini processadores USB",
+        "lâmpadas inteligentes",
+        "fitas LED",
+        "organizadores de cozinha",
     ],
     "📲 Acessórios para Celulares e Eletrônicos": [
-        "carregadores Turbo", "power banks", "fones Bluetooth",
-        "smartwatches", "capinhas", "películas"
+        "carregadores Turbo",
+        "power banks",
+        "fones Bluetooth",
+        "smartwatches",
+        "capinhas",
+        "películas",
     ],
     "👚 Moda Básica e Kits de Vestuário": [
-        "kits de camisetas lisas 3 peças", "kits de camisetas lisas 5 peças",
-        "cuecas boxer", "meias", "roupas fitness"
+        "kits de camisetas lisas 3 peças",
+        "kits de camisetas lisas 5 peças",
+        "cuecas boxer",
+        "meias",
+        "roupas fitness",
     ],
     "👟 Tênis — Academia, Corrida e Social": [
-        "tênis academia", "tênis corrida", "tênis Nike", "tênis Adidas",
-        "tênis Asics", "tênis Mizuno", "tênis Olympikus", "tênis New Balance",
-        "tênis custo-benefício", "tênis social masculino"
+        "tênis academia treino",
+        "tênis corrida",
+        "Nike",
+        "Adidas",
+        "Asics",
+        "Mizuno",
+        "Olympikus",
+        "New Balance",
+        "tênis custo-benefício",
+        "tênis social masculino",
     ],
 }
 
@@ -2088,7 +2080,7 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_perfumes():
-    """Busca os perfumes árabes permitidos, sem decants/contratipos."""
+    """Teste isolado usando exatamente os 3 micro-nichos enviados."""
     queries = list(CATALOG["🌙 Perfumes Árabes"])
     out = []
     seen = set()
@@ -2243,7 +2235,6 @@ def _search_category(cat):
             break
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
-    return out
     return out
 
 
@@ -3047,16 +3038,6 @@ def auto_scan(category=None, min_discount=0):
 # ANÚNCIO
 # ============================================================
 
-def is_valid_affiliate_link(url):
-    """Aceita somente o link curto oficial meli.la gerado pelo afiliado."""
-    u = str(url or "").strip()
-    return bool(re.match(r"^https?://(?:www\.)?meli\.la/[A-Za-z0-9]+/?$", u, re.I))
-
-def extract_affiliate_link(text):
-    """Extrai um meli.la do texto do anúncio, se existir."""
-    m = re.search(r"https?://(?:www\.)?meli\.la/[A-Za-z0-9]+/?", str(text or ""), re.I)
-    return m.group(0).rstrip(".,;)") if m else ""
-
 def ad_text(o, affiliate=""):
     """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
@@ -3098,9 +3079,7 @@ def ad_text(o, affiliate=""):
 
         lines += ["", "⚠️ Consulte as condições e confirme o cupom no checkout."]
 
-    link = str(affiliate or o.get("affiliate_link") or "").strip()
-    if not is_valid_affiliate_link(link):
-        link = ""
+    link = str(affiliate or o.get("permalink") or "").strip()
     if link:
         lines += ["", "🛒 Pegar promoção:", link]
     else:
@@ -3275,12 +3254,7 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
-        affiliate_link = str(offer.get("affiliate_link") or "").strip()
-        if not is_valid_affiliate_link(affiliate_link):
-            skipped += 1
-            print(f"[AUTO WHATSAPP] Ignorada {product_id}: sem link afiliado meli.la válido.")
-            continue
-        text = ad_text(offer, affiliate_link)
+        text = ad_text(offer, offer.get("affiliate_link") or offer.get("permalink") or "")
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -3480,11 +3454,7 @@ def api_anuncio():
                 o["cupom"]=cup
                 o["desconto_cupom"]=cup["desconto_estimado"]
                 o["preco_com_cupom"]=max(0,float(o["price"])-cup["desconto_estimado"])
-    affiliate_link = request.args.get("affiliate_link", "").strip()
-    if not is_valid_affiliate_link(affiliate_link):
-        return jsonify({"erro": "Informe o link de afiliado meli.la gerado pelo Mercado Livre para este produto."}), 400
-    o["affiliate_link"] = affiliate_link
-    return jsonify({"anuncio":ad_text(o, affiliate_link)})
+    return jsonify({"anuncio":ad_text(o,request.args.get("affiliate_link","").strip())})
 
 
 @app.route("/api/enviar-whatsapp", methods=["POST"])
@@ -3510,13 +3480,6 @@ def api_enviar_whatsapp():
         return jsonify({
             "ok": False,
             "erro": "O anúncio está vazio."
-        }), 400
-
-    affiliate_link = extract_affiliate_link(text)
-    if not is_valid_affiliate_link(affiliate_link):
-        return jsonify({
-            "ok": False,
-            "erro": "Envio bloqueado: o anúncio precisa conter um link de afiliado meli.la válido."
         }), 400
 
     prepared_image = gerar_imagem_natural_whatsapp(
@@ -3714,8 +3677,7 @@ function seller(o,mi,oi){
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
  <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
- <input id="aff_${id}" placeholder="Cole aqui o seu link meli.la deste produto" style="margin-top:7px;border:2px solid #ffe600">
- <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
+ <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
  <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
@@ -3732,10 +3694,7 @@ async function copiarUrl(id,url){
 async function anuncio(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
-  const affiliate=document.getElementById('aff_'+id).value.trim();
-  if(!/^https?:\/\/(?:www\.)?meli\.la\/[A-Za-z0-9]+\/?$/i.test(affiliate)){alert('Cole primeiro o seu link meli.la gerado pelo Mercado Livre para este produto.');return;}
-  o.affiliate_link=affiliate;
-  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:affiliate});
+  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:o.permalink || ''});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
   const d=await r.json();
