@@ -2672,22 +2672,52 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 if coupon:
                     offer["cupom"] = coupon
 
+        # IMPORTANTE: nesta rota direta os produtos já estão prontos.
+        # A versão anterior retornava modelos=[] e também não informava
+        # stats["ofertas"]. Por isso o servidor encontrava os produtos
+        # (ex.: 40), mas a interface mostrava "0 ofertas" e "Nenhuma
+        # oportunidade encontrada". Aqui transformamos as ofertas em
+        # modelos para a mesma renderização usada pela busca normal.
+        models = []
+        for o in flat:
+            models.append({
+                "product_id": o.get("product_id") or o.get("item_id"),
+                "title": o.get("title") or "",
+                "modelo_nome": o.get("modelo_nome") or model_name(o.get("title") or ""),
+                "especificacoes": o.get("especificacoes") or specs(o.get("title") or ""),
+                "image": o.get("image") or "",
+                "category_name": o.get("category_name") or "",
+                "ofertas": [o],
+            })
+
+        coupon_prices = [
+            float(o.get("preco_com_cupom"))
+            for o in flat
+            if o.get("preco_com_cupom") is not None
+        ]
+        best_coupon_price = min(coupon_prices) if coupon_prices else None
+        best_coupon_discount = max(
+            [float(o.get("desconto_cupom") or 0) for o in flat] or [0]
+        )
+
         stats = {
+            "ofertas": len(flat),
+            "mais vendidos": len(flat),
             "100+ vendas": sum(1 for o in flat if int(o.get("sold_quantity") or 0) >= MIN_ITEM_SOLD_QUANTITY),
             "Full": sum(1 for o in flat if str(o.get("logistic_type") or "").lower() == "fulfillment"),
             "Gold/Platinum": 0,
             "aparecem nos dois": 0,
             "cupom candidato": sum(1 for o in flat if o.get("cupom")),
-            "cupons com limite": 0,
-            "maior desconto estimado": max([float(o.get("discount") or 0) for o in flat] or [0]),
-            "menor preço com cupom": "—",
+            "cupons com limite": sum(1 for o in flat if o.get("cupom") and o.get("cupom", {}).get("max_discount")),
+            "maior desconto estimado": brl(best_coupon_discount) if best_coupon_discount > 0 else brl(max([float(o.get("discount") or 0) for o in flat] or [0])),
+            "menor preço com cupom": brl(best_coupon_price) if best_coupon_price is not None else "—",
             "menor preço do produto": brl(min([float(o.get("price") or 0) for o in flat] or [0])),
             "menor total com frete": brl(min([float(o.get("total_price") or 0) for o in flat] or [0])),
             "produtos sem cupom": sum(1 for o in flat if not o.get("cupom")),
             "modo": "busca direta /sites/MLB/search — SEM FILTROS",
         }
-        print(f"[TESTE DIRETO SEM FILTROS RESULTADO] {len(flat)} ofertas")
-        return {"stats": stats, "modelos": [], "ofertas": flat}
+        print(f"[TESTE DIRETO SEM FILTROS RESULTADO] {len(flat)} ofertas | modelos={len(models)}")
+        return {"stats": stats, "modelos": models, "ofertas": flat}
 
     raw_by_cat = {}
     with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
