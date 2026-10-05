@@ -86,16 +86,80 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    "📱 Celulares": ["carregador turbo", "carregador de parede", "cabo tipo c", "cabo lightning", "cabo reforçado", "power bank 10000mah", "power bank 20000mah", "fone bluetooth tws", "xiaomi tws", "qcy", "jbl fone", "capinha anti impacto", "película 3d", "película privacidade"],
-    "🌸 Perfumes": ["contratipo perfume", "perfume inspirado", "in the box", "thera cosméticos", "nuancielo", "brand collection", "perfume importado masculino", "perfume importado feminino", "perfume 30ml", "perfume 50ml", "body splash", "body mist"],
-    "🌙 Perfumes Árabes": ["perfume árabe", "perfumes árabes", "lattafa", "lattafa asad", "lattafa yara", "maison alhambra", "afnan", "rasasi", "al haramain", "armaf", "al wataniah", "fragrance world", "french avenue", "rayhaan", "orientica", "paris corner", "emir", "khadlaj", "zimaya", "swiss arabian", "ajmal"],
-    "🏋️ Academia": ["creatina monohidratada 300g", "whey protein concentrado", "growth creatina", "max titanium whey", "integralmédica whey", "garrafa térmica inox", "coqueteleira", "mini band", "short dupla face", "top sustentação", "camiseta dry fit"],
-    "🔧 Ferramentas": ["parafusadeira bateria", "furadeira bateria", "kit parafusadeira maleta", "kit ferramentas", "jogo chaves combinadas", "chave precisão eletrônica", "maleta ferramentas", "trena laser", "multímetro digital"],
-    "🎧 Eletrônicos": ["smartwatch", "smartband", "mi band", "haylou", "amazfit", "caixa de som bluetooth", "jbl go", "roku express", "fire tv stick", "câmera segurança wifi", "câmera wifi 360"],
-    "🏠 Casa": ["lâmpada smart wifi", "fita led rgb", "luminária mesa sem fio", "caixa organizadora plástico", "cesto organizador", "cabide veludo", "potes vidro herméticos", "cortina blackout", "tapete geométrico", "tapete felpudo"],
-    "🍳 Cozinha": ["air fryer grande", "chaleira elétrica inox", "mini processador usb", "colheres silicone cabo bambu", "balança digital cozinha", "suporte pratos armário", "porta temperos magnético", "porta temperos giratório"],
-    "🚗 Automotivo": ["cera cristalizadora automotiva", "revitalizador plástico automotivo", "pretinho pneu", "pano microfibra automotivo", "central multimídia 7 polegadas", "suporte magnético celular carro", "carregador veicular turbo", "kit lâmpada super led", "câmera de ré", "câmera ré sensor"],
-    "👕 Moda": ["kit camiseta algodão 3 peças", "kit camiseta algodão 5 peças", "kit cueca boxer", "kit meia sapatilha", "bermuda tactel elastano", "vestido casual feminino", "tênis casual tecido", "chinelo conforto"],
+    "📱 Celulares": [
+        "carregador turbo de parede", "carregador turbo", "cabo tipo c reforçado",
+        "cabo lightning reforçado", "cabo reforçado tipo c", "power bank 10000mah",
+        "power bank 20000mah", "bateria portátil 10000mah", "bateria portátil 20000mah",
+        "fone bluetooth tws", "fone tws xiaomi", "fone tws qcy", "fone tws jbl",
+        "capinha silicone anti impacto", "capinha anti impacto transparente",
+        "capinha aveludada anti impacto", "película vidro 3d", "película privacidade",
+        "película 3d privacidade", "kit película vidro"
+    ],
+    "🌸 Perfumes": [
+        "perfume contratipo nacional", "perfume contratipo importado", "perfume inspirado",
+        "in the box perfume", "thera cosméticos perfume", "nuancielo perfume",
+        "brand collection perfume", "perfume importado masculino", "perfume importado feminino",
+        "perfume grife masculino 30ml", "perfume grife feminino 30ml",
+        "perfume grife masculino 50ml", "perfume grife feminino 50ml",
+        "body splash", "body mist", "colônia corporal", "spray perfumado corporal"
+    ],
+    "🌙 Perfumes Árabes": [
+        "perfume árabe", "perfumes árabes", "lattafa", "lattafa asad",
+        "lattafa yara", "maison alhambra", "afnan"
+    ],
+    "🏋️ Academia": [
+        "creatina monohidratada 300g", "creatina monohidratada", "whey protein concentrado",
+        "growth creatina", "growth whey", "max titanium whey", "integralmédica whey",
+        "garrafa térmica inox", "garrafa inox tipo stanley", "garrafa kouda",
+        "coqueteleira com misturador", "mini band", "faixa elástica treino",
+        "short dupla face", "top sustentação", "camiseta dry fit"
+    ],
+    "🔧 Ferramentas": [
+        "parafusadeira bateria", "furadeira bateria", "kit parafusadeira maleta bits",
+        "kit furadeira maleta bits", "kit ferramentas", "jogo chaves combinadas",
+        "chave de fenda precisão eletrônica", "chaves precisão eletrônicos",
+        "maleta ferramentas completa", "trena laser", "multímetro digital"
+    ],
+    "🎧 Eletrônicos": [
+        "smartwatch", "smartband", "smartwatch custo benefício", "smartband custo benefício",
+        "smartwatch melhores marcas", "smartband melhores marcas",
+        "mi band", "haylou", "amazfit",
+        "caixa de som bluetooth portátil", "caixa bluetooth estilo jbl go",
+        "roku express", "fire tv stick", "dongle streaming tv",
+        "câmera segurança wifi", "câmera wifi 360", "câmera inteligente 360"
+    ],
+    "🏠 Casa": [
+        "lâmpada smart wifi", "lâmpada inteligente wifi", "fita led rgb",
+        "fita led rgb tv quarto", "luminária mesa sem fio",
+        "caixa organizadora plástico", "cesto organizador plástico",
+        "cabide ultrafino veludo kit 30", "cabide ultrafino veludo kit 50",
+        "pote vidro hermético", "potes vidro herméticos mantimentos",
+        "cortina blackout tecido", "cortina corta luz blackout",
+        "tapete geométrico sala", "tapete felpudo sala"
+    ],
+    "🍳 Cozinha": [
+        "air fryer grande capacidade", "fritadeira elétrica grande", "chaleira elétrica inox",
+        "mini processador alimentos usb", "processador alimentos recarregável usb",
+        "jogo colheres silicone cabo bambu", "colheres silicone cabo bambu",
+        "balança digital precisão culinária", "balança digital cozinha",
+        "suporte pratos armário", "porta pratos armário", "porta temperos magnético",
+        "porta temperos giratório"
+    ],
+    "🚗 Automotivo": [
+        "cera cristalizadora automotiva", "revitalizador plástico automotivo",
+        "pretinho pneu longa duração", "pano microfibra alta gramatura automotivo",
+        "central multimídia universal 7 polegadas", "central multimídia 7 polegadas",
+        "suporte magnético celular saída ar", "suporte magnético celular carro",
+        "carregador veicular turbo", "kit lâmpada super led farol",
+        "super led farol", "câmera de ré veicular", "câmera de ré sensor"
+    ],
+    "👕 Moda": [
+        "kit camiseta lisa algodão 3 peças", "kit camiseta lisa algodão 5 peças",
+        "kit camisetas algodão", "kit cueca boxer", "kit meias sapatilha cano curto",
+        "meia sapatilha cano curto", "bermuda masculina tactel elastano",
+        "vestido leve casual feminino", "tênis casual tecido", "tênis fácil calçar",
+        "chinelo conforto marca popular"
+    ],
 }
 
 # ============================================================
@@ -1547,16 +1611,16 @@ CATEGORY_SEED = {
 }
 
 DEMAND_ANCHORS = {
-    "📱 Celulares": ["carregador","cabo","power bank","fone","qcy","jbl","capinha","película"],
-    "🌸 Perfumes": ["perfume","parfum","body splash","body mist","contratipo","fragrância"],
-    "🌙 Perfumes Árabes": ["árabe","lattafa","maison alhambra","afnan","rasasi","armaf","yara","asad"],
-    "🏋️ Academia": ["creatina","whey","coqueteleira","mini band","dry fit","short","top"],
-    "🔧 Ferramentas": ["furadeira","parafusadeira","chave","maleta","trena","multímetro","ferramenta"],
-    "🎧 Eletrônicos": ["smartwatch","smartband","mi band","haylou","amazfit","fone","caixa","câmera","fire tv","roku"],
-    "🏠 Casa": ["lâmpada","led","luminária","organizador","cabide","pote","cortina","tapete"],
-    "🍳 Cozinha": ["air fryer","chaleira","processador","balança","silicone","porta temperos","suporte pratos"],
-    "🚗 Automotivo": ["automotivo","carro","cera","pretinho","microfibra","multimídia","suporte celular","carregador","super led","câmera de ré"],
-    "👕 Moda": ["camiseta","cueca","meia","bermuda","vestido","tênis","chinelo"],
+    "📱 Celulares": ["carregador turbo","cabo tipo c","cabo lightning","power bank","fone tws","xiaomi","qcy","jbl","capinha","película"],
+    "🌸 Perfumes": ["contratipo","in the box","thera","nuancielo","brand collection","perfume","body splash","body mist"],
+    "🌙 Perfumes Árabes": ["perfume árabe","lattafa","asad","yara","maison alhambra","afnan"],
+    "🏋️ Academia": ["creatina","whey","growth","max titanium","integralmédica","garrafa térmica","coqueteleira","mini band","short","top","dry fit"],
+    "🔧 Ferramentas": ["parafusadeira","furadeira","maleta","chave","trena laser","multímetro"],
+    "🎧 Eletrônicos": ["smartwatch","smartband","mi band","haylou","amazfit","caixa de som","roku","fire tv","câmera wifi"],
+    "🏠 Casa": ["lâmpada smart","fita led","luminária","organizador","cabide","pote vidro","blackout","tapete"],
+    "🍳 Cozinha": ["air fryer","chaleira","processador usb","colheres silicone","balança","suporte pratos","porta temperos"],
+    "🚗 Automotivo": ["cera","revitalizador","pretinho","microfibra","multimídia","suporte magnético","carregador veicular","super led","câmera de ré"],
+    "👕 Moda": ["camiseta","cueca","meia","bermuda tactel","vestido","tênis casual","chinelo"],
 }
 
 _PRODUCT_CACHE = {}
@@ -1953,6 +2017,18 @@ def _is_real_perfume(title):
 _ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
 _ARABIC_BRAND_CACHE_LOCK = threading.Lock()
 
+def _is_arabic_perfume(title):
+    text = norm(title or "")
+    if not text or any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
+        return False
+    # Somente perfume árabe em frasco/produto principal; decant/amostra/miniatura
+    # permanecem bloqueados pelo filtro acima.
+    arabic_terms = (
+        "lattafa", "asad", "yara", "maison alhambra", "afnan",
+        "perfume árabe", "perfume arabe", "perfumes árabes", "perfumes arabes",
+    )
+    return _is_real_perfume(text) and any(norm(term) in text for term in arabic_terms)
+
 def _arabic_brand_ids():
     """Descobre IDs oficiais das marcas árabes na categoria de perfumes."""
     now = time.time()
@@ -1962,23 +2038,8 @@ def _arabic_brand_ids():
 
     wanted = {norm(x) for x in (
         "Lattafa",
-        "Rasasi",
         "Maison Alhambra",
-        "Al Haramain",
-        "Armaf",
         "Afnan",
-        "Al Wataniah",
-        "Fragrance World",
-        "French Avenue",
-        "Rayhaan",
-        "Mawwal",
-        "Orientica",
-        "Paris Corner",
-        "Emir",
-        "Khadlaj",
-        "Zimaya",
-        "Swiss Arabian",
-        "Ajmal",
     )}
     found = []
     data, status, _ = ml_get(f"/categories/{BEST_SELLER_CATEGORY_IDS['🌸 Perfumes']}/attributes")
@@ -2045,7 +2106,7 @@ def _search_arabic_perfumes():
     # busca oficial ordenada por vendas. Assim os primeiros resultados inválidos
     # não fazem a categoria árabe desaparecer.
     seen = {str(row.get("id") or "").strip() for row in rows}
-    arabic_queries = ["perfume árabe", "perfumes árabes", "perfume arabe", "perfumes arabe"]
+    arabic_queries = ["perfume árabe", "perfumes árabes", "lattafa", "maison alhambra", "afnan"]
     for query in arabic_queries:
         extra = _search_sold_sorted_items(category_id, query=query, max_pages=3)
         for row in extra:
@@ -2676,8 +2737,16 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
+    # Automotivo: nunca exibir compressores, mesmo que tenham entrado no ranking.
+    if "🚗 Automotivo" in categories:
+        offers = [
+            o for o in offers
+            if o.get("category_name") != "🚗 Automotivo"
+            or not _is_automotive_excluded(o.get("title"))
+        ]
+
     # Perfumes: mostra somente produtos que realmente são perfumes/fragrâncias,
-    # evitando derivados como hidratantes, refis, sabonetes e body splash.
+    # evitando derivados como hidratantes, refis, sabonetes e produtos Pet; Body Splash e Body Mist são permitidos.
     if "🌸 Perfumes" in categories:
         offers = [
             o for o in offers
