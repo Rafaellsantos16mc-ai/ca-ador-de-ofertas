@@ -1483,37 +1483,25 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
-    que pode não estar disponível para a consulta.
+    """Busca anúncios diretamente no /sites/MLB/search.
 
-    O site público pode mostrar "mais vendidos", mas a API só permite os
-    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
-    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
-    Isso evita transformar um parâmetro não suportado em zero resultados.
+    TESTE SEM FILTROS: envia somente a consulta e o limite para a API.
+    Não aplica preço mínimo, frete grátis, condição, vendas, Full,
+    reputação, Buy Box, cupom ou sort.
     """
-    base = {
+    params = {
         "q": str(q or "").strip(),
-        "status": "active",
         "limit": min(int(limit or 50), 50),
         "offset": 0,
     }
 
-    attempts = [
-        base,
-        {**base, "shipping_cost": "free"},
-        {**base, "condition": "new"},
-    ]
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
+    if status == 200 and isinstance(data, dict):
+        results = data.get("results") or []
+        print(f"[BUSCA SEM FILTROS] {q} -> {len(results)} anúncios")
+        return results
 
-    for n, params in enumerate(attempts, start=1):
-        data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
-        if status == 200 and isinstance(data, dict):
-            results = data.get("results") or []
-            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
-            if results:
-                return results
-        else:
-            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
-
+    print(f"[BUSCA SEM FILTROS] {q} -> HTTP {status} | {data}")
     return []
 
 
@@ -2390,38 +2378,26 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
 
 
 def _direct_perfume_offer_from_listing(row, cat, position, query):
-    """Transforma diretamente o anúncio /sites/MLB/search em oferta.
+    """Transforma qualquer anúncio retornado pela busca direta em oferta.
 
-    Nesta etapa de teste não passa por catálogo, Buy Box, Full, Gold/Platinum
-    ou mínimo de vendas. O objetivo é comprovar somente que os micro-nichos
-    encontram anúncios reais. Mantemos apenas preço >= R$69,90 e imagem.
+    IMPORTANTE: esta rota é propositalmente SEM FILTROS eliminatórios.
+    A consulta do próprio micro-nicho é quem define o que será pesquisado.
+    Aqui só montamos os dados necessários para exibir o anúncio.
     """
     if not isinstance(row, dict):
         return None
 
     item_id = str(row.get("id") or row.get("item_id") or "").strip()
-    title = str(row.get("title") or "").strip()
-    if not item_id or not title:
+    title = str(row.get("title") or row.get("name") or "").strip()
+    if not item_id:
         return None
-
-    if cat == "🌸 Perfumes":
-        if not _is_real_perfume(title):
-            return None
-    else:
-        if not _is_arabic_perfume(title):
-            return None
-
-    # Bloqueio explícito de decant/amostra/miniatura.
-    nt = norm(title)
-    if any(x in nt for x in ("decant", "amostra", "miniatura")):
-        return None
+    if not title:
+        title = item_id
 
     try:
-        price = float(row.get("price")) if row.get("price") is not None else None
+        price = float(row.get("price")) if row.get("price") is not None else 0.0
     except Exception:
-        price = None
-    if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
-        return None
+        price = 0.0
 
     try:
         original = float(row.get("original_price")) if row.get("original_price") is not None else None
@@ -2432,8 +2408,12 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if not isinstance(shipping, dict):
         shipping = {}
     free = bool(shipping.get("free_shipping"))
-    shipping_cost = 0 if free else shipping.get("cost")
+    shipping_cost = shipping.get("cost")
+    if shipping_cost is None and free:
+        shipping_cost = 0
 
+    # Imagem: usamos a que veio na busca; se não veio, tentamos o item real.
+    # A ausência da imagem NÃO elimina o produto nesta versão.
     image = str(
         row.get("thumbnail")
         or row.get("secure_thumbnail")
@@ -2441,7 +2421,6 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         or ""
     ).strip()
 
-    # Se a busca não trouxer thumbnail, tenta uma única consulta ao item real.
     if not image:
         data, status, _ = ml_get(f"/items/{item_id}")
         if status == 200 and isinstance(data, dict):
@@ -2454,10 +2433,6 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
                     or pictures[0].get("thumbnail")
                     or ""
                 ).strip()
-
-    if not image:
-        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
-        return None
 
     seller = row.get("seller") or {}
     seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
@@ -2481,7 +2456,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "original_price": original,
         "discount": disc,
         "seller_id": seller_id,
-        "condition": row.get("condition") or "new",
+        "condition": row.get("condition") or "",
         "free_shipping": free,
         "shipping_cost": shipping_cost,
         "shipping_known": shipping_cost is not None,
@@ -2493,7 +2468,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "seller_status": None,
         "seller_level_id": None,
         "seller_completed_sales": 0,
-        "seller_nickname": None,
+        "seller_nickname": seller.get("nickname") if isinstance(seller, dict) else None,
         "quality_validated": False,
         "giro_score": min(1000, sold * 2),
         "trend_score": 0,
@@ -2522,6 +2497,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "micro_nicho": query,
     }
 
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca somente os 20 mais vendidos de cada categoria.
 
@@ -2532,22 +2508,21 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
 
-    # TESTE ISOLADO: perfumes usam diretamente /sites/MLB/search.
-    # Isso evita que catálogo/Highlights/Buy Box/qualidade eliminem tudo antes
-    # de sabermos se os micro-nichos realmente retornam anúncios.
+    # TESTE DIRETO SEM FILTROS: cada micro-nicho vai direto para
+    # /sites/MLB/search. Nenhum filtro de preço, tipo de produto, vendas,
+    # frete, condição, Full, reputação, Buy Box ou imagem elimina anúncios.
     if TESTE_SOMENTE_PERFUMES and set(categories).issubset({"🌸 Perfumes", "🌙 Perfumes Árabes"}):
         direct = []
         seen_direct = set()
         for cat in categories:
             for q in CATALOG.get(cat, []):
-                search_q = q
-                print("[TESTE DIRETO]", cat, "|", search_q)
+                print("[TESTE DIRETO SEM FILTROS]", cat, "|", q)
                 try:
-                    rows = search_real_listings(search_q, limit=50)
+                    rows = search_real_listings(q, limit=50)
                 except Exception as exc:
                     print("[TESTE DIRETO ERRO]", cat, q, repr(exc))
                     continue
-                accepted = 0
+
                 for pos, row in enumerate(rows, start=1):
                     iid = str(row.get("id") or row.get("item_id") or "").strip() if isinstance(row, dict) else ""
                     if not iid or iid in seen_direct:
@@ -2557,21 +2532,27 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                         continue
                     seen_direct.add(iid)
                     direct.append(offer)
-                    accepted += 1
-                    if accepted >= 20:
-                        break
-                print("[TESTE DIRETO ACEITOS]", cat, q, accepted)
+
+            print("[TESTE DIRETO CATEGORIA]", cat, "candidatos acumulados:",
+                  sum(1 for o in direct if o.get("category_name") == cat))
 
         grouped = {cat: [] for cat in categories}
         for offer in direct:
             grouped.setdefault(offer["category_name"], []).append(offer)
+
         flat = []
         for cat in categories:
             arr = grouped.get(cat, [])
-            arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
+            # Primeiro os anúncios com maior quantidade de vendas, quando a
+            # API disponibilizar esse campo. Sem vendas informadas, mantém a
+            # ordem original da busca.
+            arr.sort(key=lambda o: (-int(o.get("sold_quantity") or 0),
+                                    int(o.get("best_seller_position") or 999999)))
             flat.extend(arr[:20])
+
         random.shuffle(flat)
 
+        # Cupom continua disponível, mas nunca elimina uma oferta.
         if apply_coupons and flat:
             try:
                 public_cards = get_public_coupon_cards_cached()
@@ -2600,12 +2581,12 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "cupons com limite": 0,
             "maior desconto estimado": max([float(o.get("discount") or 0) for o in flat] or [0]),
             "menor preço com cupom": "—",
-            "menor preço do produto": brl(min([float(o.get("price")) for o in flat] or [0])),
-            "menor total com frete": brl(min([float(o.get("total_price")) for o in flat] or [0])),
+            "menor preço do produto": brl(min([float(o.get("price") or 0) for o in flat] or [0])),
+            "menor total com frete": brl(min([float(o.get("total_price") or 0) for o in flat] or [0])),
             "produtos sem cupom": sum(1 for o in flat if not o.get("cupom")),
-            "modo": "teste direto /sites/MLB/search por micro-nicho",
+            "modo": "busca direta /sites/MLB/search — SEM FILTROS",
         }
-        print(f"[TESTE DIRETO RESULTADO] {len(flat)} ofertas válidas")
+        print(f"[TESTE DIRETO SEM FILTROS RESULTADO] {len(flat)} ofertas")
         return {"stats": stats, "modelos": [], "ofertas": flat}
 
     raw_by_cat = {}
