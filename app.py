@@ -100,7 +100,6 @@ CATALOG = {
         "Eau de Toilette",
         "Body Splash",
         "Body Mist",
-        "kit perfume shampoo hidratante creme",
     ],
     "🌙 Perfumes Árabes": [
         "Perfume Lattafa Asad",
@@ -334,14 +333,14 @@ def is_requested_product(title, query, category=None):
     generic_bad = [
         "capa", "capinha", "pelicula", "película", "suporte", "holder",
         "cabo", "adaptador", "adesivo", "peca de reposicao", "peca avulsa",
-        "refil vazio", "frasco vazio", "amostra", "decant", "miniatura",
-        "pingente", "chaveiro", "brinde", "molde", "manual digital"
+        "refil vazio", "frasco vazio", "amostra", "decant", "decants", "miniatura",
+        "contratipo", "contratipos", "pingente", "chaveiro", "brinde", "molde", "manual digital"
     ]
 
     category_rules = {
         "📱 Celulares": (["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"], []),
-        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"], []),
-        "🌙 Perfumes Árabes": (["lattafa", "yara", "asad", "maison alhambra", "afnan"], []),
+        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist"], ["atacado", "revenda"]),
+        "🌙 Perfumes Árabes": (["lattafa", "yara", "asad", "maison alhambra", "afnan"], ["atacado", "revenda"]),
         "🏋️ Academia": (["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"], []),
         "🔧 Ferramentas": (["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"], []),
         "🎧 Eletrônicos": (["smartwatch", "smartband", "caixa de som", "roku", "fire tv", "camera"], []),
