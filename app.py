@@ -3720,5 +3720,65 @@ def teste_user_items():
             "erro": repr(exc),
         }), 500
 
+@app.route("/mercadolivre/teste-products-search")
+def teste_products_search():
+    """Diagnóstico isolado do /products/search.
+
+    Este teste NÃO altera a busca normal do aplicativo. Ele serve para confirmar
+    se o mesmo access token que funciona em /users/{user_id}/items/search também
+    consegue acessar o catálogo /products/search.
+    """
+    try:
+        token = access_token()
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "erro_token": repr(exc),
+        }), 500
+
+    if not token:
+        return jsonify({
+            "ok": False,
+            "erro": "Nenhum access token disponível. Conecte o Mercado Livre primeiro.",
+        }), 401
+
+    url = f"{ML_API}/products/search"
+    params = {
+        "status": "active",
+        "site_id": SITE_ID,
+        "q": "perfume",
+        "limit": 10,
+        "offset": 0,
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        try:
+            data = r.json()
+        except Exception:
+            data = {"texto": r.text[:3000]}
+
+        return jsonify({
+            "teste": "GET /products/search",
+            "url_testada": url,
+            "parametros": params,
+            "status_http": r.status_code,
+            "ok": r.ok,
+            "quantidade_resultados": len(data.get("results") or []) if isinstance(data, dict) else 0,
+            "resultado": data,
+        }), 200
+
+    except Exception as exc:
+        return jsonify({
+            "teste": "GET /products/search",
+            "ok": False,
+            "erro": repr(exc),
+        }), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
