@@ -93,20 +93,15 @@ CATALOG = {
     # FONTE DE VERDADE DO TESTE — MICRO-NICHOS EXATOS ENVIADOS PELO USUÁRIO.
     # Não adicionar outros termos nesta fase.
     "🌸 Perfumes": [
-        "perfume importado masculino",
-        "perfume importado feminino",
-        "eau de parfum masculino",
-        "eau de parfum feminino",
-        "eau de toilette masculino",
-        "eau de toilette feminino",
-        "body splash feminino",
-        "body mist feminino",
+        "Perfume contratipo inspirado",
+        "Perfume importado 30ml masculino",
+        "Perfume importado 50ml feminino",
+        "Body splash colônia corporal",
     ],
     "🌙 Perfumes Árabes": [
         "Perfume Lattafa Asad",
         "Perfume Lattafa Yara",
         "Perfume Maison Alhambra",
-        "Perfume Afnan",
     ],
 }
 
@@ -1488,70 +1483,36 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios REAIS do Mercado Livre.
+    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
+    que pode não estar disponível para a consulta.
 
-    Esta é a correção principal do teste de perfumes.
-
-    O endpoint /sites/MLB/search é uma busca pública de anúncios. A versão
-    anterior dependia exclusivamente de ml_get(), que exige OAuth; quando o
-    token estava expirado/bloqueado, a função recebia 401 e transformava tudo
-    em [] mesmo com a busca pública funcionando.
-
-    Agora fazemos:
-      1. tentativa autenticada;
-      2. tentativa pública sem token;
-      3. só usamos o resultado da busca, sem Full/Gold/100 vendas/Buy Box.
+    O site público pode mostrar "mais vendidos", mas a API só permite os
+    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
+    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
+    Isso evita transformar um parâmetro não suportado em zero resultados.
     """
-    query = str(q or '').strip()
-    if not query:
-        return []
-
-    lim = min(max(int(limit or 50), 1), 50)
-    params = {
-        "q": query,
-        "limit": lim,
+    base = {
+        "q": str(q or "").strip(),
+        "status": "active",
+        "limit": min(int(limit or 50), 50),
         "offset": 0,
     }
 
-    # 1) API autenticada, se houver token válido.
-    try:
+    attempts = [
+        base,
+        {**base, "shipping_cost": "free"},
+        {**base, "condition": "new"},
+    ]
+
+    for n, params in enumerate(attempts, start=1):
         data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
         if status == 200 and isinstance(data, dict):
-            rows = data.get("results") or []
-            if rows:
-                print(f"[BUSCA ML AUTENTICADA] {query} -> {len(rows)} anúncios")
-                return rows
-            print(f"[BUSCA ML AUTENTICADA] {query} -> 0 anúncios; tentando pública")
+            results = data.get("results") or []
+            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
+            if results:
+                return results
         else:
-            print(f"[BUSCA ML AUTENTICADA] {query} -> HTTP {status}; tentando pública")
-    except Exception as exc:
-        print(f"[BUSCA ML AUTENTICADA] {query} -> erro {exc!r}; tentando pública")
-
-    # 2) Busca pública direta. Não depende da sessão OAuth do afiliado.
-    try:
-        url = f"{ML_API}/sites/{SITE_ID}/search"
-        r = requests.get(
-            url,
-            params=params,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Caçador de Ofertas; perfume-test)",
-            },
-            timeout=25,
-        )
-        try:
-            data = r.json()
-        except Exception:
-            data = {}
-
-        if r.status_code == 200 and isinstance(data, dict):
-            rows = data.get("results") or []
-            print(f"[BUSCA ML PÚBLICA] {query} -> {len(rows)} anúncios")
-            return rows
-
-        print(f"[BUSCA ML PÚBLICA] {query} -> HTTP {r.status_code} | {str(data)[:300]}")
-    except Exception as exc:
-        print(f"[BUSCA ML PÚBLICA] {query} -> erro {exc!r}")
+            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
 
     return []
 
@@ -1856,8 +1817,9 @@ ARABIC_PERFUME_TERMS = (
 
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
-    "fragrance", "body splash", "body mist", "colonia corporal", "colônia corporal",
-    "spray perfumado",
+    "fragrance", "body splash", "colonia corporal", "colônia corporal",
+    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
+    "thera cosmeticos", "nuancielo", "brand collection",
 )
 PERFUME_EXCLUDED_TERMS = (
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
@@ -1865,8 +1827,6 @@ PERFUME_EXCLUDED_TERMS = (
     "perfume gato", "colonia cachorro", "colônia cachorro", "colonia gato",
     "colônia gato", "refil", "refill", "amostra", "decant", "miniatura",
     "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
-    "contratipo", "contratipos", "inspirado em", "inspirado no",
-    "inspirada em", "inspirada no", "similar a", "tipo perfume",
 )
 
 
@@ -2430,42 +2390,38 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
 
 
 def _direct_perfume_offer_from_listing(row, cat, position, query):
-    """Converte um anúncio real do /sites/MLB/search em oferta de teste.
+    """Transforma diretamente o anúncio /sites/MLB/search em oferta.
 
-    TESTE EXCLUSIVO DE PERFUMES:
-    - mínimo de R$ 69,90;
-    - sem contratipos;
-    - sem decants/amostras/miniaturas;
-    - sem exigir Full, Gold/Platinum ou 100 vendas;
-    - recupera foto e permalink diretamente do anúncio quando necessário.
+    Nesta etapa de teste não passa por catálogo, Buy Box, Full, Gold/Platinum
+    ou mínimo de vendas. O objetivo é comprovar somente que os micro-nichos
+    encontram anúncios reais. Mantemos apenas preço >= R$69,90 e imagem.
     """
     if not isinstance(row, dict):
-        return None, "linha_invalida"
+        return None
 
     item_id = str(row.get("id") or row.get("item_id") or "").strip()
-    title = str(row.get("title") or row.get("name") or "").strip()
+    title = str(row.get("title") or "").strip()
     if not item_id or not title:
-        return None, "sem_id_titulo"
+        return None
 
     if cat == "🌸 Perfumes":
         if not _is_real_perfume(title):
-            return None, "titulo_nao_e_perfume"
-    elif cat == "🌙 Perfumes Árabes":
-        if not _is_arabic_perfume(title):
-            return None, "nao_e_marca_arabe"
+            return None
     else:
-        return None, "categoria_invalida"
+        if not _is_arabic_perfume(title):
+            return None
 
+    # Bloqueio explícito de decant/amostra/miniatura.
     nt = norm(title)
-    if any(x in nt for x in ("decant", "amostra", "miniatura", "contratipo", "inspirado em", "inspirado no")):
-        return None, "produto_nao_desejado"
+    if any(x in nt for x in ("decant", "amostra", "miniatura")):
+        return None
 
     try:
         price = float(row.get("price")) if row.get("price") is not None else None
     except Exception:
         price = None
     if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
-        return None, "preco"
+        return None
 
     try:
         original = float(row.get("original_price")) if row.get("original_price") is not None else None
@@ -2476,66 +2432,43 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if not isinstance(shipping, dict):
         shipping = {}
     free = bool(shipping.get("free_shipping"))
-    shipping_cost = shipping.get("cost")
+    shipping_cost = 0 if free else shipping.get("cost")
 
-    def pick_picture(obj):
-        if not isinstance(obj, dict):
-            return ""
-        for key in ("secure_url", "url", "secure_thumbnail", "thumbnail", "picture_url", "image"):
-            v = obj.get(key)
-            if isinstance(v, str) and v.strip().startswith(("http://", "https://")):
-                return v.strip()
-        pics = obj.get("pictures")
-        if isinstance(pics, list):
-            for pic in pics:
-                got = pick_picture(pic)
-                if got:
-                    return got
-        return ""
+    image = str(
+        row.get("thumbnail")
+        or row.get("secure_thumbnail")
+        or row.get("picture_url")
+        or ""
+    ).strip()
 
-    image = pick_picture(row)
-    permalink = str(row.get("permalink") or row.get("url") or "").strip()
-    item_detail = None
-
-    # O /search nem sempre devolve pictures/permalink. Busca o anúncio real.
-    if not image or not permalink:
+    # Se a busca não trouxer thumbnail, tenta uma única consulta ao item real.
+    if not image:
         data, status, _ = ml_get(f"/items/{item_id}")
         if status == 200 and isinstance(data, dict):
-            item_detail = data
-            if not image:
-                image = pick_picture(data)
-            if not permalink:
-                permalink = str(data.get("permalink") or data.get("url") or "").strip()
-            # O preço do /items é a fonte mais confiável quando disponível.
-            try:
-                detail_price = float(data.get("price")) if data.get("price") is not None else None
-                if detail_price is not None and detail_price > 0:
-                    price = detail_price
-            except Exception:
-                pass
+            pictures = data.get("pictures") or []
+            if pictures and isinstance(pictures[0], dict):
+                image = str(
+                    pictures[0].get("secure_url")
+                    or pictures[0].get("url")
+                    or pictures[0].get("secure_thumbnail")
+                    or pictures[0].get("thumbnail")
+                    or ""
+                ).strip()
 
-    if price < MIN_PRODUCT_PRICE:
-        return None, "preco_detalhe"
-
-    # Não descarte o anúncio só porque o servidor de imagens bloqueou uma
-    # requisição de teste. O próprio Mercado Livre entrega thumbnail/pictures
-    # utilizáveis no navegador. A imagem será exibida diretamente no front.
     if not image:
-        image = str(row.get("thumbnail") or row.get("secure_thumbnail") or "").strip()
-
-    if not permalink:
-        permalink = f"https://www.mercadolivre.com.br/item/{item_id}"
+        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
+        return None
 
     seller = row.get("seller") or {}
     seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
-    sold = row.get("sold_quantity") or (item_detail or {}).get("sold_quantity") or 0
+    sold = row.get("sold_quantity") or 0
     try:
         sold = int(float(sold))
     except Exception:
         sold = 0
 
     disc = discount(price, original)
-    return ({
+    return {
         "product_id": item_id,
         "item_id": item_id,
         "title": title,
@@ -2543,19 +2476,19 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "especificacoes": specs(title),
         "image": image,
         "category_name": cat,
-        "permalink": permalink,
+        "permalink": row.get("permalink") or f"https://www.mercadolivre.com.br/p/{item_id}",
         "price": price,
         "original_price": original,
         "discount": disc,
         "seller_id": seller_id,
-        "condition": row.get("condition") or (item_detail or {}).get("condition") or "new",
+        "condition": row.get("condition") or "new",
         "free_shipping": free,
-        "shipping_cost": 0 if free else shipping_cost,
-        "shipping_known": free or shipping_cost is not None,
-        "total_price": total(price, 0 if free else shipping_cost) if (free or shipping_cost is not None) else price,
+        "shipping_cost": shipping_cost,
+        "shipping_known": shipping_cost is not None,
+        "total_price": total(price, shipping_cost) if shipping_cost is not None else price,
         "relevance_score": 1.0,
         "sold_quantity": sold,
-        "logistic_type": shipping.get("logistic_type") or (item_detail or {}).get("shipping", {}).get("logistic_type", "") if isinstance((item_detail or {}).get("shipping", {}), dict) else "",
+        "logistic_type": shipping.get("logistic_type") or "",
         "shipping_mode": shipping.get("mode"),
         "seller_status": None,
         "seller_level_id": None,
@@ -2587,8 +2520,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "affiliate_link": "",
         "extra_earnings": 0,
         "micro_nicho": query,
-    }, "ok")
-
+    }
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca somente os 20 mais vendidos de cada categoria.
@@ -2620,9 +2552,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     iid = str(row.get("id") or row.get("item_id") or "").strip() if isinstance(row, dict) else ""
                     if not iid or iid in seen_direct:
                         continue
-                    offer, motivo = _direct_perfume_offer_from_listing(row, cat, pos, q)
+                    offer = _direct_perfume_offer_from_listing(row, cat, pos, q)
                     if not offer:
-                        print("[TESTE DESCARTADO]", cat, "|", q, "|", motivo, "|", str(row.get("title") or "")[:100])
                         continue
                     seen_direct.add(iid)
                     direct.append(offer)
@@ -3326,7 +3257,7 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, progress=55, message="📦 Carregando os 20 mais vendidos de cada categoria...")
         result = scan_queries(queries, apply_coupons=True)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
-        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {len(result.get('ofertas') or [])} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
@@ -3487,14 +3418,96 @@ def teste_product():
 
 @app.route("/mercadolivre/diagnostico")
 def diagnostico():
-    t=tokens()
-    result={"configurado":bool(ML_CLIENT_ID),"conectado":bool(access_token())}
-    if access_token():
-        me,status,_=ml_get("/users/me")
-        result["users_me"]={"status_http":status,"resposta":me}
+    """Diagnóstico seguro do 403 do Mercado Livre.
+
+    Testa com o MESMO access token salvo pelo OAuth:
+      1) /users/me
+      2) /applications/{APP_ID}
+      3) /sites/MLB/search?q=perfume
+      4) /applications/{APP_ID}/grants
+
+    Nunca retorna o access_token nem o refresh_token.
+    """
+    t = tokens() or {}
+    token = access_token()
+
+    result = {
+        "configurado": bool(ML_CLIENT_ID and ML_CLIENT_SECRET and ML_REDIRECT_URI),
+        "client_id": ML_CLIENT_ID,
+        "conectado": bool(token),
+        "app_id_testado": ML_CLIENT_ID or None,
+        "testes": {},
+    }
+
     if t:
-        result["token_local"]={"user_id":t.get("user_id"),"nickname":t.get("nickname"),"expires_at":t.get("expires_at")}
-    return jsonify(result)
+        exp = t.get("expires_at")
+        result["token_local"] = {
+            "user_id": t.get("user_id"),
+            "nickname": t.get("nickname"),
+            "expires_at": exp,
+            "expira_em_segundos": max(0, int(float(exp or 0) - time.time())) if exp else None,
+        }
+
+    if not token:
+        result["erro"] = "Nenhum access token disponível. Conecte o Mercado Livre novamente."
+        return jsonify(result), 401
+
+    def _test(path, params=None):
+        data, status, headers = ml_get(path, params=params)
+        # Mantém o retorno útil sem expor credenciais.
+        safe_headers = {}
+        for k in ("x-request-id", "x-api-version", "content-type", "retry-after"):
+            if k in headers:
+                safe_headers[k] = headers[k]
+        return {
+            "status_http": status,
+            "ok": status == 200,
+            "resposta": data,
+            "headers_uteis": safe_headers,
+        }
+
+    # 1. Valida o token e o usuário autorizado.
+    result["testes"]["users_me"] = _test("/users/me")
+
+    # 2. Consulta os detalhes da aplicação usando o próprio token autorizado.
+    if ML_CLIENT_ID:
+        result["testes"]["application"] = _test(f"/applications/{ML_CLIENT_ID}")
+        # 3. Mostra os grants atuais da aplicação.
+        result["testes"]["grants"] = _test(f"/applications/{ML_CLIENT_ID}/grants")
+    else:
+        result["testes"]["application"] = {"status_http": None, "ok": False, "resposta": "ML_CLIENT_ID não configurado"}
+
+    # 4. Testa exatamente o endpoint que está retornando 403 no Caçador.
+    result["testes"]["search_mlb"] = _test(
+        "/sites/MLB/search",
+        params={"q": "perfume", "limit": 5},
+    )
+
+    statuses = {k: v.get("status_http") for k, v in result["testes"].items()}
+    result["resumo"] = statuses
+
+    if statuses.get("users_me") == 200 and statuses.get("search_mlb") == 403:
+        result["interpretacao"] = (
+            "TOKEN OK, MAS /sites/MLB/search ESTÁ SENDO NEGADO (403). "
+            "Isso aponta para uma restrição específica da busca/API, aplicação, IP ou política de acesso; "
+            "não é simplesmente um OAuth quebrado."
+        )
+    elif statuses.get("users_me") in (401, 403):
+        result["interpretacao"] = (
+            "O próprio token/usuário não está sendo aceito. Verificar grant, usuário autorizado, scopes, "
+            "status da aplicação e eventual bloqueio."
+        )
+    elif statuses.get("application") in (401, 403):
+        result["interpretacao"] = (
+            "O token funciona para /users/me, mas a consulta dos detalhes da aplicação foi negada; "
+            "verificar grant/owner/aplicação."
+        )
+    elif statuses.get("search_mlb") == 200:
+        result["interpretacao"] = "A busca /sites/MLB/search respondeu 200 neste teste. O 403 anterior pode ter sido causado por token/grant expirado ou configuração temporária."
+    else:
+        result["interpretacao"] = "Veja os status e as respostas individuais acima para identificar a etapa que está sendo bloqueada."
+
+    return jsonify(result), 200
 
 # ============================================================
 # AFILIADOS - FLUXO OFICIAL
@@ -3704,7 +3717,6 @@ def buscar_page():
     q=request.args.get("q","").strip()
     if not q:
         return redirect("/")
-    # Nesta versão de teste, a busca manual também fica limitada a perfumes.
     resultado=scan_queries([q], request.args.get("desconto",0), apply_coupons=True)
     t=tokens()
     return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()), resultado=resultado)
