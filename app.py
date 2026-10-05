@@ -3418,96 +3418,14 @@ def teste_product():
 
 @app.route("/mercadolivre/diagnostico")
 def diagnostico():
-    """Diagnóstico seguro do 403 do Mercado Livre.
-
-    Testa com o MESMO access token salvo pelo OAuth:
-      1) /users/me
-      2) /applications/{APP_ID}
-      3) /sites/MLB/search?q=perfume
-      4) /applications/{APP_ID}/grants
-
-    Nunca retorna o access_token nem o refresh_token.
-    """
-    t = tokens() or {}
-    token = access_token()
-
-    result = {
-        "configurado": bool(ML_CLIENT_ID and ML_CLIENT_SECRET and ML_REDIRECT_URI),
-        "client_id": ML_CLIENT_ID,
-        "conectado": bool(token),
-        "app_id_testado": ML_CLIENT_ID or None,
-        "testes": {},
-    }
-
+    t=tokens()
+    result={"configurado":bool(ML_CLIENT_ID),"conectado":bool(access_token())}
+    if access_token():
+        me,status,_=ml_get("/users/me")
+        result["users_me"]={"status_http":status,"resposta":me}
     if t:
-        exp = t.get("expires_at")
-        result["token_local"] = {
-            "user_id": t.get("user_id"),
-            "nickname": t.get("nickname"),
-            "expires_at": exp,
-            "expira_em_segundos": max(0, int(float(exp or 0) - time.time())) if exp else None,
-        }
-
-    if not token:
-        result["erro"] = "Nenhum access token disponível. Conecte o Mercado Livre novamente."
-        return jsonify(result), 401
-
-    def _test(path, params=None):
-        data, status, headers = ml_get(path, params=params)
-        # Mantém o retorno útil sem expor credenciais.
-        safe_headers = {}
-        for k in ("x-request-id", "x-api-version", "content-type", "retry-after"):
-            if k in headers:
-                safe_headers[k] = headers[k]
-        return {
-            "status_http": status,
-            "ok": status == 200,
-            "resposta": data,
-            "headers_uteis": safe_headers,
-        }
-
-    # 1. Valida o token e o usuário autorizado.
-    result["testes"]["users_me"] = _test("/users/me")
-
-    # 2. Consulta os detalhes da aplicação usando o próprio token autorizado.
-    if ML_CLIENT_ID:
-        result["testes"]["application"] = _test(f"/applications/{ML_CLIENT_ID}")
-        # 3. Mostra os grants atuais da aplicação.
-        result["testes"]["grants"] = _test(f"/applications/{ML_CLIENT_ID}/grants")
-    else:
-        result["testes"]["application"] = {"status_http": None, "ok": False, "resposta": "ML_CLIENT_ID não configurado"}
-
-    # 4. Testa exatamente o endpoint que está retornando 403 no Caçador.
-    result["testes"]["search_mlb"] = _test(
-        "/sites/MLB/search",
-        params={"q": "perfume", "limit": 5},
-    )
-
-    statuses = {k: v.get("status_http") for k, v in result["testes"].items()}
-    result["resumo"] = statuses
-
-    if statuses.get("users_me") == 200 and statuses.get("search_mlb") == 403:
-        result["interpretacao"] = (
-            "TOKEN OK, MAS /sites/MLB/search ESTÁ SENDO NEGADO (403). "
-            "Isso aponta para uma restrição específica da busca/API, aplicação, IP ou política de acesso; "
-            "não é simplesmente um OAuth quebrado."
-        )
-    elif statuses.get("users_me") in (401, 403):
-        result["interpretacao"] = (
-            "O próprio token/usuário não está sendo aceito. Verificar grant, usuário autorizado, scopes, "
-            "status da aplicação e eventual bloqueio."
-        )
-    elif statuses.get("application") in (401, 403):
-        result["interpretacao"] = (
-            "O token funciona para /users/me, mas a consulta dos detalhes da aplicação foi negada; "
-            "verificar grant/owner/aplicação."
-        )
-    elif statuses.get("search_mlb") == 200:
-        result["interpretacao"] = "A busca /sites/MLB/search respondeu 200 neste teste. O 403 anterior pode ter sido causado por token/grant expirado ou configuração temporária."
-    else:
-        result["interpretacao"] = "Veja os status e as respostas individuais acima para identificar a etapa que está sendo bloqueada."
-
-    return jsonify(result), 200
+        result["token_local"]={"user_id":t.get("user_id"),"nickname":t.get("nickname"),"expires_at":t.get("expires_at")}
+    return jsonify(result)
 
 # ============================================================
 # AFILIADOS - FLUXO OFICIAL
@@ -3741,6 +3659,66 @@ def e404(e): return jsonify({"erro":"Rota não encontrada.","rota":request.path}
 
 @app.errorhandler(500)
 def e500(e): return jsonify({"erro":"Erro interno no servidor.","detalhes":str(e)}),500
+
+
+# ============================================================
+# DIAGNÓSTICO EXTRA — /sites/MLB/search POR SELLER
+# ============================================================
+
+@app.route("/mercadolivre/teste-search-seller")
+def teste_search_seller():
+    """
+    Testa o mesmo endpoint /sites/MLB/search usando seller_id,
+    sem alterar a lógica normal do Caçador.
+    """
+    try:
+        token = get_access_token()
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "erro_token": repr(exc),
+        }), 500
+
+    if not token:
+        return jsonify({
+            "ok": False,
+            "erro": "Nenhum access token disponível. Conecte o Mercado Livre primeiro.",
+        }), 401
+
+    seller_id = "204115657"
+    url = f"{ML_API}/sites/MLB/search"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    try:
+        r = requests.get(
+            url,
+            headers=headers,
+            params={"seller_id": seller_id},
+            timeout=20,
+        )
+
+        try:
+            data = r.json()
+        except Exception:
+            data = {"texto": r.text[:2000]}
+
+        return jsonify({
+            "teste": "GET /sites/MLB/search?seller_id=204115657",
+            "seller_id": seller_id,
+            "status_http": r.status_code,
+            "ok": r.ok,
+            "resultado": data,
+        }), 200
+
+    except Exception as exc:
+        return jsonify({
+            "teste": "GET /sites/MLB/search?seller_id=204115657",
+            "ok": False,
+            "erro": repr(exc),
+        }), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
