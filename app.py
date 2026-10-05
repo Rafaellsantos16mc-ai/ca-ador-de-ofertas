@@ -18,7 +18,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 app = Flask(__name__)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
-TESTE_SOMENTE_PERFUMES = False
+TESTE_SOMENTE_PERFUMES = True
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -1027,10 +1027,13 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
     O mesmo cupom pode continuar sendo usado em vários produtos quando cada
     produto tiver sua própria associação pública.
     """
-    if not public_cards:
-        return None
-
-    matched = match_public_coupon(title, price, public_cards, item_id, permalink=permalink, allow_fallback=allow_fallback)
+    # Mesmo que a página geral de cupons não retorne cards, ainda tentamos
+    # o fallback por anúncio/busca pública. A versão anterior encerrava aqui
+    # com None e, por isso, 0 cards significava automaticamente 0 cupons.
+    matched = match_public_coupon(
+        title, price, public_cards or [], item_id,
+        permalink=permalink, allow_fallback=allow_fallback
+    )
     if not matched:
         return None
 
@@ -1221,6 +1224,35 @@ def _extract_public_coupon_cards_from_text(text, source_url):
             if title:
                 add_card(title, price, None, coupon)
 
+    # 4) Fallback para páginas dinâmicas: alguns cards aparecem dentro de
+    # JSON/atributos HTML e não sobrevivem ao parser de linhas. Aqui usamos
+    # somente marcadores explícitos de cupom e uma janela curta ao redor deles.
+    # Isso evita inventar cupom genérico para produtos que não o exibem.
+    if not cards:
+        raw_flat = re.sub(r"\s+", " ", html_lib.unescape(str(text or "")))
+        raw_flat = re.sub(r"<[^>]+>", " ", raw_flat)
+        marker_re = re.compile(
+            r"(?:Cupom(?:\s+de)?\s+(?:R\$\s*[\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF|de\s+desconto)|"
+            r"R\$\s*[\d\.]+,[\d]{2}\s*OFF\s+com\s+Cupom|"
+            r"\d+(?:[.,]\d+)?\s*%\s*OFF\s+com\s+Cupom)", re.I)
+        for mm in marker_re.finditer(raw_flat):
+            coupon = detect_public_coupon(mm.group(0))
+            if not coupon:
+                continue
+            window = raw_flat[max(0, mm.start()-1400):min(len(raw_flat), mm.end()+300)]
+            prices = [parse_public_money(x.group(0)) for x in re.finditer(r"R\$\s*[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|R\$\s*[0-9]+,[0-9]{2}", window)]
+            prices = [x for x in prices if x is not None and x >= MIN_PRODUCT_PRICE]
+            if not prices:
+                continue
+            price = prices[-1]
+            image_titles = re.findall(r"Image:\s*([^|]{8,220})", window, re.I)
+            title = image_titles[-1].strip() if image_titles else ""
+            if not title:
+                candidates = re.findall(r"([A-Za-zÀ-ÿ0-9][^|]{15,180}?)\s+(?:R\$|Cupom|%\s*OFF)", window, re.I)
+                title = candidates[-1].strip() if candidates else ""
+            if title and not re.search(r"^(?:logo|mercado livre|cupom|oferta|frete)", title, re.I):
+                add_card(title, price, None, coupon)
+
     # Deduplica cards muito semelhantes.
     unique = {}
     for c in cards:
@@ -1330,14 +1362,16 @@ def _search_public_listing_for_coupon(title, price, item_id=None, permalink=None
                 for card in cards:
                     sim = title_similarity(title, card["title"])
                     diff = abs(float(price) - float(card["price"]))
-                    tolerance = max(15.0, float(price) * 0.18)
+                    tolerance = max(20.0, float(price) * 0.25)
                     if diff <= tolerance:
                         sim += 0.18
+                    elif diff <= max(35.0, float(price) * 0.35):
+                        sim += 0.05
                     if sim > best_score:
                         best_score = sim
                         best = card
 
-                if best is not None and best_score >= 0.82:
+                if best is not None and best_score >= 0.72:
                     result = dict(best["coupon"])
                     result["match_score"] = round(best_score, 3)
                     result["public_title"] = best["title"]
@@ -1354,30 +1388,36 @@ def _search_public_listing_for_coupon(title, price, item_id=None, permalink=None
     return result
 
 def detect_public_coupon(text):
-    text = str(text or "")
+    """Detecta formatos atuais de cupom exibidos nas páginas públicas.
 
-    # Formato tradicional: "Cupom R$15 OFF" / "Cupom 25% OFF".
-    m = re.search(r"Cupom\s+R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*OFF", text, re.I)
-    if m:
-        value = parse_public_money("R$ " + m.group(1))
-        return {"type":"fixed", "value":value, "label":f"Cupom {brl(value)} OFF"} if value else None
+    O Mercado Livre alterna entre ``Cupom R$ X OFF``, ``R$ X OFF com
+    Cupom``, ``Cupom X% OFF`` e variações com ``de desconto``.
+    """
+    text = re.sub(r"\s+", " ", html_lib.unescape(str(text or ""))).strip()
 
-    m = re.search(r"Cupom\s+(\d+(?:[.,]\d+)?)\s*%\s*OFF", text, re.I)
-    if m:
-        value = float(m.group(1).replace(",", "."))
-        return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
+    fixed_patterns = [
+        r"Cupom\s+(?:de\s+)?R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|de\s+desconto)",
+        r"R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*(?:OFF|de\s+desconto)\s+com\s+Cupom",
+        r"(?:desconto|cupom)\s+de\s+R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s+.*?Cupom",
+    ]
+    for pattern in fixed_patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            value = parse_public_money("R$ " + m.group(1))
+            if value and value > 0:
+                return {"type":"fixed", "value":value, "label":f"Cupom {brl(value)} OFF"}
 
-    # Novo formato que o Mercado Livre está exibindo: "R$15 OFF com Cupom"
-    # ou "25% OFF com Cupom".
-    m = re.search(r"R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*OFF\s+com\s+Cupom", text, re.I)
-    if m:
-        value = parse_public_money("R$ " + m.group(1))
-        return {"type":"fixed", "value":value, "label":f"Cupom {brl(value)} OFF"} if value else None
-
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*%\s*OFF\s+com\s+Cupom", text, re.I)
-    if m:
-        value = float(m.group(1).replace(",", "."))
-        return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
+    percent_patterns = [
+        r"Cupom\s+(?:de\s+)?(\d+(?:[.,]\d+)?)\s*%\s*(?:OFF|de\s+desconto)",
+        r"(\d+(?:[.,]\d+)?)\s*%\s*(?:OFF|de\s+desconto)\s+com\s+Cupom",
+        r"Cupom\s+.*?(\d+(?:[.,]\d+)?)\s*%\s+de\s+desconto",
+    ]
+    for pattern in percent_patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            value = float(m.group(1).replace(",", "."))
+            if value > 0:
+                return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
 
     return None
 
@@ -1426,14 +1466,24 @@ def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow
         if score > best_score:
             best_score = score
             best = card
-    if best is None or best_score < 0.78:
-        # Segunda fonte: busca pública do próprio Mercado Livre.
-        # Pode ser desativada em varreduras automáticas para evitar uma
-        # sequência de requisições lentas a cada rodada.
-        if allow_fallback:
-            fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
-            return fallback
-        return None
+    # O preço de um card público pode mudar alguns reais entre a coleta do
+    # cupom e a coleta do catálogo. Mantemos o vínculo por título forte e
+    # usamos o preço apenas como confirmação, não como filtro rígido.
+    if best is not None and best_score >= 0.72:
+        c = dict(best["coupon"])
+        c["match_score"] = round(best_score, 3)
+        c["public_title"] = best["title"]
+        c["public_price"] = best["price"]
+        c["source_url"] = best["source_url"]
+        return c
+
+    # Segunda fonte: busca pública do próprio Mercado Livre.
+    # Se a página de cupons vier vazia/dinâmica, tenta o anúncio e a busca
+    # pública pelo título.
+    if allow_fallback:
+        fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
+        return fallback
+    return None
     c = dict(best["coupon"])
     c["match_score"] = round(best_score, 3)
     c["public_title"] = best["title"]
@@ -1482,147 +1532,39 @@ def public_search_url(query):
     return f"https://lista.mercadolivre.com.br/{encoded}{PUBLIC_SEARCH_FILTERS}_NoIndex_True"
 
 
-def _products_search_to_listing_rows(q, limit=20):
-    """Converte resultados do catálogo em publicações reais quando a busca
-    de anúncios (/sites/MLB/search) estiver bloqueada para o aplicativo.
-
-    /products/search está funcionando neste aplicativo (HTTP 200). Cada
-    produto é enriquecido pelo catálogo para descobrir o buy_box_winner ou,
-    como segunda opção, uma publicação em /products/{id}/items.
-    """
-    query = str(q or "").strip()
-    lim = min(max(int(limit or 20), 1), 30)
-    data, status, _ = ml_get("/products/search", {
-        "site_id": SITE_ID,
-        "q": query,
-        "status": "active",
-        "limit": lim,
-        "offset": 0,
-    })
-
-    if status != 200 or not isinstance(data, dict):
-        print(f"[FALLBACK PRODUTOS] {query} -> HTTP {status}")
-        return []
-
-    products = data.get("results") or []
-    print(f"[FALLBACK PRODUTOS] {query} -> {len(products)} produtos de catálogo")
-    rows = []
-    seen_items = set()
-
-    def enrich(raw):
-        if not isinstance(raw, dict):
-            return None
-        pid = str(raw.get("id") or raw.get("product_id") or "").strip()
-        if not pid:
-            return None
-        try:
-            result = _fetch_product_fast(pid, raw, {"category_name": "", "query": query})
-        except Exception as exc:
-            print("[FALLBACK PRODUTOS] enriquecimento", pid, repr(exc))
-            return None
-        if not result:
-            return None
-        _, pdata, item, _ = result
-        if not isinstance(item, dict):
-            return None
-
-        item_id = str(item.get("item_id") or "").strip()
-        if not item_id:
-            return None
-        try:
-            price = float(item.get("price")) if item.get("price") is not None else None
-        except Exception:
-            price = None
-        if price is None or price <= 0:
-            return None
-
-        shipping_cost = item.get("shipping_cost")
-        free = bool(item.get("free_shipping"))
-        seller_id = item.get("seller_id")
-        title = str(
-            pdata.get("name")
-            or pdata.get("title")
-            or raw.get("name")
-            or raw.get("title")
-            or pid
-        ).strip()
-
-        image = _extract_image_url(pdata) or _extract_image_url(raw)
-        return {
-            "id": item_id,
-            "item_id": item_id,
-            "title": title,
-            "name": title,
-            "price": price,
-            "original_price": item.get("original_price"),
-            "regular_price": item.get("original_price"),
-            "seller_id": seller_id,
-            "seller": {"id": seller_id} if seller_id else {},
-            "shipping": {
-                "free_shipping": free,
-                "cost": 0 if free else shipping_cost,
-                "logistic_type": item.get("logistic_type"),
-                "mode": item.get("shipping_mode"),
-            },
-            "sold_quantity": item.get("sold_quantity") or 0,
-            "permalink": item.get("permalink") or raw.get("permalink"),
-            "thumbnail": image or raw.get("thumbnail"),
-            "pictures": pdata.get("pictures") or raw.get("pictures") or [],
-            "product_id": pid,
-        }
-
-    # Paraleliza o enriquecimento para não tornar a busca desnecessariamente lenta.
-    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(products)))) as ex:
-        futures = [ex.submit(enrich, raw) for raw in products]
-        for fut in as_completed(futures):
-            try:
-                row = fut.result()
-            except Exception as exc:
-                print("[FALLBACK PRODUTOS] erro", repr(exc))
-                continue
-            if not row:
-                continue
-            iid = str(row.get("id") or "").strip()
-            if not iid or iid in seen_items:
-                continue
-            seen_items.add(iid)
-            rows.append(row)
-
-    print(f"[FALLBACK PRODUTOS] {query} -> {len(rows)} anúncios derivados do catálogo")
-    return rows
-
-
 def search_real_listings(q, limit=50):
-    """Busca anúncios reais.
+    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
+    que pode não estar disponível para a consulta.
 
-    Primeiro tenta /sites/MLB/search. Esse endpoint está retornando 403 para
-    este aplicativo, então, sem alterar os filtros ou as categorias, fazemos
-    fallback automático para /products/search, que está retornando 200, e
-    transformamos os produtos de catálogo em publicações através do buy box
-    ou de /products/{id}/items.
+    O site público pode mostrar "mais vendidos", mas a API só permite os
+    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
+    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
+    Isso evita transformar um parâmetro não suportado em zero resultados.
     """
-    query = str(q or "").strip()
-    lim = min(max(int(limit or 50), 1), 50)
     base = {
-        "q": query,
+        "q": str(q or "").strip(),
         "status": "active",
-        "limit": lim,
+        "limit": min(int(limit or 50), 50),
         "offset": 0,
     }
 
-    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", base)
-    if status == 200 and isinstance(data, dict):
-        results = data.get("results") or []
-        print(f"[BUSCA ANUNCIOS] {query} -> {len(results)} anúncios")
-        if results:
-            return results
-    else:
-        print(f"[BUSCA ANUNCIOS] {query} -> HTTP {status}; usando /products/search")
+    attempts = [
+        base,
+        {**base, "shipping_cost": "free"},
+        {**base, "condition": "new"},
+    ]
 
-    # O fallback é propositalmente usado somente quando a busca de anúncios
-    # falha/vem vazia. Assim não muda o comportamento das outras categorias
-    # quando o endpoint voltar a funcionar.
-    return _products_search_to_listing_rows(query, limit=min(lim, 20))
+    for n, params in enumerate(attempts, start=1):
+        data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
+        if status == 200 and isinstance(data, dict):
+            results = data.get("results") or []
+            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
+            if results:
+                return results
+        else:
+            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
+
+    return []
 
 
 # ============================================================
@@ -1926,7 +1868,7 @@ ARABIC_PERFUME_TERMS = (
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
     "fragrance", "body splash", "colonia corporal", "colônia corporal",
-    "spray perfumado", "in the box", "thera cosméticos",
+    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
     "thera cosmeticos", "nuancielo", "brand collection",
 )
 PERFUME_EXCLUDED_TERMS = (
@@ -3827,66 +3769,6 @@ def teste_user_items():
             "ok": False,
             "erro": repr(exc),
         }), 500
-
-@app.route("/mercadolivre/teste-products-search")
-def teste_products_search():
-    """Diagnóstico isolado do /products/search.
-
-    Este teste NÃO altera a busca normal do aplicativo. Ele serve para confirmar
-    se o mesmo access token que funciona em /users/{user_id}/items/search também
-    consegue acessar o catálogo /products/search.
-    """
-    try:
-        token = access_token()
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "erro_token": repr(exc),
-        }), 500
-
-    if not token:
-        return jsonify({
-            "ok": False,
-            "erro": "Nenhum access token disponível. Conecte o Mercado Livre primeiro.",
-        }), 401
-
-    url = f"{ML_API}/products/search"
-    params = {
-        "status": "active",
-        "site_id": SITE_ID,
-        "q": "perfume",
-        "limit": 10,
-        "offset": 0,
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=30)
-        try:
-            data = r.json()
-        except Exception:
-            data = {"texto": r.text[:3000]}
-
-        return jsonify({
-            "teste": "GET /products/search",
-            "url_testada": url,
-            "parametros": params,
-            "status_http": r.status_code,
-            "ok": r.ok,
-            "quantidade_resultados": len(data.get("results") or []) if isinstance(data, dict) else 0,
-            "resultado": data,
-        }), 200
-
-    except Exception as exc:
-        return jsonify({
-            "teste": "GET /products/search",
-            "ok": False,
-            "erro": repr(exc),
-        }), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
