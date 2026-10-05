@@ -2842,7 +2842,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     price = sale
                     if sale_original is not None:
                         original = sale_original
-            if price is None or price <= 0 or price > 100000:
+            # REGRA PRINCIPAL: o preço mínimo de produto é R$ 69,90.
+            # O valor precisa ser filtrado aqui, depois de resolver o preço
+            # real da publicação, e não apenas na descoberta do catálogo.
+            # Isso impede que produtos de R$ 15,99, R$ 22,99 etc. cheguem
+            # ao resultado final quando o catálogo retorna outro valor.
+            if not valid_catalog_price(price):
+                print(f"[PREÇO MÍNIMO] descartado {pid}: R$ {price:.2f} < R$ {MIN_PRODUCT_PRICE:.2f}")
                 continue
 
             if original is None and isinstance(p.get("buy_box_winner"), dict):
