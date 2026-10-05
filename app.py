@@ -3468,6 +3468,61 @@ def api_cupons():
         sync = sync_coupons()
     return jsonify({"cupons":json_safe(coupons()),"fontes":COUPON_SOURCE_URLS,"sincronizacao":json_safe(sync)})
 
+@app.route("/api/preco-atual")
+def api_preco_atual():
+    """Revalida o preço da publicação imediatamente antes do anúncio.
+
+    A busca pode ter sido carregada minutos antes e o Mercado Livre pode
+    alterar o preço nesse intervalo. Por isso esta rota consulta o ITEM real
+    novamente e usa o valor atual, sem alterar ranking, categorias ou cupons.
+    """
+    item_id = str(request.args.get("item_id") or "").strip()
+    if not item_id:
+        return jsonify({"ok": False, "erro": "item_id ausente."}), 400
+
+    data, status, _ = ml_get(f"/items/{item_id}")
+    if status != 200 or not isinstance(data, dict):
+        return jsonify({"ok": False, "erro": f"Não foi possível atualizar o preço do item ({status})."}), 502
+
+    try:
+        price = float(data.get("price")) if data.get("price") is not None else None
+    except Exception:
+        price = None
+    try:
+        original = float(data.get("original_price")) if data.get("original_price") is not None else None
+    except Exception:
+        original = None
+
+    # Quando a publicação informa preço de venda separado, prioriza o valor
+    # retornado pela própria publicação e usa sale_price apenas como fallback.
+    if price is None or price <= 0:
+        sale, sale_original = get_current_sale_price(item_id)
+        if sale is not None:
+            price = sale
+            if sale_original is not None:
+                original = sale_original
+
+    if price is None or price <= 0 or price > 100000:
+        return jsonify({"ok": False, "erro": "O Mercado Livre não retornou um preço válido para este item."}), 502
+
+    shipping = data.get("shipping") or {}
+    free = bool(shipping.get("free_shipping"))
+    try:
+        shipping_cost = 0.0 if free else (float(shipping.get("cost")) if shipping.get("cost") is not None else None)
+    except Exception:
+        shipping_cost = None
+
+    return jsonify({
+        "ok": True,
+        "item_id": item_id,
+        "price": round(price, 2),
+        "original_price": round(original, 2) if original is not None and original > 0 else None,
+        "free_shipping": free,
+        "shipping_cost": shipping_cost,
+        "permalink": data.get("permalink"),
+    })
+
+
 @app.route("/api/gerar-anuncio")
 def api_anuncio():
     o = {
@@ -3782,6 +3837,22 @@ async function anuncio(id,o){
    }
   }catch(e){}
   if(!affiliateOk){throw new Error('Cole um link de afiliado válido do Mercado Livre antes de gerar o anúncio.');}
+  // Revalida o preço do ITEM real antes de montar o anúncio.
+  // Isso evita publicar um preço antigo que estava no resultado da busca.
+  if(o.item_id){
+   try{
+    const pr=await fetch('/api/preco-atual?item_id='+encodeURIComponent(o.item_id));
+    const pd=await pr.json();
+    if(pr.ok && pd.ok && Number(pd.price)>0){
+     o.price=Number(pd.price);
+     if(pd.original_price) o.original_price=Number(pd.original_price);
+     o.free_shipping=!!pd.free_shipping;
+     if(pd.permalink) o.permalink=pd.permalink;
+    }
+   }catch(e){
+    console.warn('Preço atual não pôde ser revalidado:',e);
+   }
+  }
   const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:affiliate});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
