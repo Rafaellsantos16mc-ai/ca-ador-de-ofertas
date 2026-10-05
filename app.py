@@ -10,7 +10,7 @@ import html as html_lib
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlparse, parse_qs
 
 import requests
 from flask import Flask, request, redirect, session, jsonify, render_template_string
@@ -3045,8 +3045,34 @@ def auto_scan(category=None, min_discount=0):
 # ============================================================
 
 def valid_affiliate_link(link):
+    """Aceita links de afiliado oficiais usados pelo Mercado Livre.
+
+    1) Link curto meli.la
+    2) Link gerado pelo Compartilhar/Barra de Afiliados do Mercado Livre,
+       identificado por sid=share + wid=MLB...
+
+    Não aceita uma URL comum de produto sem os sinais do link de afiliado.
+    """
     link = str(link or "").strip()
-    return bool(re.match(r"^https?://(?:www\.)?meli\.la/[A-Za-z0-9]+/?$", link, re.I))
+    if not link:
+        return False
+
+    if re.match(r"^https?://(?:www\.)?meli\.la/[A-Za-z0-9]+/?$", link, re.I):
+        return True
+
+    try:
+        parsed = urlparse(link)
+        host = (parsed.netloc or "").lower().split(":", 1)[0]
+        if host not in {"mercadolivre.com.br", "www.mercadolivre.com.br"}:
+            return False
+
+        qs = parse_qs(parsed.query)
+        sid_values = {str(v).strip().lower() for v in qs.get("sid", [])}
+        wid_values = {str(v).strip().upper() for v in qs.get("wid", [])}
+
+        return "share" in sid_values and any(re.fullmatch(r"MLB\d+", v) for v in wid_values)
+    except Exception:
+        return False
 
 def ad_text(o, affiliate=""):
     """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
@@ -3091,7 +3117,7 @@ def ad_text(o, affiliate=""):
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
-        raise ValueError("Informe um link de afiliado meli.la válido antes de gerar o anúncio.")
+        raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
     lines += ["", "🛒 Pegar promoção:", link]
 
     return "\n".join(lines)
@@ -3467,7 +3493,7 @@ def api_anuncio():
     if not valid_affiliate_link(affiliate_link):
         return jsonify({
             "ok": False,
-            "erro": "Informe o link de afiliado meli.la desta oferta antes de gerar o anúncio.",
+            "erro": "Informe o link de afiliado desta oferta antes de gerar o anúncio.",
             "affiliate_required": True,
         }), 400
     try:
@@ -3498,7 +3524,7 @@ def api_enviar_whatsapp():
     affiliate_link = str(data.get("affiliate_link") or "").strip()
 
     if not valid_affiliate_link(affiliate_link):
-        return jsonify({"ok": False, "erro": "Envio bloqueado: esta oferta não possui um link de afiliado meli.la válido."}), 400
+        return jsonify({"ok": False, "erro": "Envio bloqueado: esta oferta não possui um link de afiliado válido."}), 400
     if affiliate_link not in text:
         return jsonify({"ok": False, "erro": "Envio bloqueado: o anúncio não contém o mesmo link de afiliado informado."}), 400
 
@@ -3701,9 +3727,8 @@ function seller(o,mi,oi){
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
- <button onclick="abrirProdutoMercadoLivre(${JSON.stringify(o.permalink)})" style="background:#ffe600;color:#222">📱 Abrir produto no Mercado Livre</button>
- <div class="small" style="margin-top:8px">📱 No iPhone: abra o produto no app Mercado Livre e use <b>Compartilhar</b> pela Central/Barra de Afiliados para gerar seu link. Depois cole o <b>meli.la</b> aqui.</div>
- <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link meli.la deste produto" autocomplete="off">
+ <div class="small" style="margin-top:8px">📱 No iPhone: toque em <b>Ver produto</b> para abrir o produto no Mercado Livre. Depois use <b>Compartilhar</b> pela Central/Barra de Afiliados, copie o seu link de afiliado e cole aqui.</div>
+ <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link de afiliado do Mercado Livre" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
  <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
@@ -3711,13 +3736,6 @@ function seller(o,mi,oi){
  </div>`;
 }
 
-function abrirProdutoMercadoLivre(url){
- try{
-  window.location.href=url;
- }catch(e){
-  window.open(url,'_blank');
- }
-}
 
 async function copiarUrl(id,url){
  try{
@@ -3730,7 +3748,19 @@ async function anuncio(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
   const affiliate=document.getElementById('aff_'+id).value.trim();
-  if(!/^https?:\/\/(?:www\.)?meli\.la\/[A-Za-z0-9]+\/?$/i.test(affiliate)){throw new Error('Cole um link meli.la válido antes de gerar o anúncio.');}
+  let affiliateOk=false;
+  try{
+   const u=new URL(affiliate);
+   const host=(u.hostname||'').toLowerCase();
+   if(/^(www\.)?meli\.la$/i.test(host) && /^\/[A-Za-z0-9]+\/?$/.test(u.pathname)){
+    affiliateOk=true;
+   }else if(/^(www\.)?mercadolivre\.com\.br$/i.test(host)){
+    const sid=(u.searchParams.get('sid')||'').toLowerCase();
+    const wid=(u.searchParams.get('wid')||'').toUpperCase();
+    affiliateOk=(sid==='share' && /^MLB\d+$/.test(wid));
+   }
+  }catch(e){}
+  if(!affiliateOk){throw new Error('Cole um link de afiliado válido do Mercado Livre antes de gerar o anúncio.');}
   const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:affiliate});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
