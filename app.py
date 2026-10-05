@@ -29,59 +29,63 @@ ML_REDIRECT_URI = os.getenv(
 ).strip()
 
 ML_API = "https://api.mercadolibre.com"
-
-# ============================================================
-# WHATSAPP BOT
-# ============================================================
-
-WHATSAPP_BOT_URL = os.getenv(
-    "WHATSAPP_BOT_URL",
-    "https://whatsapp-bot-production-c647.up.railway.app"
-).strip().rstrip("/")
-WHATSAPP_BOT_KEY = os.getenv("WHATSAPP_BOT_KEY", "").strip()
-
-# ============================================================
-# CONFIGURAÇÕES DE AMBIENTE
-# ============================================================
-
-OPENAI_API_KEY = ""
-OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
-PUBLIC_BASE_URL = os.getenv(
-    "PUBLIC_BASE_URL",
-    "https://ca-ador-de-ofertas-production-ad83.up.railway.app"
-).strip().rstrip("/")
-WHATSAPP_IMAGE_DIR = os.path.join("/tmp", "cacador_whatsapp_images")
-os.makedirs(WHATSAPP_IMAGE_DIR, exist_ok=True)
 ML_AUTH = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN = "https://api.mercadolibre.com/oauth/token"
 SITE_ID = "MLB"
 
+# ============================================================
+# BANCO DE DADOS & PERSISTÊNCIA
+# ============================================================
+
 PERSISTENT_DATA_DIR = "/data" if os.path.isdir("/data") and os.access("/data", os.W_OK) else os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(PERSISTENT_DATA_DIR, "ofertas.db")
-COUPONS_URL = "https://www.mercadolivre.com.br/l/promocoes"
-COUPON_SOURCE_URLS = [
-    "https://www.mercadolivre.com.br/l/promocoes",
-    "https://www.mercadolivre.com.br/l/descontaco-cupons",
-    "https://www.mercadolivre.com.br/ofertas/cupons",
-]
 
-# REDUZIDO PARA EXIBIR MAIS OPÇÕES DE PRODUTOS
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_tokens (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at INTEGER,
+            user_id TEXT,
+            nickname TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ofertas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT, item_id TEXT, title TEXT, permalink TEXT,
+            price REAL, original_price REAL, discount REAL,
+            seller_id TEXT, image TEXT, category_id TEXT,
+            category_name TEXT, condition TEXT, listing_type_id TEXT,
+            free_shipping INTEGER DEFAULT 0, shipping_cost REAL,
+            total_price REAL, relevance_score REAL DEFAULT 0,
+            affiliate_link TEXT, extra_earnings REAL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ============================================================
+# FILTROS FLEXIBILIZADOS (PARA OS PRODUTOS APARECEREM)
+# ============================================================
+
 MIN_PRODUCT_PRICE = 29.90
-
-# ============================================================
-# FILTROS FLEXIBILIZADOS PARA EVITAR MENSAGEM DE "SEM PRODUTOS"
-# ============================================================
 MIN_ITEM_SOLD_QUANTITY = 5
 ALLOWED_POWER_SELLER_STATUS = {"gold", "platinum", "silver", "5_green", None, ""}
 REQUIRE_FULL_LOGISTICS = False
 
-_ITEM_QUALITY_CACHE = {}
-_ITEM_QUALITY_CACHE_LOCK = threading.Lock()
-_SELLER_QUALITY_CACHE = {}
-_SELLER_QUALITY_CACHE_LOCK = threading.Lock()
-
 # ============================================================
-# CATÁLOGO EXPANDIDO
+# CATÁLOGO
 # ============================================================
 
 CATALOG = {
@@ -115,73 +119,6 @@ CATALOG = {
 }
 
 # ============================================================
-# BANCO DE DADOS
-# ============================================================
-
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS oauth_tokens (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            access_token TEXT,
-            refresh_token TEXT,
-            expires_at INTEGER,
-            user_id TEXT,
-            nickname TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS ofertas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id TEXT, item_id TEXT, title TEXT, permalink TEXT,
-            price REAL, original_price REAL, discount REAL,
-            seller_id TEXT, image TEXT, category_id TEXT,
-            category_name TEXT, condition TEXT, listing_type_id TEXT,
-            free_shipping INTEGER DEFAULT 0, shipping_cost REAL,
-            total_price REAL, relevance_score REAL DEFAULT 0,
-            affiliate_link TEXT, extra_earnings REAL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cupons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE, description TEXT, discount_percent REAL,
-            fixed_discount REAL DEFAULT 0, min_purchase REAL, max_discount REAL, valid_until TEXT,
-            source_url TEXT, conditions TEXT, active INTEGER DEFAULT 1,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS whatsapp_publicacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id TEXT UNIQUE,
-            last_price REAL NOT NULL,
-            last_permalink TEXT,
-            last_title TEXT,
-            published_count INTEGER DEFAULT 1,
-            last_published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    try:
-        conn.execute("ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        conn.execute("ALTER TABLE cupons ADD COLUMN usage_limit INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# ============================================================
 # UTILIDADES
 # ============================================================
 
@@ -200,14 +137,6 @@ def brl(v):
     except Exception:
         return "R$ 0,00"
 
-def norm(s):
-    if not s:
-        return ""
-    s = str(s).lower()
-    trans = str.maketrans("áàãâäéèêëíìîïóòõôöúùûüç", "aaaaaeeeeiiiiooooouuuuc")
-    s = s.translate(trans)
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]+", " ", s)).strip()
-
 def discount(price, original):
     try:
         p, o = float(price), float(original)
@@ -215,36 +144,21 @@ def discount(price, original):
     except Exception:
         return 0
 
-def total(price, shipping):
-    try:
-        return round(float(price) + float(shipping or 0), 2)
-    except Exception:
-        return None
-
 def model_name(title):
     if not title:
         return "Produto"
     t = re.sub(r"\b(novo|original|oficial|promoção|frete grátis)\b", "", str(title), flags=re.I)
     return re.sub(r"\s+", " ", t).strip()
 
-def specs(title):
-    if not title:
-        return []
-    t = str(title)
-    out = []
-    for x in re.findall(r"\b\d+(?:GB|TB)\b", t, re.I):
-        x = x.upper()
-        if x not in out:
-            out.append(x)
-    for x in re.findall(r"\b\d+\s*GB\s*(?:RAM|MEMORIA|DE MEMORIA)\b", t, re.I):
-        x = re.sub(r"\s+", " ", x.upper())
-        if x not in out:
-            out.append(x)
-    return out
+# ============================================================
+# AUTENTICAÇÃO MERCADO LIVRE (OAUTH PKCE)
+# ============================================================
 
-# ============================================================
-# MERCADO LIVRE API & OAUTH
-# ============================================================
+def pkce():
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return verifier, challenge
 
 def tokens():
     c = get_db()
@@ -280,10 +194,10 @@ def refresh():
         return None
     try:
         r = requests.post(ML_TOKEN, data={
-            "grant_type":"refresh_token",
-            "client_id":ML_CLIENT_ID,
-            "client_secret":ML_CLIENT_SECRET,
-            "refresh_token":t["refresh_token"]
+            "grant_type": "refresh_token",
+            "client_id": ML_CLIENT_ID,
+            "client_secret": ML_CLIENT_SECRET,
+            "refresh_token": t["refresh_token"]
         }, timeout=30)
         if r.status_code != 200:
             return None
@@ -322,7 +236,64 @@ def ml_get(path, params=None):
         return {"error": str(e)}, 500, {}
 
 # ============================================================
-# ROTAS FLASK & BUSCA
+# ROTAS LOGIN / CALLBACK
+# ============================================================
+
+@app.route("/mercadolivre/login")
+def ml_login():
+    if not ML_CLIENT_ID:
+        return jsonify({"erro": "ML_CLIENT_ID não configurado."}), 500
+    verifier, challenge = pkce()
+    state = secrets.token_urlsafe(32)
+    session["ml_state"] = state
+    session["ml_code_verifier"] = verifier
+    params = {
+        "response_type": "code", "client_id": ML_CLIENT_ID,
+        "redirect_uri": ML_REDIRECT_URI, "state": state,
+        "code_challenge": challenge, "code_challenge_method": "S256"
+    }
+    return redirect(ML_AUTH + "?" + urlencode(params))
+
+@app.route("/mercadolivre/callback")
+def ml_callback():
+    if request.args.get("error"):
+        return jsonify({"erro": request.args.get("error"), "descricao": request.args.get("error_description")}), 400
+    code, state = request.args.get("code"), request.args.get("state")
+    if not code or state != session.get("ml_state"):
+        return jsonify({"erro": "Código ou state inválido."}), 400
+    try:
+        r = requests.post(ML_TOKEN, data={
+            "grant_type": "authorization_code", "client_id": ML_CLIENT_ID,
+            "client_secret": ML_CLIENT_SECRET, "code": code,
+            "redirect_uri": ML_REDIRECT_URI,
+            "code_verifier": session.get("ml_code_verifier")
+        }, timeout=30)
+        if r.status_code != 200:
+            return jsonify({"erro": "Falha ao obter token.", "status": r.status_code, "resposta": r.text}), r.status_code
+        data = r.json()
+        user = None
+        if data.get("access_token"):
+            me = requests.get(ML_API + "/users/me", headers={"Authorization": "Bearer " + data["access_token"]}, timeout=30)
+            if me.status_code == 200:
+                user = me.json()
+        save_tokens(data, user)
+        session.pop("ml_state", None)
+        session.pop("ml_code_verifier", None)
+        return redirect("/?conectado=1")
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
+
+@app.route("/mercadolivre/logout")
+def ml_logout():
+    c = get_db()
+    c.execute("DELETE FROM oauth_tokens WHERE id=1")
+    c.commit()
+    c.close()
+    session.clear()
+    return redirect("/")
+
+# ============================================================
+# LÓGICA DE BUSCA DE PRODUTOS
 # ============================================================
 
 def search_real_listings(query, limit=50):
@@ -335,7 +306,7 @@ def search_real_listings(query, limit=50):
         return data.get("results") or []
     return []
 
-def _direct_perfume_offer_from_listing(row, cat, position, query):
+def _direct_offer_from_listing(row, cat, position, query):
     if not isinstance(row, dict):
         return None
     item_id = str(row.get("id") or row.get("item_id") or "").strip()
@@ -358,7 +329,6 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "item_id": item_id,
         "title": title,
         "modelo_nome": model_name(title),
-        "especificacoes": specs(title),
         "image": image,
         "category_name": cat,
         "permalink": permalink,
@@ -366,23 +336,13 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "original_price": original,
         "discount": discount(price, original),
         "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
-        "condition": row.get("condition") or "",
         "free_shipping": free,
         "shipping_cost": shipping_cost,
-        "shipping_known": True,
-        "total_price": total(price, shipping_cost),
-        "relevance_score": 1.0,
+        "total_price": price + (shipping_cost or 0),
         "sold_quantity": row.get("sold_quantity") or 0,
-        "logistic_type": shipping.get("logistic_type") or "",
-        "seller_nickname": None,
-        "best_seller_position": position,
-        "cupom": None,
-        "desconto_cupom": 0,
-        "preco_com_cupom": None,
-        "affiliate_link": "",
     }
 
-def scan_queries(queries, min_discount=0, apply_coupons=False):
+def scan_queries(queries):
     direct = []
     seen_direct = set()
     
@@ -397,7 +357,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             iid = str(row.get("id") or "").strip()
             if not iid or iid in seen_direct:
                 continue
-            offer = _direct_perfume_offer_from_listing(row, cat, pos, q)
+            offer = _direct_offer_from_listing(row, cat, pos, q)
             if offer and offer["price"] >= MIN_PRODUCT_PRICE:
                 seen_direct.add(iid)
                 direct.append(offer)
@@ -408,7 +368,6 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "product_id": o["product_id"],
             "title": o["title"],
             "modelo_nome": o["modelo_nome"],
-            "especificacoes": o["especificacoes"],
             "image": o["image"],
             "category_name": o["category_name"],
             "ofertas": [o],
@@ -418,14 +377,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "ofertas": len(direct),
         "mais vendidos": len(direct),
         "menor preço do produto": brl(min([o["price"] for o in direct] or [0])),
-        "modo": "busca rápida otimizada",
+        "modo": "busca direta ativa",
     }
     return {"stats": stats, "modelos": models, "ofertas": direct}
 
-@app.route("/")
-def index():
-    t = tokens()
-    return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()))
+# ============================================================
+# ROTAS DA API DE BUSCA
+# ============================================================
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -461,7 +419,10 @@ def proxy_ml_image():
     except Exception:
         return "Erro ao carregar foto.", 404
 
-# INTERFACE HTML DA APLICAÇÃO
+# ============================================================
+# TEMPLATE HTML COM SUPORTE A STATUS DA CONEXÃO
+# ============================================================
+
 HTML = r"""
 <!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -469,10 +430,12 @@ HTML = r"""
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f4f5f7;font-family:Arial;color:#222}
 .container{max-width:1050px;margin:auto;padding:18px}.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 5px 20px #0000000c}
-button,input,select{width:100%;padding:13px;border-radius:10px;border:1px solid #ddd;font-size:15px}button{border:0;background:#3483fa;color:#fff;cursor:pointer;margin-top:7px}
+button,input,select{width:100%;padding:13px;border-radius:10px;border:1px solid #ddd;font-size:15px}
+button{border:0;background:#3483fa;color:#fff;cursor:pointer;margin-top:7px}
+.login{background:#ffe600;color:#222;font-weight:bold;text-decoration:none;display:block;text-align:center;padding:13px;border-radius:10px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}.cat{background:#fff;border:1px solid #ddd;color:#222;text-align:left}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px}.stat{background:#f3f4f6;padding:13px;border-radius:11px}.stat b{display:block;font-size:23px;margin-top:4px}
-.modelo{border:2px solid #eee;border-radius:15px;padding:14px;margin:13px 0}.mh{display:flex;gap:12px;align-items:center}.mh img{width:85px;height:85px;object-fit:contain;background:#fafafa;border-radius:10px}.title{font-size:18px;font-weight:bold}.tag{display:inline-block;background:#eef4ff;color:#3483fa;border-radius:7px;padding:5px 8px;font-size:11px;margin:3px}.seller{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:12px;margin-top:10px}.price{font-size:22px;font-weight:bold}.green{color:#00a650;font-weight:bold}.small{font-size:12px;color:#666}
+.modelo{border:2px solid #eee;border-radius:15px;padding:14px;margin:13px 0}.mh{display:flex;gap:12px;align-items:center}.mh img{width:85px;height:85px;object-fit:contain;background:#fafafa;border-radius:10px}.title{font-size:18px;font-weight:bold}.tag{display:inline-block;background:#eef4ff;color:#3483fa;border-radius:7px;padding:5px 8px;font-size:11px;margin:3px}.seller{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:12px;margin-top:10px}.price{font-size:22px;font-weight:bold}.green{color:#00a650;font-weight:bold}.small{font-size:12px;color:#666}.status{background:#eef8f0;padding:10px;border-radius:9px;margin-bottom:10px}
 </style>
 <script>
 async function cacar(cat){
@@ -506,16 +469,56 @@ function render(data){
  </div>`).join('') || '<p>Nenhum produto encontrado no momento.</p>';
 }
 </script></head><body><div class="container">
-<div class="card"><h1>🛒 Caçador de Ofertas</h1><p>Buscador de ofertas otimizado.</p></div>
-<div class="card"><h2>🔥 Escolha uma categoria</h2>
-<button class="cat" style="background:#3483fa;color:#fff;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button>
-<div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div>
-<p id="status" class="small"></p></div>
-<div class="card"><h2>🔎 Busca Manual</h2><input id="q" placeholder="Digite um produto..."><button onclick="buscar()">Buscar</button></div>
-<div class="card"><h2>📊 Estatísticas</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Resultados</h2><div id="results"></div></div>
+<div class="card">
+ <h1>🛒 Caçador de Ofertas</h1>
+ <p>Buscador de ofertas com conexão oficial com Mercado Livre.</p>
+ {% if conectado %}
+  <div class="status">🟢 Mercado Livre conectado {% if nickname %} (<b>{{nickname}}</b>){% endif %}</div>
+  <a href="/mercadolivre/logout"><button style="background:#d9534f">Desconectar conta</button></a>
+ {% else %}
+  <a href="/mercadolivre/login" class="login">🔗 Conectar conta do Mercado Livre</a>
+ {% endif %}
+</div>
+
+<div class="card">
+ <h2>🔥 Escolha uma categoria</h2>
+ <button class="cat" style="background:#3483fa;color:#fff;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button>
+ <div class="grid" style="margin-top:10px">
+  {% for c in categorias %}
+   <button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>
+  {% endfor %}
+ </div>
+ <p id="status" class="small"></p>
+</div>
+
+<div class="card">
+ <h2>🔎 Busca Manual</h2>
+ <input id="q" placeholder="Digite um produto...">
+ <button onclick="buscar()">Buscar</button>
+</div>
+
+<div class="card">
+ <h2>📊 Estatísticas</h2>
+ <div id="stats" class="stats"></div>
+</div>
+
+<div class="card">
+ <h2>🏆 Resultados</h2>
+ <div id="results"></div>
+</div>
+
 </div></body></html>
 """
+
+@app.route("/")
+def index():
+    t = tokens()
+    return render_template_string(
+        HTML,
+        conectado=bool(access_token()),
+        nickname=t.get("nickname") if t else None,
+        categorias=list(CATALOG.keys())
+    )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=False)
