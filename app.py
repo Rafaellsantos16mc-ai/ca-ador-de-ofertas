@@ -90,33 +90,18 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    # FONTE DE VERDADE — lista exata definida para o teste de perfumes.
+    # FONTE DE VERDADE DO TESTE — MICRO-NICHOS EXATOS ENVIADOS PELO USUÁRIO.
+    # Não adicionar outros termos nesta fase.
     "🌸 Perfumes": [
-        # Contratipos Nacionais e Importados
-        "perfume contratipo",
-        "In The Box perfume",
-        "Thera Cosméticos perfume",
-        "Nuancielo perfume",
-        "Brand Collection perfume",
-
-        # Perfumaria de Grife Clássica
-        "perfume importado masculino 30ml",
-        "perfume importado masculino 50ml",
-        "perfume importado feminino 30ml",
-        "perfume importado feminino 50ml",
-
-        # Body Splashes
-        "body splash",
-        "colônia corporal",
-        "spray perfumado",
+        "Perfume contratipo inspirado",
+        "Perfume importado 30ml masculino",
+        "Perfume importado 50ml feminino",
+        "Body splash colônia corporal",
     ],
     "🌙 Perfumes Árabes": [
-        # Fragrâncias Virais do TikTok — somente as marcas definidas.
-        "Lattafa perfume",
-        "Lattafa Asad",
-        "Lattafa Yara",
-        "Maison Alhambra perfume",
-        "Afnan perfume",
+        "Perfume Lattafa Asad",
+        "Perfume Lattafa Yara",
+        "Perfume Maison Alhambra",
     ],
 }
 
@@ -1484,6 +1469,19 @@ def search_products_direct(q, limit=30):
     return results
 
 
+PUBLIC_SEARCH_FILTERS = "_OrderId_TRADES_SHIPPING_COST_FREE_ITEM_CONDITION_NEW_SHIPPING_ORIGIN_LOCAL"
+
+def public_search_url(query):
+    """Monta o link público equivalente ao teste enviado pelo usuário.
+
+    O app continua usando a API do Mercado Livre para coletar os anúncios;
+    este link serve como referência da busca pública/ordenação proposta.
+    """
+    clean_query = f"{str(query or '').strip()} -decant".strip()
+    encoded = quote(clean_query)
+    return f"https://lista.mercadolivre.com.br/{encoded}{PUBLIC_SEARCH_FILTERS}_NoIndex_True"
+
+
 def search_real_listings(q, limit=50):
     """Busca anúncios reais do Mercado Livre.
 
@@ -1865,21 +1863,17 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_perfumes():
-    """Teste isolado: busca somente Lattafa, Maison Alhambra e Afnan."""
-    queries = [
-        "lattafa asad",
-        "lattafa yara",
-        "lattafa perfume",
-        "maison alhambra perfume",
-        "afnan perfume",
-    ]
+    """Teste isolado usando exatamente os 3 micro-nichos enviados."""
+    queries = list(CATALOG["🌙 Perfumes Árabes"])
     out = []
     seen = set()
     rank_base = 1
 
     for q in queries:
+        # Exclui decant sem alterar o micro-nicho solicitado.
+        search_q = f"{q} -decant"
         try:
-            rows = search_real_listings(q, limit=50)
+            rows = search_real_listings(search_q, limit=50)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -1927,8 +1921,12 @@ def _search_category(cat):
 
         rank_base = 1
         for q in perfume_queries:
+            # Mantém o micro-nicho exatamente como definido e acrescenta apenas
+            # a exclusão operacional de decant na consulta.
+            search_q = f"{q} -decant"
+            print("[BUSCA PUBLICA EQUIVALENTE]", public_search_url(q))
             try:
-                rows = search_real_listings(q, limit=50)
+                rows = search_real_listings(search_q, limit=50)
             except Exception as exc:
                 print("[PERFUMES BUSCA]", q, repr(exc))
                 continue
