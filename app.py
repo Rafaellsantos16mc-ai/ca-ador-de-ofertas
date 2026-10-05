@@ -1508,6 +1508,7 @@ def search_real_listings(q, limit=50):
     # 1) Busca direta de anúncios reais.
     data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
         "q": query,
+        "status": "active",
         "limit": lim,
         "offset": 0,
     })
@@ -2424,12 +2425,22 @@ _IMAGE_CACHE = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
 
 def _extract_image_url(obj):
+    """Extrai a primeira imagem realmente utilizável do Mercado Livre."""
     if not isinstance(obj, dict):
         return ""
-    for key in ("secure_url", "url", "secure_thumbnail", "thumbnail", "picture_url", "image"):
+
+    # O /items normalmente devolve secure_url/url. Algumas respostas
+    # intermediárias usam source, então ele também entra no fallback.
+    for key in (
+        "secure_url", "url", "source", "secure_thumbnail",
+        "thumbnail", "picture_url", "image"
+    ):
         value = obj.get(key)
-        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
-            return value.strip()
+        if isinstance(value, str):
+            value = value.strip()
+            if value.startswith(("http://", "https://")):
+                return value
+
     pics = obj.get("pictures") or []
     if isinstance(pics, list):
         for pic in pics:
@@ -2477,70 +2488,154 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
     return ""
 
 
-def _direct_perfume_offer_from_listing(row, cat, position, query):
-    """Transforma qualquer anúncio retornado pela busca direta em oferta.
+_DIRECT_ITEM_CACHE = {}
+_DIRECT_ITEM_CACHE_LOCK = threading.Lock()
 
-    IMPORTANTE: esta rota é propositalmente SEM FILTROS eliminatórios.
-    A consulta do próprio micro-nicho é quem define o que será pesquisado.
-    Aqui só montamos os dados necessários para exibir o anúncio.
+def _get_direct_item(item_id):
+    """Obtém o anúncio real uma vez e reaproveita os dados na mesma busca."""
+    iid = str(item_id or "").strip()
+    if not iid:
+        return {}, 0
+    with _DIRECT_ITEM_CACHE_LOCK:
+        cached = _DIRECT_ITEM_CACHE.get(iid)
+    if cached is not None:
+        return cached
+
+    data, status, _ = ml_get(f"/items/{iid}")
+    if not isinstance(data, dict):
+        data = {}
+    result = (data, status)
+    with _DIRECT_ITEM_CACHE_LOCK:
+        _DIRECT_ITEM_CACHE[iid] = result
+    return result
+
+def _valid_item_permalink(item_data, row, item_id):
+    """Prioriza o permalink do /items para não entregar link de catálogo inválido."""
+    candidates = []
+    if isinstance(item_data, dict):
+        candidates.extend([
+            item_data.get("permalink"),
+            item_data.get("url"),
+        ])
+    if isinstance(row, dict):
+        candidates.extend([row.get("permalink"), row.get("url")])
+
+    for value in candidates:
+        value = str(value or "").strip()
+        if value.startswith(("https://", "http://")):
+            # Evita URLs claramente internas da API.
+            if "api.mercadolibre.com" not in value:
+                return value
+
+    # Último fallback para anúncios MLB no formato tradicional.
+    iid = str(item_id or "").strip()
+    m = re.fullmatch(r"MLB(\d+)", iid, re.I)
+    if m:
+        return f"https://produto.mercadolivre.com.br/MLB-{m.group(1)}"
+    return ""
+
+
+def _direct_perfume_offer_from_listing(row, cat, position, query):
+    """Transforma um resultado de busca em oferta usando o anúncio real.
+
+    Não aplica filtros comerciais de preço, vendas, Full, reputação ou cupom.
+    A única validação adicional aqui é de integridade: o item precisa ser
+    um anúncio consultável e, quando a API fornece o status, estar ativo.
+    Isso evita mostrar produto sem foto e link que abre como "anúncio indisponível".
     """
     if not isinstance(row, dict):
         return None
 
     item_id = str(row.get("id") or row.get("item_id") or "").strip()
-    title = str(row.get("title") or row.get("name") or "").strip()
     if not item_id:
         return None
-    if not title:
-        title = item_id
 
-    try:
-        price = float(row.get("price")) if row.get("price") is not None else 0.0
-    except Exception:
-        price = 0.0
+    # Sempre consultamos /items. Antes só fazíamos isso quando faltava foto,
+    # então título/preço/permalink podiam vir de um resultado de busca antigo.
+    item_data, item_status = _get_direct_item(item_id)
+    if item_status not in (200, 206):
+        print(f"[ITEM DIRETO] {item_id} -> HTTP {item_status}; ignorado para não gerar link inválido")
+        return None
 
-    try:
-        original = float(row.get("original_price")) if row.get("original_price") is not None else None
-    except Exception:
-        original = None
+    # Se o Mercado Livre informa explicitamente um estado não ativo, não
+    # colocamos esse anúncio na lista. Isso não é um filtro de qualidade: é
+    # apenas para impedir que o botão "Ver produto" leve a anúncio encerrado.
+    item_state = str(item_data.get("status") or "").strip().lower()
+    if item_state and item_state != "active":
+        print(f"[ITEM DIRETO] {item_id} -> status={item_state}; ignorado")
+        return None
 
-    shipping = row.get("shipping") or {}
-    if not isinstance(shipping, dict):
-        shipping = {}
+    title = str(
+        item_data.get("title")
+        or row.get("title")
+        or row.get("name")
+        or item_id
+    ).strip()
+
+    def _num(*values):
+        for value in values:
+            if value is None or value == "":
+                continue
+            try:
+                return float(value)
+            except Exception:
+                continue
+        return 0.0
+
+    price = _num(
+        item_data.get("price"),
+        row.get("price"),
+        item_data.get("sale_price"),
+        row.get("sale_price"),
+    )
+    original = _num(
+        item_data.get("original_price"),
+        row.get("original_price"),
+        item_data.get("regular_price"),
+        row.get("regular_price"),
+    ) or None
+
+    # Dados do anúncio real têm prioridade sobre a busca.
+    shipping = item_data.get("shipping") if isinstance(item_data.get("shipping"), dict) else {}
+    if not shipping:
+        shipping = row.get("shipping") if isinstance(row.get("shipping"), dict) else {}
     free = bool(shipping.get("free_shipping"))
     shipping_cost = shipping.get("cost")
     if shipping_cost is None and free:
         shipping_cost = 0
 
-    # Imagem: usamos a que veio na busca; se não veio, tentamos o item real.
-    # A ausência da imagem NÃO elimina o produto nesta versão.
-    image = str(
-        row.get("thumbnail")
-        or row.get("secure_thumbnail")
-        or row.get("picture_url")
-        or ""
-    ).strip()
+    # Imagem: tenta o /items primeiro, depois o resultado da busca.
+    # O helper também reconhece secure_url, url, source e pictures[].
+    image = _resolve_offer_image(
+        item_data, row, row, item_id=item_id
+    )
 
+    # Se o anúncio não tiver nenhuma imagem pública, ainda preservamos a
+    # oferta (para não transformar imagem em filtro comercial), mas ela não
+    # será apresentada como "sem foto": tentamos todas as pictures primeiro.
     if not image:
-        data, status, _ = ml_get(f"/items/{item_id}")
-        if status == 200 and isinstance(data, dict):
-            pictures = data.get("pictures") or []
-            if pictures and isinstance(pictures[0], dict):
-                image = str(
-                    pictures[0].get("secure_url")
-                    or pictures[0].get("url")
-                    or pictures[0].get("secure_thumbnail")
-                    or pictures[0].get("thumbnail")
-                    or ""
-                ).strip()
+        print(f"[IMAGEM] {item_id} -> nenhuma URL de imagem disponível")
 
-    seller = row.get("seller") or {}
-    seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
-    sold = row.get("sold_quantity") or 0
+    seller = item_data.get("seller") if isinstance(item_data.get("seller"), dict) else {}
+    if not seller:
+        seller = row.get("seller") if isinstance(row.get("seller"), dict) else {}
+    seller_id = seller.get("id") or item_data.get("seller_id") or row.get("seller_id")
+
+    sold = item_data.get("sold_quantity")
+    if sold is None:
+        sold = row.get("sold_quantity") or 0
     try:
         sold = int(float(sold))
     except Exception:
         sold = 0
+
+    permalink = _valid_item_permalink(item_data, row, item_id)
+    if not permalink:
+        print(f"[LINK] {item_id} -> nenhum permalink público encontrado")
+        return None
+
+    listing_type = item_data.get("listing_type_id") or row.get("listing_type_id")
+    logistic_type = shipping.get("logistic_type") or item_data.get("shipping", {}).get("logistic_type") if isinstance(item_data.get("shipping"), dict) else shipping.get("logistic_type")
 
     disc = discount(price, original)
     return {
@@ -2551,24 +2646,25 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "especificacoes": specs(title),
         "image": image,
         "category_name": cat,
-        "permalink": row.get("permalink") or f"https://www.mercadolivre.com.br/p/{item_id}",
+        "permalink": permalink,
         "price": price,
         "original_price": original,
         "discount": disc,
         "seller_id": seller_id,
-        "condition": row.get("condition") or "",
+        "condition": item_data.get("item_condition") or item_data.get("condition") or row.get("condition") or "",
         "free_shipping": free,
         "shipping_cost": shipping_cost,
         "shipping_known": shipping_cost is not None,
         "total_price": total(price, shipping_cost) if shipping_cost is not None else price,
         "relevance_score": 1.0,
         "sold_quantity": sold,
-        "logistic_type": shipping.get("logistic_type") or "",
+        "logistic_type": logistic_type or "",
         "shipping_mode": shipping.get("mode"),
+        "listing_type_id": listing_type or "",
         "seller_status": None,
         "seller_level_id": None,
         "seller_completed_sales": 0,
-        "seller_nickname": seller.get("nickname") if isinstance(seller, dict) else None,
+        "seller_nickname": seller.get("nickname"),
         "quality_validated": False,
         "giro_score": min(1000, sold * 2),
         "trend_score": 0,
@@ -2714,7 +2810,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "menor preço do produto": brl(min([float(o.get("price") or 0) for o in flat] or [0])),
             "menor total com frete": brl(min([float(o.get("total_price") or 0) for o in flat] or [0])),
             "produtos sem cupom": sum(1 for o in flat if not o.get("cupom")),
-            "modo": "busca direta /sites/MLB/search — SEM FILTROS",
+            "modo": "busca direta /sites/MLB/search — anúncios ativos",
         }
         print(f"[TESTE DIRETO SEM FILTROS RESULTADO] {len(flat)} ofertas | modelos={len(models)}")
         return {"stats": stats, "modelos": models, "ofertas": flat}
@@ -3622,7 +3718,7 @@ function render(data){
  document.getElementById('stats').innerHTML=Object.entries(data.stats||{}).map(([k,v])=>`<div class="stat">${k}<b>${v}</b></div>`).join('');
  document.getElementById('results').innerHTML=(data.modelos||[]).map((m,mi)=>`
  <div class="modelo">
-  <div class="mh">${m.image?`<img src="${m.image}">`:''}<div>
+  <div class="mh">${m.image?`<img src="${m.image}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`:''}<div>
    <span class="tag">🔥 OPORTUNIDADE ${mi+1}</span><div class="title">${esc(m.modelo_nome)}</div>
    ${(m.especificacoes||[]).map(s=>`<span class="tag">${esc(s)}</span>`).join('')}
    <div class="small">${m.ofertas.length} vendedor(es)</div>
