@@ -348,7 +348,7 @@ def is_requested_product(title, query, category=None):
             ["peca", "refil", "capa", "suporte", "acessorio"]
         ),
         "🚗 Automotivo": (
-            ["compressor automotivo", "aspirador automotivo", "carregador automotivo", "ferramenta automotiva", "tapete automotivo"],
+            ["aspirador automotivo", "carregador automotivo", "ferramenta automotiva", "tapete automotivo"],
             ["capa de celular", "pelicula", "brinde", "adesivo"]
         ),
         "👕 Moda": (
@@ -686,6 +686,50 @@ def get_current_sale_price(item_id):
             return amount, regular
     PRICE_CACHE[item_id] = (None, None)
     return None, None
+
+
+def _extract_picture_url(pictures):
+    """Retorna a melhor URL disponível de uma lista de pictures do ML."""
+    if not isinstance(pictures, list):
+        return ""
+    for pic in pictures:
+        if not isinstance(pic, dict):
+            continue
+        for key in ("max_size", "secure_url", "url", "source"):
+            value = str(pic.get(key) or "").strip()
+            if value.startswith(("https://", "http://")):
+                return value
+    return ""
+
+
+def _resolve_offer_image(product_data, item_data=None, item_id=""):
+    """Garante uma foto usando produto, anúncio real e fallback /items."""
+    if isinstance(product_data, dict):
+        image = _extract_picture_url(product_data.get("pictures"))
+        if image:
+            return image
+
+    if isinstance(item_data, dict):
+        image = _extract_picture_url(item_data.get("pictures"))
+        if image:
+            return image
+
+    iid = str(item_id or "").strip()
+    if iid:
+        try:
+            data, status, _ = ml_get(f"/items/{iid}")
+            if status == 200 and isinstance(data, dict):
+                image = _extract_picture_url(data.get("pictures"))
+                if image:
+                    return image
+                for key in ("thumbnail", "secure_thumbnail"):
+                    value = str(data.get(key) or "").strip()
+                    if value.startswith(("https://", "http://")):
+                        return value
+        except Exception as exc:
+            print("[IMAGEM OFERTA] fallback /items falhou:", iid, repr(exc))
+
+    return ""
 
 def valid_catalog_price(price):
     try:
@@ -1532,7 +1576,7 @@ CATEGORY_SEED = {
     "🎧 Eletrônicos": ["fone bluetooth", "smartwatch", "tablet", "caixa de som"],
     "🏠 Casa": ["aspirador de pó", "liquidificador", "cafeteira", "ventilador"],
     "🍳 Cozinha": ["air fryer", "panela elétrica", "cafeteira", "liquidificador"],
-    "🚗 Automotivo": ["compressor automotivo", "aspirador automotivo", "carregador automotivo", "ferramentas automotivas"],
+    "🚗 Automotivo": ["aspirador automotivo", "carregador automotivo", "ferramentas automotivas"],
     "👕 Moda": ["tenis masculino", "tenis feminino", "mochila", "camiseta"],
 }
 
@@ -1544,7 +1588,7 @@ DEMAND_ANCHORS = {
     "🎧 Eletrônicos": ["fone","headset","smartwatch","tablet","caixa de som","camera","power bank"],
     "🏠 Casa": ["aspirador","liquidificador","cafeteira","air fryer","ventilador","ferro"],
     "🍳 Cozinha": ["air fryer","panela","cafeteira","liquidificador","sanduicheira","cozinha"],
-    "🚗 Automotivo": ["automotivo","carro","compressor","aspirador automotivo","carregador automotivo","tapete"],
+    "🚗 Automotivo": ["automotivo","carro","aspirador automotivo","carregador automotivo","tapete"],
     "👕 Moda": ["tenis","mochila","relogio","bolsa","oculos","camiseta","vestido"],
 }
 
@@ -1846,6 +1890,17 @@ PERFUME_POSITIVE_TERMS = (
     "eau de cologne",
 )
 
+
+# Produtos automotivos que não devem aparecer nas oportunidades.
+# O foco é evitar compressores e peças/itens desse estilo.
+AUTOMOTIVE_EXCLUDED_TERMS = (
+    "compressor",
+    "compressor de ar",
+    "compressor automotivo",
+    "compressor do ar condicionado",
+    "compressor ar condicionado",
+)
+
 PERFUME_EXCLUDED_TERMS = (
     "desodorante",
     "desodorante colônia",
@@ -1890,6 +1945,11 @@ PERFUME_EXCLUDED_TERMS = (
     "animalíssimo",
     "animalissimo",
 )
+
+
+def _is_automotive_excluded(title):
+    text = norm(title)
+    return any(norm(term) in text for term in AUTOMOTIVE_EXCLUDED_TERMS)
 
 def _is_real_perfume(title):
     text = norm(title or "")
@@ -2012,12 +2072,102 @@ def _search_arabic_perfumes():
                     "arabic_brand": brand_name,
                 }
 
-    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))[:20]
-    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking por marca")
-    return [(row, "🌙 Perfumes Árabes") for row in rows]
+    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))
+
+    # Se o ranking inicial tiver poucos itens válidos, amplia a fila usando a
+    # busca oficial ordenada por vendas. Assim os primeiros resultados inválidos
+    # não fazem a categoria árabe desaparecer.
+    seen = {str(row.get("id") or "").strip() for row in rows}
+    arabic_queries = ["perfume árabe", "perfumes árabes", "perfume arabe", "perfumes arabe"]
+    for query in arabic_queries:
+        extra = _search_sold_sorted_items(category_id, query=query, max_pages=3)
+        for row in extra:
+            pid = str(row.get("id") or "").strip()
+            if not pid or pid in seen:
+                continue
+            if not _is_arabic_perfume(row.get("title")):
+                continue
+            row["arabic_brand"] = row.get("arabic_brand") or "Busca árabe"
+            seen.add(pid)
+            rows.append(row)
+            if len(rows) >= 120:
+                break
+        if len(rows) >= 120:
+            break
+
+    rows.sort(key=lambda x: (-int(x.get("sold_quantity_search") or 0),
+                             int(x.get("highlight_position") or 999999), x.get("id") or ""))
+    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking ampliado")
+    return [(row, "🌙 Perfumes Árabes") for row in rows[:120]]
+
+def _search_sold_sorted_items(category_id, query=None, max_pages=4):
+    """Busca uma fila maior ordenada por quantidade vendida.
+
+    O endpoint Highlights entrega só um conjunto curto de destaques. Para
+    categorias que sofrem muitos descartes (especialmente Perfumes), usamos
+    também a busca oficial do site ordenada por sold_quantity_desc para
+    continuar descendo no ranking até encontrar candidatos válidos.
+    """
+    merged = {}
+    category_id = str(category_id or "").strip()
+    if not category_id:
+        return []
+
+    for page in range(max(1, int(max_pages or 1))):
+        offset = page * 50
+        params = {
+            "site_id": SITE_ID,
+            "category": category_id,
+            "sort": "sold_quantity_desc",
+            "limit": 50,
+            "offset": offset,
+        }
+        if query:
+            params["q"] = str(query).strip()
+        try:
+            data, status, _ = ml_get("/sites/MLB/search", params)
+        except Exception as exc:
+            print("[TOP 20 VENDIDOS] erro", category_id, query, repr(exc))
+            continue
+        if status != 200 or not isinstance(data, dict):
+            print("[TOP 20 VENDIDOS] HTTP", status, category_id, query)
+            break
+
+        rows = data.get("results") or []
+        if not rows:
+            break
+        for idx, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("id") or "").strip()
+            if not pid or pid in merged:
+                continue
+            title = str(row.get("title") or "").strip()
+            sold = row.get("sold_quantity")
+            try:
+                sold = int(float(sold or 0))
+            except Exception:
+                sold = 0
+            merged[pid] = {
+                "id": pid,
+                "name": title or pid,
+                "title": title or pid,
+                "source_type": "ITEM",
+                "highlight_position": offset + idx,
+                "sold_quantity_search": sold,
+                "highlight_category_id": category_id,
+            }
+        if len(rows) < 50:
+            break
+
+    rows = list(merged.values())
+    rows.sort(key=lambda r: (-int(r.get("sold_quantity_search") or 0),
+                             int(r.get("highlight_position") or 999999)))
+    return rows
+
 
 def _search_category(cat):
-    """Fonte única da busca: os 20 mais vendidos oficiais da categoria."""
+    """Busca candidatos e continua além dos 20 iniciais quando filtros eliminam itens."""
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
         try:
@@ -2037,16 +2187,18 @@ def _search_category(cat):
         ranking = highlights(category_id) or []
     except Exception as exc:
         print("[TOP 20]", cat, category_id, repr(exc))
-        return []
+        ranking = []
 
     out = []
+    seen = set()
     for position, row in enumerate(ranking[:20], start=1):
         if not isinstance(row, dict):
             continue
         pid = str(row.get("id") or "").strip()
         typ = str(row.get("type") or "").upper().strip()
-        if not pid or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"}:
+        if not pid or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"} or pid in seen:
             continue
+        seen.add(pid)
         raw = {
             "id": pid,
             "name": row.get("title") or row.get("name") or pid,
@@ -2056,6 +2208,28 @@ def _search_category(cat):
             "highlight_category_id": category_id,
         }
         out.append((raw, cat))
+
+    # Perfumes precisa de uma fila maior porque o ranking inicial pode conter
+    # Pet, desodorantes, itens baratos ou outros derivados. Não relaxamos os
+    # filtros: simplesmente continuamos descendo na busca por vendidos.
+    if cat == "🌸 Perfumes":
+        extra = _search_sold_sorted_items(category_id, max_pages=6)
+        next_position = max([int(x[0].get("highlight_position") or 0) for x in out] or [0])
+        for row in extra:
+            pid = str(row.get("id") or "").strip()
+            if not pid or pid in seen:
+                continue
+            # Como o título já vem da publicação, eliminamos cedo os casos
+            # claramente inválidos e economizamos chamadas de enriquecimento.
+            if not _is_real_perfume(row.get("title")):
+                continue
+            next_position += 1
+            row["highlight_position"] = max(next_position, int(row.get("highlight_position") or 0))
+            seen.add(pid)
+            out.append((row, cat))
+            if len(out) >= 120:
+                break
+        print(f"[PERFUMES] fila ampliada: {len(out)} candidatos antes do enriquecimento")
 
     print(f"[TOP 20] {cat} ({category_id}): {len(out)} candidatos")
     return out
@@ -2382,7 +2556,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        for raw, source_query in raw_by_cat.get(cat, [])[:20]:
+        raw_limit = 120 if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"} else 20
+        for raw, source_query in raw_by_cat.get(cat, [])[:raw_limit]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -2473,10 +2648,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             total_price = total(price, shipping) if known else price
             free = bool(item.get("free_shipping"))
 
-            pics = p.get("pictures") or []
-            image = None
-            if pics and isinstance(pics[0], dict):
-                image = pics[0].get("url") or pics[0].get("secure_url")
+            image = _resolve_offer_image(
+                p,
+                item_data=item,
+                item_id=item.get("item_id"),
+            )
 
             offers.append({
                 "product_id": pid,
