@@ -3085,6 +3085,89 @@ def valid_affiliate_link(link):
     except Exception:
         return False
 
+def _extract_item_id_from_affiliate_url(link):
+    """Extrai o ITEM MLB de um link de afiliado do Mercado Livre.
+
+    Links compartilhados no iPhone podem trazer wid no fragmento (#),
+    enquanto links meli.la precisam ser seguidos até a URL de destino.
+    Retorna somente o ID de publicação (MLB...), nunca o ID de catálogo.
+    """
+    link = str(link or "").strip()
+    if not link:
+        return None
+
+    def from_url(url):
+        try:
+            u = urlparse(str(url or ""))
+            parts = [u.query or "", (u.fragment or "").lstrip("?#&")]
+            for part in parts:
+                if not part:
+                    continue
+                qs = parse_qs(part, keep_blank_values=True)
+                for key in ("wid", "item_id", "id"):
+                    for value in qs.get(key, []):
+                        m = re.search(r"\b(MLB\d+)\b", str(value).upper())
+                        if m:
+                            return m.group(1)
+                for value in qs.get("pdp_filters", []):
+                    m = re.search(r"item_id(?:%3A|:)\s*(MLB\d+)", str(value), re.I)
+                    if m:
+                        return m.group(1).upper()
+            # Alguns links deixam o item_id percent-encoded no URL inteiro.
+            decoded = str(url).replace("%3A", ":").replace("%3a", ":")
+            m = re.search(r"item_id[:=]?(MLB\d+)", decoded, re.I)
+            if m:
+                return m.group(1).upper()
+        except Exception:
+            pass
+        return None
+
+    direct = from_url(link)
+    if direct:
+        return direct
+
+    try:
+        u = urlparse(link)
+        host = (u.netloc or "").lower().split(":", 1)[0]
+        if host not in {"meli.la", "www.meli.la"}:
+            return None
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        response = requests.get(link, headers=headers, timeout=12, allow_redirects=True)
+
+        # Primeiro tenta todas as URLs do redirecionamento, da última para a primeira.
+        urls = [getattr(response, "url", "")]
+        for hist in reversed(getattr(response, "history", []) or []):
+            loc = hist.headers.get("Location") or hist.headers.get("location") or ""
+            if loc:
+                urls.append(loc)
+            urls.append(getattr(hist, "url", ""))
+        for url in urls:
+            item_id = from_url(url)
+            if item_id:
+                return item_id
+
+        # Último recurso: procura o item_id no HTML da página de destino.
+        html = response.text or ""
+        patterns = [
+            r"[\"']item_id[\"']\s*[:=]\s*[\"'](MLB\d+)",
+            r"item_id(?:%3A|:)\s*(MLB\d+)",
+            r"(?:wid|itemId|item_id)[=\"':]+(MLB\d+)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, html, re.I)
+            if m:
+                return m.group(1).upper()
+    except Exception as exc:
+        print("[AFILIADO RESOLVE]", repr(exc))
+
+    return None
+
+
 def ad_text(o, affiliate=""):
     """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
@@ -3477,8 +3560,17 @@ def api_preco_atual():
     novamente e usa o valor atual, sem alterar ranking, categorias ou cupons.
     """
     item_id = str(request.args.get("item_id") or "").strip()
+    affiliate_link = str(request.args.get("affiliate_link") or "").strip()
+
+    # Se o usuário colou um link meli.la, resolve o redirecionamento para
+    # descobrir o ITEM exato que o link de afiliado aponta. Isso é essencial
+    # quando o produto do catálogo possui vários vendedores/publicações.
+    resolved_item_id = _extract_item_id_from_affiliate_url(affiliate_link) if affiliate_link else None
+    if resolved_item_id:
+        item_id = resolved_item_id
+
     if not item_id:
-        return jsonify({"ok": False, "erro": "item_id ausente."}), 400
+        return jsonify({"ok": False, "erro": "Não foi possível identificar o ITEM desta oferta."}), 400
 
     data, status, _ = ml_get(f"/items/{item_id}")
     if status != 200 or not isinstance(data, dict):
@@ -3512,14 +3604,25 @@ def api_preco_atual():
     except Exception:
         shipping_cost = None
 
+    pictures = data.get("pictures") or []
+    image = None
+    if isinstance(pictures, list):
+        for picture in pictures:
+            if isinstance(picture, dict):
+                image = picture.get("secure_url") or picture.get("url") or image
+                if image:
+                    break
+
     return jsonify({
         "ok": True,
         "item_id": item_id,
+        "title": data.get("title"),
         "price": round(price, 2),
         "original_price": round(original, 2) if original is not None and original > 0 else None,
         "free_shipping": free,
         "shipping_cost": shipping_cost,
         "permalink": data.get("permalink"),
+        "image": image or data.get("thumbnail"),
     })
 
 
@@ -3797,7 +3900,7 @@ function seller(o,mi,oi){
  <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link de afiliado do Mercado Livre" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
- <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
+ <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
  </div>`;
 }
@@ -3837,22 +3940,26 @@ async function anuncio(id,o){
    }
   }catch(e){}
   if(!affiliateOk){throw new Error('Cole um link de afiliado válido do Mercado Livre antes de gerar o anúncio.');}
-  // Revalida o preço do ITEM real antes de montar o anúncio.
-  // Isso evita publicar um preço antigo que estava no resultado da busca.
-  if(o.item_id){
-   try{
-    const pr=await fetch('/api/preco-atual?item_id='+encodeURIComponent(o.item_id));
-    const pd=await pr.json();
-    if(pr.ok && pd.ok && Number(pd.price)>0){
-     o.price=Number(pd.price);
-     if(pd.original_price) o.original_price=Number(pd.original_price);
-     o.free_shipping=!!pd.free_shipping;
-     if(pd.permalink) o.permalink=pd.permalink;
-    }
-   }catch(e){
-    console.warn('Preço atual não pôde ser revalidado:',e);
+  // Revalida a publicação EXATA apontada pelo link de afiliado.
+  // Se for meli.la, o servidor resolve o redirecionamento e descobre o wid/ITEM.
+  // Isso evita misturar preço de outro vendedor/publicação do mesmo produto.
+  try{
+   const pr=await fetch('/api/preco-atual?item_id='+encodeURIComponent(o.item_id||'')+'&affiliate_link='+encodeURIComponent(affiliate));
+   const pd=await pr.json();
+   if(pr.ok && pd.ok && Number(pd.price)>0){
+    o.item_id=pd.item_id || o.item_id;
+    o.price=Number(pd.price);
+    if(pd.original_price) o.original_price=Number(pd.original_price);
+    o.free_shipping=!!pd.free_shipping;
+    if(pd.permalink) o.permalink=pd.permalink;
+    if(pd.title) o.title=pd.title;
+    if(pd.image) o.image=pd.image;
    }
+  }catch(e){
+   console.warn('Preço/item exato não pôde ser revalidado:',e);
   }
+  window._offerData=window._offerData||{};
+  window._offerData[id]=o;
   const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:affiliate});
   if(o.original_price)p.set('original_price',o.original_price);
   const r=await fetch('/api/gerar-anuncio?'+p);
@@ -3866,7 +3973,7 @@ async function anuncio(id,o){
   alert('❌ '+e.message);
  }
 }
-async function enviarWhatsApp(id,imageEncoded){
+async function enviarWhatsApp(id){
  const el=document.getElementById('ad_'+id);
  const text=el.textContent.trim();
  if(!text){alert('Gere o anúncio primeiro.');return;}
@@ -3875,8 +3982,8 @@ async function enviarWhatsApp(id,imageEncoded){
  b.disabled=true;
  b.textContent='⏳ Enviando...';
  try{
-  let image='';
-  try{image=decodeURIComponent(imageEncoded||'');}catch(e){}
+  const offer=(window._offerData&&window._offerData[id])||{};
+  const image=String(offer.image||'');
   const affiliate=document.getElementById('aff_'+id).value.trim();
   const r=await fetch('/api/enviar-whatsapp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,image,affiliate_link:affiliate})});
   const d=await r.json();
