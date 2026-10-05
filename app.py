@@ -64,6 +64,24 @@ COUPON_SOURCE_URLS = [
 MIN_PRODUCT_PRICE = 69.90
 
 # ============================================================
+# FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
+# ============================================================
+# Somente anúncios que comprovem, no recurso /items do Mercado Livre:
+# - Mercado Envios Full (logistic_type=fulfillment);
+# - vendedor MercadoLíder Gold ou Platinum;
+# - pelo menos 100 vendas no próprio anúncio.
+# A posição em Mais Vendidos, tendências e buscas continua sendo usada
+# para ordenar os aprovados; estes três requisitos abaixo são eliminatórios.
+MIN_ITEM_SOLD_QUANTITY = 100
+ALLOWED_POWER_SELLER_STATUS = {"gold", "platinum"}
+REQUIRE_FULL_LOGISTICS = True
+
+_ITEM_QUALITY_CACHE = {}
+_ITEM_QUALITY_CACHE_LOCK = threading.Lock()
+_SELLER_QUALITY_CACHE = {}
+_SELLER_QUALITY_CACHE_LOCK = threading.Lock()
+
+# ============================================================
 # CATÁLOGO AUTOMÁTICO
 # ============================================================
 
@@ -623,6 +641,8 @@ def _build_item_from_buy_box(bb):
         "listing_type_id": bb.get("listing_type_id"),
         "free_shipping": free,
         "shipping_cost": cost,
+        "logistic_type": shipping.get("logistic_type") or bb.get("logistic_type"),
+        "shipping_mode": shipping.get("mode") or bb.get("shipping_mode"),
         "permalink": bb.get("permalink"),
         "user_product_id": bb.get("user_product_id"),
         "sold_quantity": bb.get("sold_quantity") or bb.get("sales") or 0,
@@ -685,7 +705,10 @@ def normalize_item(x):
         "price":x.get("price"), "original_price":x.get("original_price"),
         "condition":x.get("condition"), "listing_type_id":x.get("listing_type_id"),
         "free_shipping":free, "shipping_cost":cost,
-        "permalink":x.get("permalink"), "user_product_id":x.get("user_product_id")
+        "logistic_type":sh.get("logistic_type"),
+        "shipping_mode":sh.get("mode"),
+        "permalink":x.get("permalink"), "user_product_id":x.get("user_product_id"),
+        "sold_quantity":x.get("sold_quantity") or x.get("sales") or 0,
     }
 
 # ============================================================
@@ -1018,7 +1041,7 @@ def get_public_coupon_cards_cached(ttl=600):
     return list(cards or [])
 
 
-def choose_best_coupon(title, price, public_cards=None, item_id=None, allow_fallback=True):
+def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=None, allow_fallback=True):
     """Escolhe somente cupons com associação pública ao produto.
 
     IMPORTANTE: não aplicamos mais um cupom genérico só porque o preço
@@ -1033,7 +1056,7 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, allow_fall
     if not public_cards:
         return None
 
-    matched = match_public_coupon(title, price, public_cards, item_id, allow_fallback=allow_fallback)
+    matched = match_public_coupon(title, price, public_cards, item_id, permalink=permalink, allow_fallback=allow_fallback)
     if not matched:
         return None
 
@@ -1278,13 +1301,13 @@ PUBLIC_PRODUCT_COUPON_CACHE = {}
 PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
 
 
-def _search_public_listing_for_coupon(title, price, item_id=None):
-    """Fallback por busca pública do Mercado Livre.
+def _search_public_listing_for_coupon(title, price, item_id=None, permalink=None):
+    """Fallback por busca/anúncio público do Mercado Livre.
 
-    É usado quando a página geral de cupons não entregou o card. A busca é
-    pública e o cupom só é aceito se o resultado tiver forte semelhança com o
-    produto e preço compatível. Assim evitamos transformar cupom genérico em
-    cupom aplicável.
+    A página geral de cupons pode chegar sem os cards para IPs de nuvem.
+    Nesse caso consultamos o anúncio específico (quando temos permalink) e,
+    em seguida, a busca pública pelo título. Só aceitamos cupom quando o
+    resultado também combina fortemente com título e preço do produto.
     """
     key = f"{norm(title)}|{round(float(price or 0),2)}"
     with PUBLIC_PRODUCT_COUPON_LOCK:
@@ -1295,35 +1318,60 @@ def _search_public_listing_for_coupon(title, price, item_id=None):
     if not slug:
         return None
 
-    url = "https://lista.mercadolivre.com.br/" + quote(slug)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
+    urls = []
+    if permalink and str(permalink).startswith("http"):
+        urls.append(str(permalink))
+    urls.append("https://lista.mercadolivre.com.br/" + quote(slug))
+
+    headers_list = [
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Referer": "https://www.mercadolivre.com.br/",
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": "https://www.mercadolivre.com.br/",
+        },
+    ]
+
     result = None
     try:
-        r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
-        if r.status_code == 200:
-            text = normalize_coupon_html(r.text)
-            cards = _extract_public_coupon_cards_from_text(text, r.url or url)
-            best = None
-            best_score = 0
-            for card in cards:
-                sim = title_similarity(title, card["title"])
-                diff = abs(float(price) - float(card["price"]))
-                tolerance = max(15.0, float(price) * 0.18)
-                if diff <= tolerance:
-                    sim += 0.18
-                if sim > best_score:
-                    best_score = sim
-                    best = card
-            if best is not None and best_score >= 0.82:
-                result = dict(best["coupon"])
-                result["match_score"] = round(best_score, 3)
-                result["public_title"] = best["title"]
-                result["public_price"] = best["price"]
-                result["source_url"] = best["source_url"]
+        for url in urls:
+            for headers in headers_list:
+                try:
+                    r = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+                except Exception:
+                    continue
+                if r.status_code != 200 or len(r.text or "") < 500:
+                    continue
+
+                text = normalize_coupon_html(r.text)
+                cards = _extract_public_coupon_cards_from_text(text, r.url or url)
+                best = None
+                best_score = 0
+                for card in cards:
+                    sim = title_similarity(title, card["title"])
+                    diff = abs(float(price) - float(card["price"]))
+                    tolerance = max(15.0, float(price) * 0.18)
+                    if diff <= tolerance:
+                        sim += 0.18
+                    if sim > best_score:
+                        best_score = sim
+                        best = card
+
+                if best is not None and best_score >= 0.82:
+                    result = dict(best["coupon"])
+                    result["match_score"] = round(best_score, 3)
+                    result["public_title"] = best["title"]
+                    result["public_price"] = best["price"]
+                    result["source_url"] = best["source_url"]
+                    with PUBLIC_PRODUCT_COUPON_LOCK:
+                        PUBLIC_PRODUCT_COUPON_CACHE[key] = result
+                    return result
     except Exception as e:
         print("[CUPOM BUSCA PÚBLICA]", repr(e))
 
@@ -1390,7 +1438,7 @@ def title_similarity(a, b):
 STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","um","uma","original","novo","oficial"}
 
 
-def match_public_coupon(title, price, cards, item_id=None, allow_fallback=True):
+def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow_fallback=True):
     best = None
     best_score = 0
     for card in cards or []:
@@ -1409,7 +1457,7 @@ def match_public_coupon(title, price, cards, item_id=None, allow_fallback=True):
         # Pode ser desativada em varreduras automáticas para evitar uma
         # sequência de requisições lentas a cada rodada.
         if allow_fallback:
-            fallback = _search_public_listing_for_coupon(title, price, item_id)
+            fallback = _search_public_listing_for_coupon(title, price, item_id, permalink)
             return fallback
         return None
     c = dict(best["coupon"])
@@ -1764,6 +1812,166 @@ def _search_category(cat):
     return out
 
 
+def _get_item_quality(item_id):
+    """Lê o anúncio real para validar Full + vendas antes de exibir."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None
+    with _ITEM_QUALITY_CACHE_LOCK:
+        if item_id in _ITEM_QUALITY_CACHE:
+            return _ITEM_QUALITY_CACHE[item_id]
+
+    data, status, _ = ml_get(f"/items/{item_id}")
+    if status != 200 or not isinstance(data, dict):
+        result = None
+    else:
+        shipping = data.get("shipping") or {}
+        if not isinstance(shipping, dict):
+            shipping = {}
+        sold = data.get("sold_quantity")
+        try:
+            sold = int(float(sold or 0))
+        except Exception:
+            sold = 0
+        result = {
+            "item_id": data.get("id") or item_id,
+            "seller_id": data.get("seller_id"),
+            "sold_quantity": sold,
+            "logistic_type": shipping.get("logistic_type"),
+            "shipping_mode": shipping.get("mode"),
+            "free_shipping": bool(shipping.get("free_shipping")),
+            "price": data.get("price"),
+            "original_price": data.get("original_price"),
+            "permalink": data.get("permalink"),
+            "condition": data.get("condition"),
+            "listing_type_id": data.get("listing_type_id"),
+        }
+
+    with _ITEM_QUALITY_CACHE_LOCK:
+        _ITEM_QUALITY_CACHE[item_id] = result
+    return result
+
+
+def _get_seller_quality(seller_id):
+    """Lê a reputação pública do vendedor e identifica Gold/Platinum."""
+    sid = str(seller_id or "").strip()
+    if not sid:
+        return None
+    with _SELLER_QUALITY_CACHE_LOCK:
+        if sid in _SELLER_QUALITY_CACHE:
+            return _SELLER_QUALITY_CACHE[sid]
+
+    data, status, _ = ml_get(f"/users/{sid}")
+    if status != 200 or not isinstance(data, dict):
+        result = None
+    else:
+        rep = data.get("seller_reputation") or {}
+        status_name = str(rep.get("power_seller_status") or "").strip().lower()
+        # A documentação do Mercado Livre identifica Gold/Platinum em
+        # seller_reputation.power_seller_status.
+        result = {
+            "seller_id": data.get("id") or sid,
+            "power_seller_status": status_name or None,
+            "level_id": rep.get("level_id"),
+            "completed_sales": ((rep.get("transactions") or {}).get("completed") or 0),
+            "seller_nickname": data.get("nickname"),
+        }
+
+    with _SELLER_QUALITY_CACHE_LOCK:
+        _SELLER_QUALITY_CACHE[sid] = result
+    return result
+
+
+def _approve_real_item(item_id, base_item=None):
+    """Valida um item específico contra os três critérios eliminatórios."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None
+
+    real = _get_item_quality(item_id)
+    if not real:
+        return None
+
+    seller_id = real.get("seller_id") or (base_item or {}).get("seller_id")
+    seller = _get_seller_quality(seller_id)
+    if not seller:
+        return None
+
+    sold = int(real.get("sold_quantity") or 0)
+    logistic = str(real.get("logistic_type") or "").strip().lower()
+    power = str(seller.get("power_seller_status") or "").strip().lower()
+
+    if REQUIRE_FULL_LOGISTICS and logistic != "fulfillment":
+        return None
+    if power not in ALLOWED_POWER_SELLER_STATUS:
+        return None
+    if sold < MIN_ITEM_SOLD_QUANTITY:
+        return None
+
+    approved = dict(base_item or {})
+    approved.update({
+        "item_id": real.get("item_id") or item_id,
+        "seller_id": seller_id,
+        "sold_quantity": sold,
+        "logistic_type": logistic,
+        "shipping_mode": real.get("shipping_mode"),
+        "free_shipping": bool(real.get("free_shipping")),
+        "price": real.get("price") if real.get("price") is not None else approved.get("price"),
+        "original_price": real.get("original_price") if real.get("original_price") is not None else approved.get("original_price"),
+        "permalink": real.get("permalink") or approved.get("permalink"),
+        "condition": real.get("condition") or approved.get("condition"),
+        "listing_type_id": real.get("listing_type_id") or approved.get("listing_type_id"),
+        "seller_status": power,
+        "seller_level_id": seller.get("level_id"),
+        "seller_completed_sales": seller.get("completed_sales") or 0,
+        "seller_nickname": seller.get("seller_nickname"),
+        "quality_validated": True,
+    })
+    return approved
+
+
+def validate_high_turnover_item(item, product_id=None):
+    """Validação eliminatória: Full + Gold/Platinum + >=100 vendas.
+
+    Se a publicação escolhida pelo catálogo não passar, procura outras
+    publicações do mesmo produto antes de descartar o produto inteiro.
+    Isso é importante porque um mesmo produto pode ter vários vendedores.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    approved = _approve_real_item(item.get("item_id"), item)
+    if approved:
+        return approved
+
+    pid = str(product_id or "").strip()
+    if not pid:
+        return None
+
+    try:
+        candidates = product_items(pid)
+    except Exception as exc:
+        print("[FILTRO ALTO GIRO] alternativas", pid, repr(exc))
+        candidates = []
+
+    checked = {str(item.get("item_id") or "").strip()}
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        cid = str(candidate.get("item_id") or candidate.get("id") or "").strip()
+        if not cid or cid in checked:
+            continue
+        checked.add(cid)
+        normalized = normalize_item(candidate)
+        if not normalized:
+            continue
+        approved = _approve_real_item(cid, normalized)
+        if approved:
+            return approved
+
+    return None
+
+
 def _fetch_product_fast(pid, raw=None, base=None):
     base = base or {"category_id": None, "category_name": None, "query": ""}
     cache_key = str(pid)
@@ -1829,6 +2037,8 @@ def _fetch_product_fast(pid, raw=None, base=None):
                 "condition": raw.get("condition"),
                 "free_shipping": bool(raw.get("free_shipping")),
                 "shipping_cost": raw.get("shipping_cost"),
+                "logistic_type": raw.get("logistic_type"),
+                "shipping_mode": raw.get("shipping_mode"),
                 "permalink": raw.get("permalink"),
                 "sold_quantity": raw.get("sold_quantity") or 0,
             }
@@ -1942,7 +2152,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         per_cat[cat] = per_cat.get(cat, 0) + 1
 
     for row in candidates:
-        if len(shortlist) >= 90:
+        if len(shortlist) >= 150:
             break
         if row[1] in used:
             continue
@@ -1996,8 +2206,31 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             except Exception as e:
                 print("[ENRIQUECIMENTO]", pid, repr(e))
 
+    # Validação definitiva no anúncio real. Só produtos aprovados passam
+    # para a lista final: Full + MercadoLíder Gold/Platinum + >=100 vendas.
+    validated = []
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        fmap = {}
+        for result, cat, ds0, source_query in fetched:
+            try:
+                pid_for_validation, _, item, _ = result
+                fmap[ex.submit(validate_high_turnover_item, item, pid_for_validation)] = (result, cat, ds0, source_query)
+            except Exception:
+                continue
+        for fut in as_completed(fmap):
+            result, cat, ds0, source_query = fmap[fut]
+            try:
+                approved_item = fut.result()
+                if approved_item:
+                    pid, p, _, base = result
+                    validated.append(((pid, p, approved_item, base), cat, ds0, source_query))
+            except Exception as e:
+                print("[FILTRO ALTO GIRO]", repr(e))
+
+    print(f"[FILTRO ALTO GIRO] candidatos={len(fetched)} aprovados={len(validated)}")
+
     offers = []
-    for result, cat, ds0, source_query in fetched:
+    for result, cat, ds0, source_query in validated:
         try:
             pid, p, item, base = result
             title = p.get("name") or p.get("title") or pid
@@ -2067,7 +2300,14 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "total_price": total_price,
                 "relevance_score": rel,
                 "sold_quantity": item.get("sold_quantity") or 0,
-                "giro_score": 0,
+                "logistic_type": item.get("logistic_type") or "fulfillment",
+                "shipping_mode": item.get("shipping_mode"),
+                "seller_status": item.get("seller_status"),
+                "seller_level_id": item.get("seller_level_id"),
+                "seller_completed_sales": item.get("seller_completed_sales") or 0,
+                "seller_nickname": item.get("seller_nickname"),
+                "quality_validated": bool(item.get("quality_validated")),
+                "giro_score": min(1000, float(item.get("sold_quantity") or 0) * 2),
                 "trend_score": ds["trend_score"],
                 "trend_keyword": ds["trend_keyword"],
                 "trend_bucket": ds["trend_bucket"],
@@ -2097,6 +2337,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     # Demanda vem primeiro. Preço é somente desempate; não é filtro de giro.
     offers.sort(key=lambda o: (
+        -float(o.get("sold_quantity") or 0),
         0 if o.get("appears_both") else 1,
         float(o.get("best_seller_position") or 99),
         -(o.get("trend_score") or 0),
@@ -2116,6 +2357,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         flat.append(arr[0])
 
     flat.sort(key=lambda o: (
+        -float(o.get("sold_quantity") or 0),
         0 if o.get("appears_both") else 1,
         float(o.get("best_seller_position") or 99),
         -(o.get("trend_score") or 0),
@@ -2135,14 +2377,30 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         best_coupon_discount = 0.0
         best_coupon_price = None
 
-        for o in flat:
-            cup = choose_best_coupon(
+        def _coupon_for_offer(o):
+            return o, choose_best_coupon(
                 o.get("title") or "",
                 o.get("price") or 0,
                 public_cards=public_cards,
                 item_id=o.get("item_id"),
-                allow_fallback=False,
+                permalink=o.get("permalink"),
+                allow_fallback=True,
             )
+
+        coupon_results = []
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(_coupon_for_offer, o) for o in flat]
+                for future in as_completed(futures):
+                    try:
+                        coupon_results.append(future.result())
+                    except Exception as exc:
+                        print("[CUPOM PRODUTO] erro no fallback:", repr(exc))
+        except Exception:
+            coupon_results = [_coupon_for_offer(o) for o in flat]
+
+        for o, cup in coupon_results:
             if not cup:
                 continue
 
@@ -2190,6 +2448,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "aparecem nos dois": sum(1 for o in flat if o.get("appears_both")),
         "mais vendidos": sum(1 for o in flat if o.get("best_seller_position") is not None),
         "produtos em alta": sum(1 for o in flat if o.get("trend_score", 0) > 0),
+        "validados alto giro": sum(1 for o in flat if o.get("quality_validated")),
+        "Full": sum(1 for o in flat if str(o.get("logistic_type") or "").lower() == "fulfillment"),
+        "Gold/Platinum": sum(1 for o in flat if str(o.get("seller_status") or "").lower() in {"gold", "platinum"}),
+        "100+ vendas": sum(1 for o in flat if int(o.get("sold_quantity") or 0) >= MIN_ITEM_SOLD_QUANTITY),
         "cupom candidato": coupon_count,
         "cupons com limite": coupon_limit_count,
         "maior desconto estimado": brl(best_coupon_discount),
@@ -3060,7 +3322,7 @@ def buscar_page():
     q=request.args.get("q","").strip()
     if not q:
         return redirect("/")
-    resultado=scan_queries([q], request.args.get("desconto",0))
+    resultado=scan_queries([q], request.args.get("desconto",0), apply_coupons=True)
     t=tokens()
     return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()), resultado=resultado)
 
