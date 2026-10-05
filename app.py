@@ -18,7 +18,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 app = Flask(__name__)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
-TESTE_SOMENTE_PERFUMES = True
+TESTE_SOMENTE_PERFUMES = False
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -1482,39 +1482,147 @@ def public_search_url(query):
     return f"https://lista.mercadolivre.com.br/{encoded}{PUBLIC_SEARCH_FILTERS}_NoIndex_True"
 
 
-def search_real_listings(q, limit=50):
-    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
-    que pode não estar disponível para a consulta.
+def _products_search_to_listing_rows(q, limit=20):
+    """Converte resultados do catálogo em publicações reais quando a busca
+    de anúncios (/sites/MLB/search) estiver bloqueada para o aplicativo.
 
-    O site público pode mostrar "mais vendidos", mas a API só permite os
-    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
-    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
-    Isso evita transformar um parâmetro não suportado em zero resultados.
+    /products/search está funcionando neste aplicativo (HTTP 200). Cada
+    produto é enriquecido pelo catálogo para descobrir o buy_box_winner ou,
+    como segunda opção, uma publicação em /products/{id}/items.
     """
-    base = {
-        "q": str(q or "").strip(),
+    query = str(q or "").strip()
+    lim = min(max(int(limit or 20), 1), 30)
+    data, status, _ = ml_get("/products/search", {
+        "site_id": SITE_ID,
+        "q": query,
         "status": "active",
-        "limit": min(int(limit or 50), 50),
+        "limit": lim,
+        "offset": 0,
+    })
+
+    if status != 200 or not isinstance(data, dict):
+        print(f"[FALLBACK PRODUTOS] {query} -> HTTP {status}")
+        return []
+
+    products = data.get("results") or []
+    print(f"[FALLBACK PRODUTOS] {query} -> {len(products)} produtos de catálogo")
+    rows = []
+    seen_items = set()
+
+    def enrich(raw):
+        if not isinstance(raw, dict):
+            return None
+        pid = str(raw.get("id") or raw.get("product_id") or "").strip()
+        if not pid:
+            return None
+        try:
+            result = _fetch_product_fast(pid, raw, {"category_name": "", "query": query})
+        except Exception as exc:
+            print("[FALLBACK PRODUTOS] enriquecimento", pid, repr(exc))
+            return None
+        if not result:
+            return None
+        _, pdata, item, _ = result
+        if not isinstance(item, dict):
+            return None
+
+        item_id = str(item.get("item_id") or "").strip()
+        if not item_id:
+            return None
+        try:
+            price = float(item.get("price")) if item.get("price") is not None else None
+        except Exception:
+            price = None
+        if price is None or price <= 0:
+            return None
+
+        shipping_cost = item.get("shipping_cost")
+        free = bool(item.get("free_shipping"))
+        seller_id = item.get("seller_id")
+        title = str(
+            pdata.get("name")
+            or pdata.get("title")
+            or raw.get("name")
+            or raw.get("title")
+            or pid
+        ).strip()
+
+        image = _extract_image_url(pdata) or _extract_image_url(raw)
+        return {
+            "id": item_id,
+            "item_id": item_id,
+            "title": title,
+            "name": title,
+            "price": price,
+            "original_price": item.get("original_price"),
+            "regular_price": item.get("original_price"),
+            "seller_id": seller_id,
+            "seller": {"id": seller_id} if seller_id else {},
+            "shipping": {
+                "free_shipping": free,
+                "cost": 0 if free else shipping_cost,
+                "logistic_type": item.get("logistic_type"),
+                "mode": item.get("shipping_mode"),
+            },
+            "sold_quantity": item.get("sold_quantity") or 0,
+            "permalink": item.get("permalink") or raw.get("permalink"),
+            "thumbnail": image or raw.get("thumbnail"),
+            "pictures": pdata.get("pictures") or raw.get("pictures") or [],
+            "product_id": pid,
+        }
+
+    # Paraleliza o enriquecimento para não tornar a busca desnecessariamente lenta.
+    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(products)))) as ex:
+        futures = [ex.submit(enrich, raw) for raw in products]
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+            except Exception as exc:
+                print("[FALLBACK PRODUTOS] erro", repr(exc))
+                continue
+            if not row:
+                continue
+            iid = str(row.get("id") or "").strip()
+            if not iid or iid in seen_items:
+                continue
+            seen_items.add(iid)
+            rows.append(row)
+
+    print(f"[FALLBACK PRODUTOS] {query} -> {len(rows)} anúncios derivados do catálogo")
+    return rows
+
+
+def search_real_listings(q, limit=50):
+    """Busca anúncios reais.
+
+    Primeiro tenta /sites/MLB/search. Esse endpoint está retornando 403 para
+    este aplicativo, então, sem alterar os filtros ou as categorias, fazemos
+    fallback automático para /products/search, que está retornando 200, e
+    transformamos os produtos de catálogo em publicações através do buy box
+    ou de /products/{id}/items.
+    """
+    query = str(q or "").strip()
+    lim = min(max(int(limit or 50), 1), 50)
+    base = {
+        "q": query,
+        "status": "active",
+        "limit": lim,
         "offset": 0,
     }
 
-    attempts = [
-        base,
-        {**base, "shipping_cost": "free"},
-        {**base, "condition": "new"},
-    ]
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", base)
+    if status == 200 and isinstance(data, dict):
+        results = data.get("results") or []
+        print(f"[BUSCA ANUNCIOS] {query} -> {len(results)} anúncios")
+        if results:
+            return results
+    else:
+        print(f"[BUSCA ANUNCIOS] {query} -> HTTP {status}; usando /products/search")
 
-    for n, params in enumerate(attempts, start=1):
-        data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
-        if status == 200 and isinstance(data, dict):
-            results = data.get("results") or []
-            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
-            if results:
-                return results
-        else:
-            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
-
-    return []
+    # O fallback é propositalmente usado somente quando a busca de anúncios
+    # falha/vem vazia. Assim não muda o comportamento das outras categorias
+    # quando o endpoint voltar a funcionar.
+    return _products_search_to_listing_rows(query, limit=min(lim, 20))
 
 
 # ============================================================
@@ -1818,7 +1926,7 @@ ARABIC_PERFUME_TERMS = (
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
     "fragrance", "body splash", "colonia corporal", "colônia corporal",
-    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
+    "spray perfumado", "in the box", "thera cosméticos",
     "thera cosmeticos", "nuancielo", "brand collection",
 )
 PERFUME_EXCLUDED_TERMS = (
