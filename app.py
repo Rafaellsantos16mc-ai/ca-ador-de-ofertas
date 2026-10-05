@@ -1483,28 +1483,38 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca diretamente os anúncios reais, seguindo a estratégia do teste.
+    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
+    que pode não estar disponível para a consulta.
 
-    Equivale à ideia do link público enviado pelo usuário: mais vendidos,
-    produto novo e frete grátis. Não depende de Highlights nem de /products.
+    O site público pode mostrar "mais vendidos", mas a API só permite os
+    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
+    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
+    Isso evita transformar um parâmetro não suportado em zero resultados.
     """
-    params = {
-        "q": q,
+    base = {
+        "q": str(q or "").strip(),
         "status": "active",
         "limit": min(int(limit or 50), 50),
         "offset": 0,
-        "sort": "sold_quantity_desc",
-        "shipping_cost": "free",
-        "condition": "new",
     }
-    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
-    if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | {data}")
-        return []
 
-    results = data.get("results") or []
-    print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios")
-    return results
+    attempts = [
+        base,
+        {**base, "shipping_cost": "free"},
+        {**base, "condition": "new"},
+    ]
+
+    for n, params in enumerate(attempts, start=1):
+        data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
+        if status == 200 and isinstance(data, dict):
+            results = data.get("results") or []
+            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
+            if results:
+                return results
+        else:
+            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
+
+    return []
 
 
 # ============================================================
@@ -1874,7 +1884,7 @@ def _search_arabic_perfumes():
 
     for q in queries:
         # Exclui decant sem alterar o micro-nicho solicitado.
-        search_q = f"{q} -decant"
+        search_q = q
         try:
             rows = search_real_listings(search_q, limit=50)
         except Exception as exc:
@@ -1926,7 +1936,7 @@ def _search_category(cat):
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
-            search_q = f"{q} -decant"
+            search_q = q
             print("[BUSCA PUBLICA EQUIVALENTE]", public_search_url(q))
             try:
                 rows = search_real_listings(search_q, limit=50)
@@ -2530,7 +2540,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         seen_direct = set()
         for cat in categories:
             for q in CATALOG.get(cat, []):
-                search_q = f"{q} -decant"
+                search_q = q
                 print("[TESTE DIRETO]", cat, "|", search_q)
                 try:
                     rows = search_real_listings(search_q, limit=50)
