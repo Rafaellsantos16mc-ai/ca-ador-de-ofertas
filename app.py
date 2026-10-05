@@ -2025,18 +2025,23 @@ ARABIC_PERFUME_TERMS = (
     "lattafa", "maison alhambra", "afnan",
 )
 
+# Termos permitidos para a categoria de perfumes.
+# Body Splash/Body Mist são permitidos pelo usuário; contratipo NÃO é.
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
-    "fragrance", "body splash", "colonia corporal", "colônia corporal",
-    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
-    "thera cosmeticos", "nuancielo", "brand collection",
+    "fragrance", "body splash", "body mist", "colonia corporal", "colônia corporal",
+    "deo colônia", "deo colonia", "desodorante colônia", "desodorante colonia",
+    "spray perfumado",
 )
+
+# Itens que não devem entrar como perfume.
 PERFUME_EXCLUDED_TERMS = (
+    "contratipo", "refil", "refill", "amostra", "decant", "decante", "miniatura",
+    "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
     "perfume para gato", "colonia pet", "colônia pet", "perfume cachorro",
     "perfume gato", "colonia cachorro", "colônia cachorro", "colonia gato",
-    "colônia gato", "refil", "refill", "amostra", "decant", "miniatura",
-    "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
+    "colônia gato",
 )
 
 
@@ -2046,7 +2051,12 @@ def _is_real_perfume(title):
         return False
     if any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
         return False
-    return any(norm(term) in text for term in PERFUME_POSITIVE_TERMS)
+
+    # Perfumes, EDP/EDT, Body Splash, Body Mist e colônias entram.
+    if any(norm(term) in text for term in PERFUME_POSITIVE_TERMS):
+        return True
+
+    return False
 
 def _is_arabic_perfume(title):
     text = norm(title or "")
