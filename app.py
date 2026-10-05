@@ -2346,8 +2346,8 @@ def whatsapp_image(filename):
 # ============================================================
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-AUTO_WHATSAPP_INTERVAL = 900  # 15 minutos
-AUTO_WHATSAPP_LIMIT = max(1, int(os.getenv("AUTO_WHATSAPP_LIMIT", "3") or 3))
+AUTO_WHATSAPP_INTERVAL = 300  # 5 minutos
+AUTO_WHATSAPP_LIMIT = 1  # exatamente 1 oferta por rodada
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
@@ -2358,24 +2358,9 @@ def _whatsapp_send_text(text, image_url=""):
         return False, "WHATSAPP_BOT_URL não configurada."
     if not WHATSAPP_BOT_KEY:
         return False, "WHATSAPP_BOT_KEY não configurada."
-    print(
-        "[AUTO WHATSAPP] Início do envio | "
-        f"texto={len(str(text or ''))} caracteres | "
-        f"imagem_original={'SIM' if image_url else 'NÃO'}"
-    )
-
     prepared_image = gerar_imagem_natural_whatsapp(
         image_url,
         text,
-    )
-
-    print(
-        "[AUTO WHATSAPP] Imagem preparada:",
-        prepared_image[:500] if prepared_image else "(sem imagem)"
-    )
-    print(
-        "[AUTO WHATSAPP] Enviando para Bot:",
-        f"{WHATSAPP_BOT_URL}/api/send-offer"
     )
 
     try:
@@ -2388,13 +2373,7 @@ def _whatsapp_send_text(text, image_url=""):
             json={"text": text, "image": prepared_image},
             timeout=150,
         )
-        print(
-            "[AUTO WHATSAPP] Resposta do Bot:",
-            response.status_code,
-            response.text[:1000]
-        )
     except requests.RequestException as exc:
-        print("[AUTO WHATSAPP] Falha de comunicação:", repr(exc))
         return False, f"Falha de comunicação: {exc}"
 
     try:
@@ -2705,24 +2684,9 @@ def api_enviar_whatsapp():
             "erro": "O anúncio está vazio."
         }), 400
 
-    print(
-        "[WHATSAPP] Início do envio | "
-        f"texto={len(text)} caracteres | "
-        f"imagem_original={'SIM' if image else 'NÃO'}"
-    )
-
     prepared_image = gerar_imagem_natural_whatsapp(
         image,
         text,
-    )
-
-    print(
-        "[WHATSAPP] Imagem preparada:",
-        prepared_image[:500] if prepared_image else "(sem imagem)"
-    )
-    print(
-        "[WHATSAPP] Enviando para Bot:",
-        f"{WHATSAPP_BOT_URL}/api/send-offer"
     )
 
     try:
@@ -2734,11 +2698,6 @@ def api_enviar_whatsapp():
             },
             json={"text": text, "image": prepared_image},
             timeout=150,
-        )
-        print(
-            "[WHATSAPP] Resposta do Bot:",
-            response.status_code,
-            response.text[:1000]
         )
     except requests.RequestException as exc:
         print("[WHATSAPP] Falha de comunicação:", repr(exc))
