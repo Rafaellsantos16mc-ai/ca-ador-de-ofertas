@@ -995,7 +995,30 @@ def best_coupon(price):
             choices.append(x)
     return max(choices, key=lambda x:(x["desconto_estimado"],x["percentual_efetivo"],-(float(x.get("min_purchase") or 0))), default=None)
 
-def choose_best_coupon(title, price, public_cards=None, item_id=None):
+PUBLIC_COUPON_CARDS_CACHE = {"at": 0.0, "cards": []}
+PUBLIC_COUPON_CARDS_CACHE_LOCK = threading.Lock()
+
+
+def get_public_coupon_cards_cached(ttl=600):
+    """Carrega os cards públicos de cupom no máximo uma vez a cada 10 minutos."""
+    now = time.time()
+    with PUBLIC_COUPON_CARDS_CACHE_LOCK:
+        if now - float(PUBLIC_COUPON_CARDS_CACHE.get("at") or 0) < ttl:
+            return list(PUBLIC_COUPON_CARDS_CACHE.get("cards") or [])
+
+    try:
+        cards = public_coupon_product_cards()
+    except Exception as exc:
+        print("[CUPOM PRODUTO] Erro ao carregar cards:", repr(exc))
+        cards = []
+
+    with PUBLIC_COUPON_CARDS_CACHE_LOCK:
+        PUBLIC_COUPON_CARDS_CACHE["at"] = time.time()
+        PUBLIC_COUPON_CARDS_CACHE["cards"] = list(cards or [])
+    return list(cards or [])
+
+
+def choose_best_coupon(title, price, public_cards=None, item_id=None, allow_fallback=True):
     """Escolhe somente cupons com associação pública ao produto.
 
     IMPORTANTE: não aplicamos mais um cupom genérico só porque o preço
@@ -1010,7 +1033,7 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None):
     if not public_cards:
         return None
 
-    matched = match_public_coupon(title, price, public_cards, item_id)
+    matched = match_public_coupon(title, price, public_cards, item_id, allow_fallback=allow_fallback)
     if not matched:
         return None
 
@@ -1350,7 +1373,7 @@ def title_similarity(a, b):
 STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","um","uma","original","novo","oficial"}
 
 
-def match_public_coupon(title, price, cards, item_id=None):
+def match_public_coupon(title, price, cards, item_id=None, allow_fallback=True):
     best = None
     best_score = 0
     for card in cards or []:
@@ -1366,8 +1389,12 @@ def match_public_coupon(title, price, cards, item_id=None):
             best = card
     if best is None or best_score < 0.78:
         # Segunda fonte: busca pública do próprio Mercado Livre.
-        fallback = _search_public_listing_for_coupon(title, price, item_id)
-        return fallback
+        # Pode ser desativada em varreduras automáticas para evitar uma
+        # sequência de requisições lentas a cada rodada.
+        if allow_fallback:
+            fallback = _search_public_listing_for_coupon(title, price, item_id)
+            return fallback
+        return None
     c = dict(best["coupon"])
     c["match_score"] = round(best_score, 3)
     c["public_title"] = best["title"]
@@ -2081,6 +2108,52 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     ))
     flat = flat[:30]
 
+    # Cupons só entram na automação quando explicitamente solicitados.
+    # Usamos os cards públicos associados ao produto; não aplicamos cupom
+    # genérico apenas por faixa de preço.
+    if apply_coupons and flat:
+        public_cards = get_public_coupon_cards_cached()
+        coupon_count = 0
+        coupon_limit_count = 0
+        best_coupon_discount = 0.0
+        best_coupon_price = None
+
+        for o in flat:
+            cup = choose_best_coupon(
+                o.get("title") or "",
+                o.get("price") or 0,
+                public_cards=public_cards,
+                item_id=o.get("item_id"),
+                allow_fallback=False,
+            )
+            if not cup:
+                continue
+
+            d = float(cup.get("desconto_estimado") or 0)
+            if d <= 0:
+                continue
+
+            o["cupom"] = cup
+            o["desconto_cupom"] = round(d, 2)
+            o["percentual_cupom_efetivo"] = round((d / float(o.get("price") or 1)) * 100, 2)
+            o["cupom_match"] = cup.get("match_type") or "produto_publico"
+            o["cupom_uso_limite"] = cup.get("usage_limit")
+            o["preco_com_cupom"] = max(0, round(float(o.get("price") or 0) - d, 2))
+            coupon_count += 1
+            if cup.get("max_discount"):
+                coupon_limit_count += 1
+            if d > best_coupon_discount:
+                best_coupon_discount = d
+            if best_coupon_price is None or o["preco_com_cupom"] < best_coupon_price:
+                best_coupon_price = o["preco_com_cupom"]
+
+        print(f"[CUPONS AUTO] cards={len(public_cards)} produtos_com_cupom={coupon_count}")
+    else:
+        coupon_count = 0
+        coupon_limit_count = 0
+        best_coupon_discount = 0.0
+        best_coupon_price = None
+
     models = []
     for o in flat:
         models.append({
@@ -2100,13 +2173,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "aparecem nos dois": sum(1 for o in flat if o.get("appears_both")),
         "mais vendidos": sum(1 for o in flat if o.get("best_seller_position") is not None),
         "produtos em alta": sum(1 for o in flat if o.get("trend_score", 0) > 0),
-        "cupom candidato": 0,
-        "cupons com limite": 0,
-        "maior desconto estimado": brl(0),
-        "menor preço com cupom": "—",
+        "cupom candidato": coupon_count,
+        "cupons com limite": coupon_limit_count,
+        "maior desconto estimado": brl(best_coupon_discount),
+        "menor preço com cupom": brl(best_coupon_price) if best_coupon_price is not None else "—",
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
-        "produtos sem cupom": len(flat),
+        "produtos sem cupom": max(0, len(flat) - coupon_count),
         "modo": "mais procurados + mais vendidos — múltiplas buscas por categoria",
     }
     print(f"[RESULTADO] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
@@ -2482,7 +2555,7 @@ def executar_caca_automatica():
 
     try:
         print("[AUTO WHATSAPP] Iniciando nova caça automática...")
-        result = scan_queries(list(CATALOG.keys()), apply_coupons=False)
+        result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
         publish = _whatsapp_publish_scan(result)
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
