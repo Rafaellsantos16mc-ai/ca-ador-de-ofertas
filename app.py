@@ -1488,36 +1488,70 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
-    que pode não estar disponível para a consulta.
+    """Busca anúncios REAIS do Mercado Livre.
 
-    O site público pode mostrar "mais vendidos", mas a API só permite os
-    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
-    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
-    Isso evita transformar um parâmetro não suportado em zero resultados.
+    Esta é a correção principal do teste de perfumes.
+
+    O endpoint /sites/MLB/search é uma busca pública de anúncios. A versão
+    anterior dependia exclusivamente de ml_get(), que exige OAuth; quando o
+    token estava expirado/bloqueado, a função recebia 401 e transformava tudo
+    em [] mesmo com a busca pública funcionando.
+
+    Agora fazemos:
+      1. tentativa autenticada;
+      2. tentativa pública sem token;
+      3. só usamos o resultado da busca, sem Full/Gold/100 vendas/Buy Box.
     """
-    base = {
-        "q": str(q or "").strip(),
-        "status": "active",
-        "limit": min(int(limit or 50), 50),
+    query = str(q or '').strip()
+    if not query:
+        return []
+
+    lim = min(max(int(limit or 50), 1), 50)
+    params = {
+        "q": query,
+        "limit": lim,
         "offset": 0,
     }
 
-    attempts = [
-        base,
-        {**base, "shipping_cost": "free"},
-        {**base, "condition": "new"},
-    ]
-
-    for n, params in enumerate(attempts, start=1):
+    # 1) API autenticada, se houver token válido.
+    try:
         data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
         if status == 200 and isinstance(data, dict):
-            results = data.get("results") or []
-            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
-            if results:
-                return results
+            rows = data.get("results") or []
+            if rows:
+                print(f"[BUSCA ML AUTENTICADA] {query} -> {len(rows)} anúncios")
+                return rows
+            print(f"[BUSCA ML AUTENTICADA] {query} -> 0 anúncios; tentando pública")
         else:
-            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
+            print(f"[BUSCA ML AUTENTICADA] {query} -> HTTP {status}; tentando pública")
+    except Exception as exc:
+        print(f"[BUSCA ML AUTENTICADA] {query} -> erro {exc!r}; tentando pública")
+
+    # 2) Busca pública direta. Não depende da sessão OAuth do afiliado.
+    try:
+        url = f"{ML_API}/sites/{SITE_ID}/search"
+        r = requests.get(
+            url,
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Caçador de Ofertas; perfume-test)",
+            },
+            timeout=25,
+        )
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+
+        if r.status_code == 200 and isinstance(data, dict):
+            rows = data.get("results") or []
+            print(f"[BUSCA ML PÚBLICA] {query} -> {len(rows)} anúncios")
+            return rows
+
+        print(f"[BUSCA ML PÚBLICA] {query} -> HTTP {r.status_code} | {str(data)[:300]}")
+    except Exception as exc:
+        print(f"[BUSCA ML PÚBLICA] {query} -> erro {exc!r}")
 
     return []
 
@@ -1831,6 +1865,8 @@ PERFUME_EXCLUDED_TERMS = (
     "perfume gato", "colonia cachorro", "colônia cachorro", "colonia gato",
     "colônia gato", "refil", "refill", "amostra", "decant", "miniatura",
     "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
+    "contratipo", "contratipos", "inspirado em", "inspirado no",
+    "inspirada em", "inspirada no", "similar a", "tipo perfume",
 )
 
 
@@ -2481,8 +2517,11 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if price < MIN_PRODUCT_PRICE:
         return None, "preco_detalhe"
 
+    # Não descarte o anúncio só porque o servidor de imagens bloqueou uma
+    # requisição de teste. O próprio Mercado Livre entrega thumbnail/pictures
+    # utilizáveis no navegador. A imagem será exibida diretamente no front.
     if not image:
-        return None, "sem_imagem"
+        image = str(row.get("thumbnail") or row.get("secure_thumbnail") or "").strip()
 
     if not permalink:
         permalink = f"https://www.mercadolivre.com.br/item/{item_id}"
@@ -3287,7 +3326,7 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, progress=55, message="📦 Carregando os 20 mais vendidos de cada categoria...")
         result = scan_queries(queries, apply_coupons=True)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
-        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {len(result.get('ofertas') or [])} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
