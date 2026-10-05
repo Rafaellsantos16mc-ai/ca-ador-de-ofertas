@@ -2536,12 +2536,12 @@ def _valid_item_permalink(item_data, row, item_id):
 
 
 def _direct_perfume_offer_from_listing(row, cat, position, query):
-    """Transforma um resultado de busca em oferta usando o anúncio real.
+    """Transforma diretamente o resultado de /sites/MLB/search em oferta.
 
-    Não aplica filtros comerciais de preço, vendas, Full, reputação ou cupom.
-    A única validação adicional aqui é de integridade: o item precisa ser
-    um anúncio consultável e, quando a API fornece o status, estar ativo.
-    Isso evita mostrar produto sem foto e link que abre como "anúncio indisponível".
+    IMPORTANTE: /sites/MLB/search já devolve publicações ativas. O detalhe
+    /items/{id} é apenas um enriquecimento opcional. Se esse endpoint falhar
+    (401/403/429/erro transitório), NÃO descartamos o anúncio encontrado.
+    Essa era a causa da versão anterior voltar tudo para zero.
     """
     if not isinstance(row, dict):
         return None
@@ -2550,20 +2550,26 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if not item_id:
         return None
 
-    # Sempre consultamos /items. Antes só fazíamos isso quando faltava foto,
-    # então título/preço/permalink podiam vir de um resultado de busca antigo.
-    item_data, item_status = _get_direct_item(item_id)
-    if item_status not in (200, 206):
-        print(f"[ITEM DIRETO] {item_id} -> HTTP {item_status}; ignorado para não gerar link inválido")
-        return None
+    # Começamos pelo próprio resultado da busca, que já contém os dados do
+    # anúncio. O /items é somente um complemento e nunca um filtro eliminatório.
+    item_data = {}
+    item_status = 0
+    try:
+        item_data, item_status = _get_direct_item(item_id)
+        if not isinstance(item_data, dict):
+            item_data = {}
+    except Exception as exc:
+        print(f"[ITEM OPCIONAL] {item_id} -> {exc!r}")
+        item_data = {}
+        item_status = 0
 
-    # Se o Mercado Livre informa explicitamente um estado não ativo, não
-    # colocamos esse anúncio na lista. Isso não é um filtro de qualidade: é
-    # apenas para impedir que o botão "Ver produto" leve a anúncio encerrado.
+    # Se o detalhe informar estado explicitamente, usamos a informação; caso
+    # contrário confiamos no resultado de /sites/MLB/search.
     item_state = str(item_data.get("status") or "").strip().lower()
-    if item_state and item_state != "active":
-        print(f"[ITEM DIRETO] {item_id} -> status={item_state}; ignorado")
-        return None
+    if item_state and item_state not in ("active",):
+        # Não derruba a oferta. O resultado da busca já foi retornado como
+        # publicação ativa; apenas registra para diagnóstico.
+        print(f"[ITEM OPCIONAL] {item_id} -> status={item_state}; usando resultado da busca")
 
     title = str(
         item_data.get("title")
@@ -2595,7 +2601,6 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         row.get("regular_price"),
     ) or None
 
-    # Dados do anúncio real têm prioridade sobre a busca.
     shipping = item_data.get("shipping") if isinstance(item_data.get("shipping"), dict) else {}
     if not shipping:
         shipping = row.get("shipping") if isinstance(row.get("shipping"), dict) else {}
@@ -2604,17 +2609,19 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     if shipping_cost is None and free:
         shipping_cost = 0
 
-    # Imagem: tenta o /items primeiro, depois o resultado da busca.
-    # O helper também reconhece secure_url, url, source e pictures[].
-    image = _resolve_offer_image(
-        item_data, row, row, item_id=item_id
-    )
-
-    # Se o anúncio não tiver nenhuma imagem pública, ainda preservamos a
-    # oferta (para não transformar imagem em filtro comercial), mas ela não
-    # será apresentada como "sem foto": tentamos todas as pictures primeiro.
+    # FOTO: prioriza o anúncio detalhado, mas usa imediatamente a foto que
+    # veio na própria busca. Não fazemos a existência da imagem virar filtro.
+    image = _extract_image_url(item_data) or _extract_image_url(row)
     if not image:
-        print(f"[IMAGEM] {item_id} -> nenhuma URL de imagem disponível")
+        # Alguns resultados trazem thumbnail_id, que permite montar a URL
+        # pública padrão de thumbnail do Mercado Livre.
+        for key in ("secure_thumbnail", "thumbnail", "picture_url"):
+            value = str(row.get(key) or "").strip()
+            if value.startswith(("https://", "http://")):
+                image = value
+                break
+    if not image:
+        print(f"[IMAGEM] {item_id} -> busca/API não forneceu imagem")
 
     seller = item_data.get("seller") if isinstance(item_data.get("seller"), dict) else {}
     if not seller:
@@ -2629,13 +2636,25 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     except Exception:
         sold = 0
 
-    permalink = _valid_item_permalink(item_data, row, item_id)
+    # LINK: usa primeiro o permalink que veio na busca. Só depois tenta o
+    # detalhe /items. Assim um erro no /items não transforma 40 ofertas em 0.
+    permalink = _valid_item_permalink({}, row, item_id)
     if not permalink:
-        print(f"[LINK] {item_id} -> nenhum permalink público encontrado")
-        return None
+        permalink = _valid_item_permalink(item_data, {}, item_id)
+    if not permalink:
+        # Último fallback apenas para IDs MLB numéricos.
+        m = re.fullmatch(r"MLB(\d+)", item_id, re.I)
+        if m:
+            permalink = f"https://produto.mercadolivre.com.br/MLB-{m.group(1)}"
+    if not permalink:
+        print(f"[LINK] {item_id} -> sem permalink; mantendo a oferta sem link")
 
     listing_type = item_data.get("listing_type_id") or row.get("listing_type_id")
-    logistic_type = shipping.get("logistic_type") or item_data.get("shipping", {}).get("logistic_type") if isinstance(item_data.get("shipping"), dict) else shipping.get("logistic_type")
+    logistic_type = shipping.get("logistic_type")
+    if not logistic_type:
+        logistic_type = item_data.get("shipping", {}).get("logistic_type") if isinstance(item_data.get("shipping"), dict) else None
+    if not logistic_type:
+        logistic_type = row.get("logistic_type") or ""
 
     disc = discount(price, original)
     return {
@@ -2651,7 +2670,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "original_price": original,
         "discount": disc,
         "seller_id": seller_id,
-        "condition": item_data.get("item_condition") or item_data.get("condition") or row.get("condition") or "",
+        "condition": item_data.get("item_condition") or item_data.get("condition") or row.get("item_condition") or row.get("condition") or "",
         "free_shipping": free,
         "shipping_cost": shipping_cost,
         "shipping_known": shipping_cost is not None,
@@ -2659,7 +2678,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "relevance_score": 1.0,
         "sold_quantity": sold,
         "logistic_type": logistic_type or "",
-        "shipping_mode": shipping.get("mode"),
+        "shipping_mode": shipping.get("mode") or row.get("shipping_mode"),
         "listing_type_id": listing_type or "",
         "seller_status": None,
         "seller_level_id": None,
