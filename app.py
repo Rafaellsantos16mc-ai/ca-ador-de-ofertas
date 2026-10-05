@@ -3662,14 +3662,14 @@ def e500(e): return jsonify({"erro":"Erro interno no servidor.","detalhes":str(e
 
 
 # ============================================================
-# DIAGNÓSTICO EXTRA — /sites/MLB/search POR SELLER
+# TESTE EXTRA — /users/{USER_ID}/items/search
 # ============================================================
 
-@app.route("/mercadolivre/teste-search-seller")
-def teste_search_seller():
+@app.route("/mercadolivre/teste-user-items")
+def teste_user_items():
     """
-    Testa o mesmo endpoint /sites/MLB/search usando seller_id,
-    sem alterar a lógica normal do Caçador.
+    Testa o endpoint de itens do vendedor usando o token já existente.
+    Não altera a lógica normal do aplicativo.
     """
     try:
         token = access_token()
@@ -3685,8 +3685,8 @@ def teste_search_seller():
             "erro": "Nenhum access token disponível. Conecte o Mercado Livre primeiro.",
         }), 401
 
-    seller_id = "204115657"
-    url = f"{ML_API}/sites/MLB/search"
+    user_id = "204115657"
+    url = f"{ML_API}/users/{user_id}/items/search"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -3696,7 +3696,7 @@ def teste_search_seller():
         r = requests.get(
             url,
             headers=headers,
-            params={"seller_id": seller_id},
+            params={"limit": 10},
             timeout=20,
         )
 
@@ -3706,8 +3706,8 @@ def teste_search_seller():
             data = {"texto": r.text[:2000]}
 
         return jsonify({
-            "teste": "GET /sites/MLB/search?seller_id=204115657",
-            "seller_id": seller_id,
+            "teste": f"GET /users/{user_id}/items/search",
+            "user_id": user_id,
             "status_http": r.status_code,
             "ok": r.ok,
             "resultado": data,
@@ -3715,7 +3715,7 @@ def teste_search_seller():
 
     except Exception as exc:
         return jsonify({
-            "teste": "GET /sites/MLB/search?seller_id=204115657",
+            "teste": f"GET /users/{user_id}/items/search",
             "ok": False,
             "erro": repr(exc),
         }), 500
