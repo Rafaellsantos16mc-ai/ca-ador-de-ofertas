@@ -18,7 +18,7 @@ from flask import Flask, request, redirect, session, jsonify, render_template_st
 app = Flask(__name__)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
-TESTE_SOMENTE_PERFUMES = True
+TESTE_SOMENTE_PERFUMES = False
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -1027,13 +1027,10 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
     O mesmo cupom pode continuar sendo usado em vários produtos quando cada
     produto tiver sua própria associação pública.
     """
-    # Mesmo que a página geral de cupons não retorne cards, ainda tentamos
-    # o fallback por anúncio/busca pública. A versão anterior encerrava aqui
-    # com None e, por isso, 0 cards significava automaticamente 0 cupons.
-    matched = match_public_coupon(
-        title, price, public_cards or [], item_id,
-        permalink=permalink, allow_fallback=allow_fallback
-    )
+    if not public_cards:
+        return None
+
+    matched = match_public_coupon(title, price, public_cards, item_id, permalink=permalink, allow_fallback=allow_fallback)
     if not matched:
         return None
 
@@ -1533,38 +1530,95 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios reais no /sites/MLB/search sem depender de um sort/filter
-    que pode não estar disponível para a consulta.
+    """Busca produtos pelo catálogo e converte em publicações reais.
 
-    O site público pode mostrar "mais vendidos", mas a API só permite os
-    sorts que ela própria informa em available_sorts. Nesta etapa de teste,
-    buscamos primeiro sem sort/filtros restritivos e fazemos os filtros locais.
-    Isso evita transformar um parâmetro não suportado em zero resultados.
+    /sites/MLB/search está retornando 403 para esta aplicação. Portanto,
+    NÃO usamos essa rota para descobrir anúncios. /products/search foi
+    testado com sucesso (HTTP 200) e passa a ser a fonte principal.
     """
-    base = {
-        "q": str(q or "").strip(),
-        "status": "active",
-        "limit": min(int(limit or 50), 50),
-        "offset": 0,
-    }
+    query = str(q or "").strip()
+    lim = min(int(limit or 50), 50)
 
-    attempts = [
-        base,
-        {**base, "shipping_cost": "free"},
-        {**base, "condition": "new"},
-    ]
+    products = search_products_direct(query, limit=lim)
+    if not products:
+        print(f"[BUSCA PRODUTOS] {query} -> 0 produtos")
+        return []
 
-    for n, params in enumerate(attempts, start=1):
-        data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
-        if status == 200 and isinstance(data, dict):
-            results = data.get("results") or []
-            print(f"[BUSCA ANUNCIOS] {q} -> {len(results)} anúncios | tentativa {n}")
-            if results:
-                return results
-        else:
-            print(f"[BUSCA ANUNCIOS] {q} -> HTTP {status} | tentativa {n} | {data}")
+    listings = []
+    seen_items = set()
 
-    return []
+    for product_row in products:
+        if not isinstance(product_row, dict):
+            continue
+        pid = str(product_row.get("id") or product_row.get("product_id") or "").strip()
+        if not pid:
+            continue
+
+        # Primeiro aproveita eventual buy_box_winner já entregue pelo catálogo.
+        candidates = []
+        bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
+        if isinstance(bb, dict):
+            candidates.append(bb)
+
+        # Depois consulta as publicações vinculadas ao produto.
+        try:
+            items = product_items(pid) or []
+        except Exception as exc:
+            print("[BUSCA PRODUTOS] items", pid, repr(exc))
+            items = []
+        candidates.extend(items)
+
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("id") or item.get("item_id") or "").strip()
+            if not iid or iid in seen_items:
+                continue
+
+            price = item.get("price")
+            if price is None:
+                price = item.get("sale_price")
+            try:
+                price = float(price) if price is not None else None
+            except Exception:
+                price = None
+            if price is None or price < MIN_PRODUCT_PRICE:
+                continue
+
+            shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+            pictures = item.get("pictures") or product_row.get("pictures") or []
+            thumbnail = item.get("thumbnail") or product_row.get("thumbnail") or ""
+            seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
+            seller_id = item.get("seller_id") or seller.get("id")
+
+            row = {
+                "id": iid,
+                "item_id": iid,
+                "product_id": pid,
+                "title": item.get("title") or product_row.get("title") or product_row.get("name") or pid,
+                "name": item.get("title") or product_row.get("title") or product_row.get("name") or pid,
+                "permalink": item.get("permalink") or "",
+                "thumbnail": item.get("thumbnail") or thumbnail,
+                "pictures": pictures,
+                "price": price,
+                "original_price": item.get("original_price") or item.get("regular_price"),
+                "seller_id": seller_id,
+                "sold_quantity": item.get("sold_quantity") or 0,
+                "shipping": shipping,
+                "free_shipping": bool(shipping.get("free_shipping") or item.get("free_shipping")),
+                "logistic_type": shipping.get("logistic_type") or item.get("logistic_type"),
+                "condition": item.get("condition") or "new",
+                "product": product_row,
+            }
+            seen_items.add(iid)
+            listings.append(row)
+            if len(listings) >= lim:
+                break
+        if len(listings) >= lim:
+            break
+
+    print(f"[BUSCA PRODUTOS -> PUBLICAÇÕES] {query} -> {len(listings)} anúncios")
+    return listings
 
 
 # ============================================================
@@ -2573,90 +2627,14 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     }
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
-    """Busca somente os 20 mais vendidos de cada categoria.
+    """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Não usa busca por palavras, /products/search, tendências, Full, Gold/Platinum
-    ou mínimo de vendas como filtros eliminatórios. O ranking oficial de
-    Mais Vendidos é a única seleção da busca nesta versão.
+    Para perfumes, a descoberta usa /products/search, que foi validada
+    funcionando para esta aplicação; /sites/MLB/search não é usado.
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
 
-    # TESTE ISOLADO: perfumes usam diretamente /sites/MLB/search.
-    # Isso evita que catálogo/Highlights/Buy Box/qualidade eliminem tudo antes
-    # de sabermos se os micro-nichos realmente retornam anúncios.
-    if TESTE_SOMENTE_PERFUMES and set(categories).issubset({"🌸 Perfumes", "🌙 Perfumes Árabes"}):
-        direct = []
-        seen_direct = set()
-        for cat in categories:
-            for q in CATALOG.get(cat, []):
-                search_q = q
-                print("[TESTE DIRETO]", cat, "|", search_q)
-                try:
-                    rows = search_real_listings(search_q, limit=50)
-                except Exception as exc:
-                    print("[TESTE DIRETO ERRO]", cat, q, repr(exc))
-                    continue
-                accepted = 0
-                for pos, row in enumerate(rows, start=1):
-                    iid = str(row.get("id") or row.get("item_id") or "").strip() if isinstance(row, dict) else ""
-                    if not iid or iid in seen_direct:
-                        continue
-                    offer = _direct_perfume_offer_from_listing(row, cat, pos, q)
-                    if not offer:
-                        continue
-                    seen_direct.add(iid)
-                    direct.append(offer)
-                    accepted += 1
-                    if accepted >= 20:
-                        break
-                print("[TESTE DIRETO ACEITOS]", cat, q, accepted)
-
-        grouped = {cat: [] for cat in categories}
-        for offer in direct:
-            grouped.setdefault(offer["category_name"], []).append(offer)
-        flat = []
-        for cat in categories:
-            arr = grouped.get(cat, [])
-            arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
-            flat.extend(arr[:20])
-        random.shuffle(flat)
-
-        if apply_coupons and flat:
-            try:
-                public_cards = get_public_coupon_cards_cached()
-            except Exception:
-                public_cards = []
-            for offer in flat:
-                try:
-                    offer, coupon = choose_best_coupon(
-                        offer.get("title") or "", offer.get("price") or 0,
-                        public_cards=public_cards,
-                        item_id=offer.get("item_id"),
-                        permalink=offer.get("permalink"),
-                        allow_fallback=True,
-                    )
-                except Exception:
-                    coupon = None
-                if coupon:
-                    offer["cupom"] = coupon
-
-        stats = {
-            "100+ vendas": sum(1 for o in flat if int(o.get("sold_quantity") or 0) >= MIN_ITEM_SOLD_QUANTITY),
-            "Full": sum(1 for o in flat if str(o.get("logistic_type") or "").lower() == "fulfillment"),
-            "Gold/Platinum": 0,
-            "aparecem nos dois": 0,
-            "cupom candidato": sum(1 for o in flat if o.get("cupom")),
-            "cupons com limite": 0,
-            "maior desconto estimado": max([float(o.get("discount") or 0) for o in flat] or [0]),
-            "menor preço com cupom": "—",
-            "menor preço do produto": brl(min([float(o.get("price")) for o in flat] or [0])),
-            "menor total com frete": brl(min([float(o.get("total_price")) for o in flat] or [0])),
-            "produtos sem cupom": sum(1 for o in flat if not o.get("cupom")),
-            "modo": "teste direto /sites/MLB/search por micro-nicho",
-        }
-        print(f"[TESTE DIRETO RESULTADO] {len(flat)} ofertas válidas")
-        return {"stats": stats, "modelos": [], "ofertas": flat}
 
     raw_by_cat = {}
     with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
