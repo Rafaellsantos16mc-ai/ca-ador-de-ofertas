@@ -439,19 +439,31 @@ def access_token():
     return refresh() or t.get("access_token")
 
 def ml_get(path, params=None):
+    """GET no Mercado Livre com recuperação automática de token inválido/expirado."""
     token = access_token()
     if not token:
         return {}, 401, {}
     url = path if path.startswith("http") else ML_API + path
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
     try:
-        r = requests.get(url, headers={"Authorization":f"Bearer {token}","Accept":"application/json"}, params=params, timeout=30)
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        # Se o token armazenado ficou inválido antes do expires_at, renova uma
+        # vez e repete a mesma chamada. Isso evita busca vazia por token antigo.
+        if r.status_code in (401, 403):
+            new_token = refresh()
+            if new_token and new_token != token:
+                headers["Authorization"] = f"Bearer {new_token}"
+                r = requests.get(url, headers=headers, params=params, timeout=30)
         try:
             data = r.json()
         except Exception:
             data = {"message": r.text}
         return data, r.status_code, dict(r.headers)
     except requests.RequestException as e:
-        return {"error":str(e)}, 500, {}
+        return {"error": str(e)}, 500, {}
 
 # ============================================================
 # LOGIN
@@ -1483,26 +1495,114 @@ def public_search_url(query):
 
 
 def search_real_listings(q, limit=50):
-    """Busca anúncios diretamente no /sites/MLB/search.
+    """Busca anúncios reais sem filtros eliminatórios.
 
-    TESTE SEM FILTROS: envia somente a consulta e o limite para a API.
-    Não aplica preço mínimo, frete grátis, condição, vendas, Full,
-    reputação, Buy Box, cupom ou sort.
+    Rota 1: /sites/MLB/search (publicações reais).
+    Rota 2: se a primeira vier vazia, usa /products/search, que já era a
+    rota funcional das versões anteriores, e converte os produtos em suas
+    publicações através de /products/{id}/items.
     """
-    params = {
-        "q": str(q or "").strip(),
-        "limit": min(int(limit or 50), 50),
-        "offset": 0,
-    }
+    query = str(q or "").strip()
+    lim = min(int(limit or 50), 50)
 
-    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", params)
+    # 1) Busca direta de anúncios reais.
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
+        "q": query,
+        "limit": lim,
+        "offset": 0,
+    })
     if status == 200 and isinstance(data, dict):
         results = data.get("results") or []
-        print(f"[BUSCA SEM FILTROS] {q} -> {len(results)} anúncios")
-        return results
+        if results:
+            print(f"[BUSCA DIRETA] {query} -> {len(results)} anúncios reais")
+            return results
+        print(f"[BUSCA DIRETA] {query} -> HTTP 200, mas 0 anúncios")
+    else:
+        print(f"[BUSCA DIRETA] {query} -> HTTP {status} | {data}")
 
-    print(f"[BUSCA SEM FILTROS] {q} -> HTTP {status} | {data}")
-    return []
+    # 2) Fallback para a busca de catálogo que já funcionava no projeto.
+    pdata, pstatus, _ = ml_get("/products/search", {
+        "site_id": SITE_ID,
+        "q": query,
+        "status": "active",
+        "limit": lim,
+        "offset": 0,
+    })
+    if pstatus != 200 or not isinstance(pdata, dict):
+        print(f"[BUSCA FALLBACK] {query} -> HTTP {pstatus} | {pdata}")
+        return []
+
+    products = pdata.get("results") or []
+    print(f"[BUSCA FALLBACK] {query} -> {len(products)} produtos de catálogo")
+    rows, seen_items = [], set()
+
+    for prod in products:
+        if not isinstance(prod, dict):
+            continue
+        pid = str(prod.get("id") or prod.get("product_id") or "").strip()
+        if not pid:
+            continue
+
+        candidates = []
+        bb = prod.get("buy_box_winner") or prod.get("buy_box")
+        if isinstance(bb, dict):
+            candidates.append(bb)
+        try:
+            items = product_items(pid)
+        except Exception as exc:
+            print("[BUSCA FALLBACK] erro items", pid, repr(exc))
+            items = []
+        if isinstance(items, list):
+            candidates.extend(items)
+        if not candidates:
+            candidates.append(prod)
+
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("item_id") or item.get("id") or "").strip()
+            if not item_id or item_id in seen_items:
+                continue
+
+            title = (item.get("title") or item.get("name") or
+                     prod.get("name") or prod.get("title") or pid)
+            price = item.get("price")
+            if price is None:
+                price = item.get("sale_price")
+            if price is None:
+                price = item.get("regular_price")
+            try:
+                price = float(price) if price is not None else 0.0
+            except Exception:
+                price = 0.0
+
+            row = dict(item)
+            row.update({
+                "id": item_id,
+                "item_id": item_id,
+                "title": str(title),
+                "price": price,
+                "original_price": (item.get("original_price") or
+                                   item.get("regular_price") or
+                                   prod.get("original_price")),
+                "permalink": (item.get("permalink") or prod.get("permalink") or
+                              f"https://www.mercadolivre.com.br/p/{item_id}"),
+                "seller": item.get("seller") or {"id": item.get("seller_id") or prod.get("seller_id")},
+                "shipping": item.get("shipping") if isinstance(item.get("shipping"), dict) else {},
+            })
+            if not (row.get("thumbnail") or row.get("secure_thumbnail") or row.get("picture_url")):
+                row["thumbnail"] = (prod.get("thumbnail") or prod.get("secure_thumbnail") or
+                                     prod.get("picture_url") or "")
+            row["_catalog_product_id"] = pid
+            seen_items.add(item_id)
+            rows.append(row)
+            if len(rows) >= lim:
+                break
+        if len(rows) >= lim:
+            break
+
+    print(f"[BUSCA FALLBACK] {query} -> {len(rows)} anúncios recuperados")
+    return rows
 
 
 # ============================================================
