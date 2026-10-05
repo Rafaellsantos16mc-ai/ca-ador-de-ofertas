@@ -40,7 +40,7 @@ WHATSAPP_BOT_KEY = os.getenv("WHATSAPP_BOT_KEY", "").strip()
 # IMAGEM NATURAL PARA WHATSAPP / OPENAI
 # ============================================================
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY = ""  # Desativado: o app usa somente fotos originais do Mercado Livre.
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
 PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL",
@@ -87,78 +87,57 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 
 CATALOG = {
     "📱 Celulares": [
-        "carregador turbo de parede", "carregador turbo", "cabo tipo c reforçado",
-        "cabo lightning reforçado", "cabo reforçado tipo c", "power bank 10000mah",
-        "power bank 20000mah", "bateria portátil 10000mah", "bateria portátil 20000mah",
-        "fone bluetooth tws", "fone tws xiaomi", "fone tws qcy", "fone tws jbl",
-        "capinha silicone anti impacto", "capinha anti impacto transparente",
-        "capinha aveludada anti impacto", "película vidro 3d", "película privacidade",
-        "película 3d privacidade", "kit película vidro"
+        "carregador turbo de parede", "cabo tipo c reforçado", "cabo lightning reforçado",
+        "power bank 10000mah", "power bank 20000mah", "fone bluetooth tws",
+        "fone xiaomi tws", "fone qcy tws", "fone jbl bluetooth",
+        "capinha silicone anti impacto", "película 3d privacidade celular", "kit capinha pelicula atacado",
     ],
     "🌸 Perfumes": [
-        "perfume contratipo nacional", "perfume contratipo importado", "perfume inspirado",
-        "in the box perfume", "thera cosméticos perfume", "nuancielo perfume",
+        "perfume contratipo", "perfume in the box", "perfume thera cosméticos", "perfume nuancielo",
         "brand collection perfume", "perfume importado masculino", "perfume importado feminino",
-        "perfume grife masculino 30ml", "perfume grife feminino 30ml",
-        "perfume grife masculino 50ml", "perfume grife feminino 50ml",
-        "body splash", "body mist", "colônia corporal", "spray perfumado corporal"
+        "perfume 30ml", "perfume 50ml", "body splash", "body mist",
+        "kit perfume shampoo", "kit perfume hidratante", "kit perfume creme",
     ],
     "🌙 Perfumes Árabes": [
-        "perfume árabe", "perfumes árabes", "lattafa", "lattafa asad",
-        "lattafa yara", "maison alhambra", "afnan"
+        "lattafa asad", "lattafa yara", "maison alhambra perfume", "afnan perfume",
+        "lattafa perfume", "maison alhambra perfume feminino", "afnan perfume masculino",
     ],
     "🏋️ Academia": [
-        "creatina monohidratada 300g", "creatina monohidratada", "whey protein concentrado",
-        "growth creatina", "growth whey", "max titanium whey", "integralmédica whey",
-        "garrafa térmica inox", "garrafa inox tipo stanley", "garrafa kouda",
-        "coqueteleira com misturador", "mini band", "faixa elástica treino",
-        "short dupla face", "top sustentação", "camiseta dry fit"
+        "creatina monohidratada 300g", "whey concentrado growth", "whey concentrado max titanium",
+        "whey concentrado integralmédica", "garrafa térmica inox stanley", "garrafa térmica inox kouda",
+        "shaker mixer", "mini bands academia", "short dupla face masculino", "top academia sustentação",
+        "camiseta dry fit academia",
     ],
     "🔧 Ferramentas": [
-        "parafusadeira bateria", "furadeira bateria", "kit parafusadeira maleta bits",
-        "kit furadeira maleta bits", "kit ferramentas", "jogo chaves combinadas",
-        "chave de fenda precisão eletrônica", "chaves precisão eletrônicos",
-        "maleta ferramentas completa", "trena laser", "multímetro digital"
+        "parafusadeira a bateria kit maleta", "furadeira a bateria kit maleta",
+        "jogo chave combinada", "jogo chave fenda precisão eletrônica", "maleta ferramentas completa",
+        "medidor distância laser", "multímetro digital básico",
     ],
     "🎧 Eletrônicos": [
-        "smartwatch", "smartband", "smartwatch custo benefício", "smartband custo benefício",
-        "smartwatch melhores marcas", "smartband melhores marcas",
-        "mi band", "haylou", "amazfit",
-        "caixa de som bluetooth portátil", "caixa bluetooth estilo jbl go",
-        "roku express", "fire tv stick", "dongle streaming tv",
-        "câmera segurança wifi", "câmera wifi 360", "câmera inteligente 360"
+        "smartwatch custo benefício", "smartband", "melhor smartwatch", "caixa de som bluetooth portátil",
+        "jbl go caixa bluetooth", "roku express", "fire tv stick", "câmera wi-fi 360 graus",
+        "câmera segurança 360 app",
     ],
     "🏠 Casa": [
-        "lâmpada smart wifi", "lâmpada inteligente wifi", "fita led rgb",
-        "fita led rgb tv quarto", "luminária mesa sem fio",
-        "caixa organizadora plástico", "cesto organizador plástico",
-        "cabide ultrafino veludo kit 30", "cabide ultrafino veludo kit 50",
-        "pote vidro hermético", "potes vidro herméticos mantimentos",
-        "cortina blackout tecido", "cortina corta luz blackout",
-        "tapete geométrico sala", "tapete felpudo sala"
+        "lâmpada inteligente wi-fi", "fita led rgb tv quarto", "luminária mesa sem fio",
+        "caixa organizadora plástica", "cesto organizador", "cabide veludo kit 30", "cabide veludo kit 50",
+        "pote vidro hermético", "cortina blackout", "tapete geométrico felpudo",
     ],
     "🍳 Cozinha": [
-        "air fryer grande capacidade", "fritadeira elétrica grande", "chaleira elétrica inox",
-        "mini processador alimentos usb", "processador alimentos recarregável usb",
-        "jogo colheres silicone cabo bambu", "colheres silicone cabo bambu",
-        "balança digital precisão culinária", "balança digital cozinha",
-        "suporte pratos armário", "porta pratos armário", "porta temperos magnético",
-        "porta temperos giratório"
+        "air fryer grande capacidade", "chaleira elétrica inox", "mini processador usb recarregável",
+        "kit colher silicone cabo bambu", "balança digital cozinha precisão", "suporte pratos armário",
+        "porta temperos magnético giratório",
     ],
     "🚗 Automotivo": [
-        "cera cristalizadora automotiva", "revitalizador plástico automotivo",
-        "pretinho pneu longa duração", "pano microfibra alta gramatura automotivo",
-        "central multimídia universal 7 polegadas", "central multimídia 7 polegadas",
-        "suporte magnético celular saída ar", "suporte magnético celular carro",
-        "carregador veicular turbo", "kit lâmpada super led farol",
-        "super led farol", "câmera de ré veicular", "câmera de ré sensor"
+        "cera cristalizadora", "revitalizador de plásticos", "pretinho pneu longa duração",
+        "flanela microfibra alta gsm", "central multimídia universal 7 polegadas",
+        "suporte celular magnético saída ar", "carregador turbo veicular", "kit super led farol",
+        "câmera de ré com sensor",
     ],
     "👕 Moda": [
-        "kit camiseta lisa algodão 3 peças", "kit camiseta lisa algodão 5 peças",
-        "kit camisetas algodão", "kit cueca boxer", "kit meias sapatilha cano curto",
-        "meia sapatilha cano curto", "bermuda masculina tactel elastano",
-        "vestido leve casual feminino", "tênis casual tecido", "tênis fácil calçar",
-        "chinelo conforto marca popular"
+        "kit camiseta algodão lisa 3", "kit camiseta algodão lisa 5", "kit cueca boxer",
+        "meia sapatilha masculina kit", "meia sapatilha feminina kit", "short tactel elastano masculino",
+        "vestido feminino casual leve", "tênis casual tecido slip on", "chinelo marca popular confortável",
     ],
 }
 
@@ -348,42 +327,16 @@ def is_requested_product(title, query, category=None):
     ]
 
     category_rules = {
-        "📱 Celulares": (
-            ["smartphone", "celular", "iphone", "galaxy", "samsung", "motorola", "xiaomi", "redmi", "poco", "realme"],
-            generic_bad + ["carregador", "bateria avulsa", "case"]
-        ),
-        "🌸 Perfumes": (
-            ["perfume", "parfum", "eau de parfum", "eau de toilette", "fragrancia"],
-            generic_bad + ["porta perfume", "estojo vazio"]
-        ),
-        "🏋️ Academia": (
-            ["academia", "treino", "corrida", "legging", "camiseta", "short", "tenis", "whey", "creatina", "suplemento", "pre treino"],
-            ["capa", "adesivo", "suporte", "peca de reposicao", "broca"]
-        ),
-        "🔧 Ferramentas": (
-            ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta", "serra", "chave de impacto", "impacto"],
-            ["broca avulsa", "carvao", "bateria avulsa", "capa", "peca de reposicao"]
-        ),
-        "🎧 Eletrônicos": (
-            ["fone", "headset", "smartwatch", "tablet", "caixa de som", "camera", "power bank"],
-            ["cabo", "case", "capa", "pelicula", "suporte", "peca de reposicao"]
-        ),
-        "🏠 Casa": (
-            ["aspirador", "liquidificador", "cafeteira", "air fryer", "ventilador", "ferro de passar"],
-            ["peca", "refil", "capa", "suporte", "acessorio"]
-        ),
-        "🍳 Cozinha": (
-            ["air fryer", "panela eletrica", "jogo de panelas", "cafeteira", "liquidificador", "sanduicheira"],
-            ["peca", "refil", "capa", "suporte", "acessorio"]
-        ),
-        "🚗 Automotivo": (
-            ["aspirador automotivo", "carregador automotivo", "ferramenta automotiva", "tapete automotivo"],
-            ["capa de celular", "pelicula", "brinde", "adesivo"]
-        ),
-        "👕 Moda": (
-            ["tenis", "mochila", "relogio", "bolsa", "oculos", "camiseta", "vestido"],
-            ["capa", "pelicula", "suporte", "peca de reposicao"]
-        ),
+        "📱 Celulares": (["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"], []),
+        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"], []),
+        "🌙 Perfumes Árabes": (["lattafa", "yara", "asad", "maison alhambra", "afnan"], []),
+        "🏋️ Academia": (["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"], []),
+        "🔧 Ferramentas": (["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"], []),
+        "🎧 Eletrônicos": (["smartwatch", "smartband", "caixa de som", "roku", "fire tv", "camera"], []),
+        "🏠 Casa": (["lampada", "fita led", "luminaria", "organizador", "cabide", "pote", "cortina", "tapete"], []),
+        "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
+        "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
+        "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], []),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -715,50 +668,6 @@ def get_current_sale_price(item_id):
             return amount, regular
     PRICE_CACHE[item_id] = (None, None)
     return None, None
-
-
-def _extract_picture_url(pictures):
-    """Retorna a melhor URL disponível de uma lista de pictures do ML."""
-    if not isinstance(pictures, list):
-        return ""
-    for pic in pictures:
-        if not isinstance(pic, dict):
-            continue
-        for key in ("max_size", "secure_url", "url", "source"):
-            value = str(pic.get(key) or "").strip()
-            if value.startswith(("https://", "http://")):
-                return value
-    return ""
-
-
-def _resolve_offer_image(product_data, item_data=None, item_id=""):
-    """Garante uma foto usando produto, anúncio real e fallback /items."""
-    if isinstance(product_data, dict):
-        image = _extract_picture_url(product_data.get("pictures"))
-        if image:
-            return image
-
-    if isinstance(item_data, dict):
-        image = _extract_picture_url(item_data.get("pictures"))
-        if image:
-            return image
-
-    iid = str(item_id or "").strip()
-    if iid:
-        try:
-            data, status, _ = ml_get(f"/items/{iid}")
-            if status == 200 and isinstance(data, dict):
-                image = _extract_picture_url(data.get("pictures"))
-                if image:
-                    return image
-                for key in ("thumbnail", "secure_thumbnail"):
-                    value = str(data.get(key) or "").strip()
-                    if value.startswith(("https://", "http://")):
-                        return value
-        except Exception as exc:
-            print("[IMAGEM OFERTA] fallback /items falhou:", iid, repr(exc))
-
-    return ""
 
 def valid_catalog_price(price):
     try:
@@ -1597,30 +1506,19 @@ _DEMAND_CACHE = {"at": 0.0, "categories": {}}
 _CATEGORY_CACHE = {"at": 0.0, "ids": {}}
 _DEMAND_LOCK = threading.Lock()
 
-CATEGORY_SEED = {
-    "📱 Celulares": ["carregador turbo", "cabo tipo c", "power bank", "fone bluetooth"],
-    "🌸 Perfumes": ["contratipo perfume", "perfume importado", "body splash", "brand collection"],
-    "🌙 Perfumes Árabes": ["perfume árabe", "lattafa", "maison alhambra", "afnan"],
-    "🏋️ Academia": ["creatina", "whey protein", "coqueteleira", "mini band"],
-    "🔧 Ferramentas": ["furadeira", "parafusadeira", "kit ferramentas", "trena laser"],
-    "🎧 Eletrônicos": ["smartwatch", "smartband", "caixa de som bluetooth", "câmera wifi"],
-    "🏠 Casa": ["lâmpada smart", "organizador", "cabide veludo", "cortina blackout"],
-    "🍳 Cozinha": ["air fryer", "chaleira elétrica", "mini processador", "balança cozinha"],
-    "🚗 Automotivo": ["cera automotiva", "pretinho pneu", "suporte celular carro", "câmera de ré"],
-    "👕 Moda": ["kit camiseta", "cueca boxer", "bermuda tactel", "tênis casual"],
-}
+CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 
 DEMAND_ANCHORS = {
-    "📱 Celulares": ["carregador turbo","cabo tipo c","cabo lightning","power bank","fone tws","xiaomi","qcy","jbl","capinha","película"],
-    "🌸 Perfumes": ["contratipo","in the box","thera","nuancielo","brand collection","perfume","body splash","body mist"],
-    "🌙 Perfumes Árabes": ["perfume árabe","lattafa","asad","yara","maison alhambra","afnan"],
-    "🏋️ Academia": ["creatina","whey","growth","max titanium","integralmédica","garrafa térmica","coqueteleira","mini band","short","top","dry fit"],
-    "🔧 Ferramentas": ["parafusadeira","furadeira","maleta","chave","trena laser","multímetro"],
-    "🎧 Eletrônicos": ["smartwatch","smartband","mi band","haylou","amazfit","caixa de som","roku","fire tv","câmera wifi"],
-    "🏠 Casa": ["lâmpada smart","fita led","luminária","organizador","cabide","pote vidro","blackout","tapete"],
-    "🍳 Cozinha": ["air fryer","chaleira","processador usb","colheres silicone","balança","suporte pratos","porta temperos"],
-    "🚗 Automotivo": ["cera","revitalizador","pretinho","microfibra","multimídia","suporte magnético","carregador veicular","super led","câmera de ré"],
-    "👕 Moda": ["camiseta","cueca","meia","bermuda tactel","vestido","tênis casual","chinelo"],
+    "📱 Celulares": ["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"],
+    "🌸 Perfumes": ["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"],
+    "🌙 Perfumes Árabes": ["lattafa", "yara", "asad", "maison alhambra", "afnan"],
+    "🏋️ Academia": ["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"],
+    "🔧 Ferramentas": ["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"],
+    "🎧 Eletrônicos": ["smartwatch", "smartband", "caixa de som", "roku", "fire tv", "camera"],
+    "🏠 Casa": ["lampada", "fita led", "luminaria", "organizador", "cabide", "pote", "cortina", "tapete"],
+    "🍳 Cozinha": ["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"],
+    "🚗 Automotivo": ["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"],
+    "👕 Moda": ["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"],
 }
 
 _PRODUCT_CACHE = {}
@@ -1887,147 +1785,34 @@ BEST_SELLER_CATEGORY_IDS = {
 
 
 ARABIC_PERFUME_TERMS = (
-    "árabe", "arabe", "perfume árabe", "perfume arabe",
-    "lattafa", "rasasi", "maison alhambra", "al haramain",
-    "armaf", "afnan", "al wataniah", "fragrance world",
-    "french avenue", "rayhaan", "rayhaan pacific", "mawla",
-    "mawwal", "orientica", "paris corner", "emir",
-    "khadlaj", "zimaya", "swiss arabian", "ajmal",
-    "khamrah", "asad", "yara", "hayaati", "hawas",
-    "club de nuit", "shaghaf", "oud", "badee al oud",
-    "qaed al fursan", "fakhar", "turathi", "9pm",
+    "lattafa", "maison alhambra", "afnan", "asad", "yara",
 )
 
-# ============================================================
-# FILTRO RIGOROSO — PERFUME DE VERDADE
-# ============================================================
-# A categoria oficial de perfumes do Mercado Livre pode trazer derivados
-# misturados no ranking: hidratantes, desodorantes, body splash, kits etc.
-# Aqui a regra é propositalmente rígida: o título precisa representar um
-# perfume/fragrância humano como produto principal.
-#
-# IMPORTANTE:
-# - "desodorante colônia" NÃO entra;
-# - "body splash/body mist" ENTRA;
-# - kit com shampoo/hidratante/creme ENTRA;
-# - produtos de banho/cuidado corporal de PET NÃO entram;
-# - acessórios, embalagens, amostras e refis NÃO entram.
 PERFUME_POSITIVE_TERMS = (
-    "perfume",
-    "parfum",
-    "eau de parfum",
-    "eau de toilette",
-    "eau de cologne",
-    "eau de cologne",
+    "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
+    "fragrance", "body splash", "body mist", "kit perfume", "kit com perfume",
 )
-
-
-# Produtos automotivos que não devem aparecer nas oportunidades.
-# O foco é evitar compressores e peças/itens desse estilo.
-AUTOMOTIVE_EXCLUDED_TERMS = (
-    "compressor",
-    "compressor de ar",
-    "compressor automotivo",
-    "compressor do ar condicionado",
-    "compressor ar condicionado",
-)
-
 PERFUME_EXCLUDED_TERMS = (
-    "desodorante",
-    "desodorante colônia",
-    "desodorante colonia",
-    "loção",
-    "locao",
-    "sabonete",
-    "condicionador",
-    "refil",
-    "refill",
-    "amostra",
-    "decant",
-    "miniatura",
-    "porta perfume",
-    "necessaire",
-    "estojo vazio",
-    "frasco vazio",
-
-    # Produtos para animais: a categoria do Mercado Livre mistura
-    # "perfume/colônia" para pets com perfumes humanos.
-    "perfume para cachorro",
-    "perfume para cães",
-    "perfume para caes",
-    "perfume para gato",
-    "perfume para gatos",
-    "perfume pet",
-    "perfume para pet",
-    "colônia pet",
-    "colonia pet",
-    "pet clean",
-    "banho e tosa",
-    "banho seco pet",
-    "cachorro",
-    "cães",
-    "caes",
-    "gato",
-    "gatos",
-    "canino",
-    "canina",
-    "felino",
-    "felina",
-    "animalíssimo",
-    "animalissimo",
+    "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
+    "perfume para gato", "colonia pet", "colônia pet", "refil", "refill", "amostra",
+    "decant", "miniatura", "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
 )
 
-
-def _is_automotive_excluded(title):
-    text = norm(title)
-    return any(norm(term) in text for term in AUTOMOTIVE_EXCLUDED_TERMS)
 
 def _is_real_perfume(title):
     text = norm(title or "")
     if not text:
         return False
-
-    # Derivados que continuam fora.
     if any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
         return False
-
-    # Permitidos:
-    # - perfume
-    # - body splash
-    # - body mist
-    # - kit com shampoo
-    # - kit com hidratante
-    # - kit com creme
-    return (
-        "perfume" in text
-        or "parfum" in text
-        or "eau de parfum" in text
-        or "eau de toilette" in text
-        or "eau de cologne" in text
-        or "body splash" in text
-        or "body mist" in text
-        or "kit shampoo" in text
-        or "kit com shampoo" in text
-        or "kit hidratante" in text
-        or "kit com hidratante" in text
-        or "kit creme" in text
-        or "kit com creme" in text
-    )
-
-_ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
-_ARABIC_BRAND_CACHE_LOCK = threading.Lock()
+    return any(norm(term) in text for term in PERFUME_POSITIVE_TERMS)
 
 def _is_arabic_perfume(title):
     text = norm(title or "")
-    if not text or any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
-        return False
-    # Somente perfume árabe em frasco/produto principal; decant/amostra/miniatura
-    # permanecem bloqueados pelo filtro acima.
-    arabic_terms = (
-        "lattafa", "asad", "yara", "maison alhambra", "afnan",
-        "perfume árabe", "perfume arabe", "perfumes árabes", "perfumes arabes",
-    )
-    return _is_real_perfume(text) and any(norm(term) in text for term in arabic_terms)
+    return _is_real_perfume(title) and any(norm(term) in text for term in ARABIC_PERFUME_TERMS)
+
+_ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
+_ARABIC_BRAND_CACHE_LOCK = threading.Lock()
 
 def _arabic_brand_ids():
     """Descobre IDs oficiais das marcas árabes na categoria de perfumes."""
@@ -2037,9 +1822,7 @@ def _arabic_brand_ids():
             return list(_ARABIC_BRAND_CACHE.get("ids") or [])
 
     wanted = {norm(x) for x in (
-        "Lattafa",
-        "Maison Alhambra",
-        "Afnan",
+        "Lattafa", "Maison Alhambra", "Afnan",
     )}
     found = []
     data, status, _ = ml_get(f"/categories/{BEST_SELLER_CATEGORY_IDS['🌸 Perfumes']}/attributes")
@@ -2100,167 +1883,81 @@ def _search_arabic_perfumes():
                     "arabic_brand": brand_name,
                 }
 
-    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))
-
-    # Se o ranking inicial tiver poucos itens válidos, amplia a fila usando a
-    # busca oficial ordenada por vendas. Assim os primeiros resultados inválidos
-    # não fazem a categoria árabe desaparecer.
-    seen = {str(row.get("id") or "").strip() for row in rows}
-    arabic_queries = ["perfume árabe", "perfumes árabes", "lattafa", "maison alhambra", "afnan"]
-    for query in arabic_queries:
-        extra = _search_sold_sorted_items(category_id, query=query, max_pages=3)
-        for row in extra:
-            pid = str(row.get("id") or "").strip()
-            if not pid or pid in seen:
-                continue
-            if not _is_arabic_perfume(row.get("title")):
-                continue
-            row["arabic_brand"] = row.get("arabic_brand") or "Busca árabe"
-            seen.add(pid)
-            rows.append(row)
-            if len(rows) >= 120:
-                break
-        if len(rows) >= 120:
-            break
-
-    rows.sort(key=lambda x: (-int(x.get("sold_quantity_search") or 0),
-                             int(x.get("highlight_position") or 999999), x.get("id") or ""))
-    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking ampliado")
-    return [(row, "🌙 Perfumes Árabes") for row in rows[:120]]
-
-def _search_sold_sorted_items(category_id, query=None, max_pages=4):
-    """Busca uma fila maior ordenada por quantidade vendida.
-
-    O endpoint Highlights entrega só um conjunto curto de destaques. Para
-    categorias que sofrem muitos descartes (especialmente Perfumes), usamos
-    também a busca oficial do site ordenada por sold_quantity_desc para
-    continuar descendo no ranking até encontrar candidatos válidos.
-    """
-    merged = {}
-    category_id = str(category_id or "").strip()
-    if not category_id:
-        return []
-
-    for page in range(max(1, int(max_pages or 1))):
-        offset = page * 50
-        params = {
-            "site_id": SITE_ID,
-            "category": category_id,
-            "sort": "sold_quantity_desc",
-            "limit": 50,
-            "offset": offset,
-        }
-        if query:
-            params["q"] = str(query).strip()
-        try:
-            data, status, _ = ml_get("/sites/MLB/search", params)
-        except Exception as exc:
-            print("[TOP 20 VENDIDOS] erro", category_id, query, repr(exc))
-            continue
-        if status != 200 or not isinstance(data, dict):
-            print("[TOP 20 VENDIDOS] HTTP", status, category_id, query)
-            break
-
-        rows = data.get("results") or []
-        if not rows:
-            break
-        for idx, row in enumerate(rows, start=1):
-            if not isinstance(row, dict):
-                continue
-            pid = str(row.get("id") or "").strip()
-            if not pid or pid in merged:
-                continue
-            title = str(row.get("title") or "").strip()
-            sold = row.get("sold_quantity")
-            try:
-                sold = int(float(sold or 0))
-            except Exception:
-                sold = 0
-            merged[pid] = {
-                "id": pid,
-                "name": title or pid,
-                "title": title or pid,
-                "source_type": "ITEM",
-                "highlight_position": offset + idx,
-                "sold_quantity_search": sold,
-                "highlight_category_id": category_id,
-            }
-        if len(rows) < 50:
-            break
-
-    rows = list(merged.values())
-    rows.sort(key=lambda r: (-int(r.get("sold_quantity_search") or 0),
-                             int(r.get("highlight_position") or 999999)))
-    return rows
-
+    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))[:20]
+    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking por marca")
+    return [(row, "🌙 Perfumes Árabes") for row in rows]
 
 def _search_category(cat):
-    """Busca candidatos e continua além dos 20 iniciais quando filtros eliminam itens."""
+    """Monta uma fila ampla de candidatos usando somente as buscas da categoria.
+    Highlights entram primeiro; buscas específicas completam a fila para que filtros
+    de preço/tipo/imagem não reduzam a categoria a poucos produtos.
+    """
+    if cat == "🌙 Perfumes Árabes":
+        return _search_arabic_perfumes()
+
+    out = []
+    seen = set()
+
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
         try:
             category_id = _category_id_for(cat)
         except Exception as exc:
             print("[TOP 20] categoria", cat, repr(exc))
-            category_id = None
 
-    if not category_id:
-        print(f"[TOP 20] {cat}: categoria não encontrada")
-        return []
-
-    if cat == "🌙 Perfumes Árabes":
-        return _search_arabic_perfumes()
-
-    try:
-        ranking = highlights(category_id) or []
-    except Exception as exc:
-        print("[TOP 20]", cat, category_id, repr(exc))
-        ranking = []
-
-    out = []
-    seen = set()
-    for position, row in enumerate(ranking[:20], start=1):
-        if not isinstance(row, dict):
-            continue
-        pid = str(row.get("id") or "").strip()
-        typ = str(row.get("type") or "").upper().strip()
-        if not pid or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"} or pid in seen:
-            continue
-        seen.add(pid)
-        raw = {
-            "id": pid,
-            "name": row.get("title") or row.get("name") or pid,
-            "title": row.get("title") or row.get("name") or pid,
-            "source_type": typ,
-            "highlight_position": row.get("position") or position,
-            "highlight_category_id": category_id,
-        }
-        out.append((raw, cat))
-
-    # Perfumes precisa de uma fila maior porque o ranking inicial pode conter
-    # Pet, desodorantes, itens baratos ou outros derivados. Não relaxamos os
-    # filtros: simplesmente continuamos descendo na busca por vendidos.
-    if cat == "🌸 Perfumes":
-        extra = _search_sold_sorted_items(category_id, max_pages=6)
-        next_position = max([int(x[0].get("highlight_position") or 0) for x in out] or [0])
-        for row in extra:
+    if category_id:
+        try:
+            ranking = highlights(category_id) or []
+        except Exception as exc:
+            print("[TOP 20] highlights", cat, repr(exc))
+            ranking = []
+        for position, row in enumerate(ranking[:20], start=1):
+            if not isinstance(row, dict):
+                continue
             pid = str(row.get("id") or "").strip()
+            typ = str(row.get("type") or "").upper().strip()
+            if not pid or pid in seen or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"}:
+                continue
+            seen.add(pid)
+            out.append(({
+                "id": pid,
+                "name": row.get("title") or row.get("name") or pid,
+                "title": row.get("title") or row.get("name") or pid,
+                "source_type": typ,
+                "highlight_position": row.get("position") or position,
+                "highlight_category_id": category_id,
+            }, cat))
+
+    # Complementa com todas as consultas específicas positivas da categoria.
+    rank_base = 100
+    for q in CATALOG.get(cat, []):
+        try:
+            rows = search_products_direct(q, limit=30)
+        except Exception as exc:
+            print("[BUSCA ESPECIFICA]", cat, q, repr(exc))
+            continue
+        for j, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("id") or row.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
-            # Como o título já vem da publicação, eliminamos cedo os casos
-            # claramente inválidos e economizamos chamadas de enriquecimento.
-            if not _is_real_perfume(row.get("title")):
-                continue
-            next_position += 1
-            row["highlight_position"] = max(next_position, int(row.get("highlight_position") or 0))
             seen.add(pid)
-            out.append((row, cat))
-            if len(out) >= 120:
-                break
-        print(f"[PERFUMES] fila ampliada: {len(out)} candidatos antes do enriquecimento")
+            out.append(({
+                "id": pid,
+                "name": row.get("title") or row.get("name") or pid,
+                "title": row.get("title") or row.get("name") or pid,
+                "source_type": str(row.get("type") or "PRODUCT").upper(),
+                "highlight_position": rank_base + j,
+                "highlight_category_id": category_id,
+            }, cat))
+        rank_base += 30
+        if len(out) >= 70:
+            break
 
-    print(f"[TOP 20] {cat} ({category_id}): {len(out)} candidatos")
+    print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
     return out
+
 
 def _get_item_quality(item_id):
     """Lê o anúncio real para validar Full + vendas antes de exibir."""
@@ -2560,6 +2257,62 @@ def _resolve_scan_categories(queries):
     return list(CATALOG.keys())
 
 
+_IMAGE_CACHE = {}
+_IMAGE_CACHE_LOCK = threading.Lock()
+
+def _extract_image_url(obj):
+    if not isinstance(obj, dict):
+        return ""
+    for key in ("secure_url", "url", "secure_thumbnail", "thumbnail", "picture_url", "image"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
+            return value.strip()
+    pics = obj.get("pictures") or []
+    if isinstance(pics, list):
+        for pic in pics:
+            value = _extract_image_url(pic)
+            if value:
+                return value
+    return ""
+
+def _image_url_works(url):
+    url = str(url or "").strip()
+    if not url:
+        return False
+    with _IMAGE_CACHE_LOCK:
+        if url in _IMAGE_CACHE:
+            return _IMAGE_CACHE[url]
+    ok = False
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=8, allow_redirects=True)
+        ctype = (r.headers.get("content-type") or "").lower()
+        ok = r.status_code == 200 and (ctype.startswith("image/") or not ctype)
+        r.close()
+    except Exception:
+        ok = False
+    with _IMAGE_CACHE_LOCK:
+        _IMAGE_CACHE[url] = ok
+    return ok
+
+def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
+    """Garante uma URL de imagem real do Mercado Livre antes de aceitar a oferta."""
+    for obj in (product_data, item_data, base_data):
+        url = _extract_image_url(obj)
+        if url and _image_url_works(url):
+            return url
+
+    iid = str(item_id or "").strip()
+    if iid:
+        try:
+            data, status, _ = ml_get(f"/items/{iid}")
+            if status == 200 and isinstance(data, dict):
+                url = _extract_image_url(data)
+                if url and _image_url_works(url):
+                    return url
+        except Exception as exc:
+            print("[IMAGEM] erro item", iid, repr(exc))
+    return ""
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca somente os 20 mais vendidos de cada categoria.
 
@@ -2584,8 +2337,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        raw_limit = 120 if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"} else 20
-        for raw, source_query in raw_by_cat.get(cat, [])[:raw_limit]:
+        for raw, source_query in raw_by_cat.get(cat, [])[:70]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -2652,12 +2404,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     price = sale
                     if sale_original is not None:
                         original = sale_original
-            # O preço mínimo de R$ 69,90 é uma regra global do Caçador.
-            # Aqui aplicamos novamente depois do enriquecimento do anúncio,
-            # porque é neste ponto que temos o preço real do item que será
-            # exibido. Isso evita que produtos de R$ 15, R$ 22,99 etc.
-            # escapem para a lista final.
-            if price is None or price <= 0 or price < MIN_PRODUCT_PRICE or price > 100000:
+            if price is None or price <= 0 or price > 100000:
                 continue
 
             if original is None and isinstance(p.get("buy_box_winner"), dict):
@@ -2676,11 +2423,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             total_price = total(price, shipping) if known else price
             free = bool(item.get("free_shipping"))
 
-            image = _resolve_offer_image(
-                p,
-                item_data=item,
-                item_id=item.get("item_id"),
-            )
+            image = _resolve_offer_image(p, item, base, item.get("item_id"))
+            if not image:
+                print("[IMAGEM] oferta descartada sem imagem:", pid, title[:80])
+                continue
 
             offers.append({
                 "product_id": pid,
@@ -2737,16 +2483,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # Automotivo: nunca exibir compressores, mesmo que tenham entrado no ranking.
-    if "🚗 Automotivo" in categories:
-        offers = [
-            o for o in offers
-            if o.get("category_name") != "🚗 Automotivo"
-            or not _is_automotive_excluded(o.get("title"))
-        ]
-
     # Perfumes: mostra somente produtos que realmente são perfumes/fragrâncias,
-    # evitando derivados como hidratantes, refis, sabonetes e produtos Pet; Body Splash e Body Mist são permitidos.
+    # evitando derivados como hidratantes, refis, sabonetes e body splash.
     if "🌸 Perfumes" in categories:
         offers = [
             o for o in offers
@@ -2776,18 +2514,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     flat = []
     for cat in categories:
         arr = grouped.get(cat, [])
-        # Primeiro preserva somente os 20 melhores classificados da categoria.
-        # Depois embaralha a ordem de exibição para que os resultados NÃO
-        # apareçam sempre em sequência (#1, #2, #3, #4...).
         arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
-        selecionados = arr[:20]
-        secrets.SystemRandom().shuffle(selecionados)
-        flat.extend(selecionados)
+        flat.extend(arr[:20])
 
-    # Quando a busca envolve várias categorias, mistura também as categorias
-    # na tela. O ranking original continua guardado em best_seller_position,
-    # mas a apresentação fica aleatória a cada nova busca.
-    secrets.SystemRandom().shuffle(flat)
+    # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
+    random.shuffle(flat)
 
     if apply_coupons and flat:
         public_cards = get_public_coupon_cards_cached()
@@ -2975,16 +2706,10 @@ def _save_generated_whatsapp_image(image_bytes, extension="png"):
 
 
 def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
-    """Usa somente a foto original do Mercado Livre.
-
-    A geração de imagens por OpenAI fica desativada para evitar qualquer
-    cobrança. A variável OPENAI_API_KEY pode permanecer configurada no Railway
-    para uma futura reativação, mas nenhuma chamada à API é feita.
-    """
+    """Usa exclusivamente a imagem original do Mercado Livre. Sem OpenAI."""
     return str(image_url or "").strip()
 
 
-@app.route("/whatsapp/image/<filename>")
 def whatsapp_image(filename):
     """Entrega temporariamente as imagens geradas para o WhatsApp Bot."""
     if not re.fullmatch(r"[a-f0-9]{32}\.(?:png|jpg|jpeg|webp)", filename or "", re.I):
@@ -3453,22 +3178,6 @@ button,input,select{width:100%;padding:13px;border-radius:10px;border:1px solid 
 </style>
 <script>
 let cacarTimer=null;
-
-async function cacarTodas(){
- const status=document.getElementById('status');
- status.textContent='🔄 Buscando os 20 mais vendidos de TODAS as categorias... Aguarde até terminar.';
- document.getElementById('results').innerHTML='<p>🔎 Buscando os 20 mais vendidos de todas as categorias. Aguarde a busca completa...</p>';
- if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
- try{
-  const r=await fetch('/api/cacar',{cache:'no-store'});
-  const start=await r.json();
-  if(!start.job_id){throw new Error(start.erro||'Não foi possível iniciar a busca de todas as categorias.');}
-  acompanharCaca(start.job_id);
- }catch(e){
-  status.textContent='❌ '+e.message;
- }
-}
-
 async function cacar(cat){
  const status=document.getElementById('status');
  status.textContent='🔄 Carregando busca completa... Aguarde até terminar.';
@@ -3623,7 +3332,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
-<div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Escolha uma categoria para pesquisar individualmente ou use a opção abaixo para buscar <b>os 20 mais vendidos de TODAS as categorias de uma vez</b>.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold;font-size:16px;padding:16px" onclick="cacarTodas()">🔎 BUSCAR TODOS OS 20 MAIS VENDIDOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão azul para buscar todas de uma vez.</p></div>
+<div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria ou procure <b>todas de uma vez</b>. O sistema carrega a busca completa dos <b>20 mais vendidos</b> e só mostra o resultado quando a consulta terminar.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão acima para buscar todas.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
