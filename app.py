@@ -9,6 +9,7 @@ import re
 import html as html_lib
 import threading
 import uuid
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, quote, urlparse, parse_qs
 
@@ -94,8 +95,9 @@ CATALOG = {
     # Consultas somente com conceitos positivos; filtros operacionais
     # continuam sendo aplicados nas rotinas específicas.
     "🌸 Perfumes": [
-        "perfumes importados masculinos",
-        "perfumes importados femininos",
+        "perfumes masculinos",
+        "perfumes femininos",
+        "perfume importado",
         "Eau de Parfum",
         "Eau de Toilette",
         "Body Splash",
@@ -339,7 +341,7 @@ def is_requested_product(title, query, category=None):
 
     category_rules = {
         "📱 Celulares": (["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"], []),
-        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist"], ["atacado", "revenda"]),
+        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist"], ["atacado", "revenda", "atacadista", "lote", "caixa fechada", "distribuidor"]),
         "🌙 Perfumes Árabes": (["lattafa", "yara", "asad", "maison alhambra", "afnan"], ["atacado", "revenda"]),
         "🏋️ Academia": (["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"], []),
         "🔧 Ferramentas": (["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"], []),
@@ -2021,7 +2023,10 @@ BEST_SELLER_CATEGORY_IDS = {
 
 
 ARABIC_PERFUME_TERMS = (
-    "lattafa", "maison alhambra", "afnan",
+    "lattafa", "maison alhambra", "afnan", "al wataniah", "armaf", "rasasi",
+    "al haramain", "french avenue", "fragrance world", "paris corner",
+    "rayhaan", "khadlaj", "zimaya", "ajmal", "swiss arabian",
+    "ard al zaafaran", "ahmed al maghribi", "orientica", "al rehab", "emir",
 )
 
 # Termos permitidos para a categoria de perfumes.
@@ -2036,7 +2041,8 @@ PERFUME_POSITIVE_TERMS = (
 # Itens que não devem entrar como perfume.
 PERFUME_EXCLUDED_TERMS = (
     "contratipo", "contratipos", "refil", "refill", "amostra", "decant", "decante", "decants", "miniatura",
-    "kit", "combo", "duo", "conjunto", "pack", "par de", "2 perfumes", "2 perfume", "dois perfumes",
+    "kit", "combo", "duo", "trio", "conjunto", "pack", "par de", "2 perfumes", "2 perfume", "dois perfumes",
+    "atacado", "atacadista", "revenda", "revendedor", "lote", "caixa fechada", "caixa com", "distribuidor",
     "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
     "perfume para gato", "colonia pet", "colônia pet", "perfume cachorro",
@@ -2044,6 +2050,50 @@ PERFUME_EXCLUDED_TERMS = (
     "colônia gato",
 )
 
+# Marcas amplas para que a categoria de perfumes não fique presa a poucos
+# termos genéricos. A busca continua limitada a fragrâncias individuais e
+# o ranking/tendência é aplicado depois do enriquecimento.
+PERFUME_BRAND_QUERIES = [
+    # Nacionais
+    "O Boticário perfume", "Natura perfume", "Eudora perfume",
+    "Avon perfume", "Jequiti perfume", "Hinode perfume",
+    "O.U.i perfume", "Granado perfume", "Phebo perfume",
+    # Importados
+    "Carolina Herrera perfume", "Rabanne perfume", "Paco Rabanne perfume",
+    "Dior perfume", "Chanel perfume", "Yves Saint Laurent perfume",
+    "YSL perfume", "Armani perfume", "Giorgio Armani perfume",
+    "Versace perfume", "Calvin Klein perfume", "Dolce Gabbana perfume",
+    "Gucci perfume", "Prada perfume", "Valentino perfume",
+    "Burberry perfume", "Givenchy perfume", "Lancôme perfume",
+    "Jean Paul Gaultier perfume", "JPG perfume", "Hugo Boss perfume",
+    "Montblanc perfume", "Narciso Rodriguez perfume", "Mugler perfume",
+    "Issey Miyake perfume", "Kenzo perfume", "Azzaro perfume",
+    "Bvlgari perfume", "Jovan perfume", "Elizabeth Arden perfume",
+]
+
+# Marcas árabes que aparecem nas buscas atuais do Mercado Livre, além das
+# três marcas que já estavam no projeto. A categoria árabe continua exigindo
+# que o título seja uma fragrância individual.
+ARABIC_BRAND_QUERIES = [
+    "Lattafa perfume", "Maison Alhambra perfume", "Afnan perfume",
+    "Al Wataniah perfume", "Armaf perfume", "Rasasi perfume",
+    "Al Haramain perfume", "French Avenue perfume", "Fragrance World perfume",
+    "Paris Corner perfume", "Rayhaan perfume", "Khadlaj perfume",
+    "Zimaya perfume", "Ajmal perfume", "Swiss Arabian perfume",
+    "Ard Al Zaafaran perfume", "Ahmed Al Maghribi perfume",
+    "Orientica perfume", "Al Rehab perfume", "Emir perfume",
+]
+
+PERFUME_TREND_QUERIES = [
+    "perfumes mais vendidos", "perfumes em alta", "perfumes mais procurados",
+    "perfume feminino mais vendido", "perfume masculino mais vendido",
+    "perfume importado mais vendido", "perfume nacional mais vendido",
+]
+
+ARABIC_TREND_QUERIES = [
+    "perfumes árabes mais vendidos", "perfumes árabes em alta",
+    "perfume árabe mais vendido", "perfume árabe mais procurado",
+]
 
 def _is_real_perfume(title):
     text = norm(title or "")
@@ -2059,6 +2109,22 @@ def _is_real_perfume(title):
     if re.search(r"\b(?:2|3|4|5)\s*(?:unidades?|frascos?|perfumes?)\b", text):
         return False
     if " + " in str(title or ""):
+        return False
+
+    # A categoria 🌸 Perfumes mostra somente uma fragrância normal por oferta.
+    # Não entram atacado, revenda, lotes, caixas fechadas ou anúncios de múltiplas
+    # unidades, mesmo quando o título contém a palavra "perfume".
+    commercial_terms = (
+        "atacado", "atacadista", "revenda", "revendedor", "lote",
+        "caixa fechada", "caixa com", "distribuidor", "kit atacado",
+    )
+    if any(norm(term) in text for term in commercial_terms):
+        return False
+
+    # Mais de uma unidade/fragrância não é uma fragrância normal individual.
+    if re.search(r"\b(?:2|3|4|5|6|10|12)\s*(?:unid(?:ade|ades)?|frascos?|perfumes?|un)\b", text):
+        return False
+    if re.search(r"\b(?:kit|combo|pack|duo|trio|conjunto)\b", text):
         return False
 
     # Perfumes, EDP/EDT, Body Splash, Body Mist e colônias entram.
@@ -2082,7 +2148,11 @@ def _arabic_brand_ids():
             return list(_ARABIC_BRAND_CACHE.get("ids") or [])
 
     wanted = {norm(x) for x in (
-        "Lattafa", "Maison Alhambra", "Afnan",
+        "Lattafa", "Maison Alhambra", "Afnan", "Al Wataniah", "Armaf",
+        "Rasasi", "Al Haramain", "French Avenue", "Fragrance World",
+        "Paris Corner", "Rayhaan", "Khadlaj", "Zimaya", "Ajmal",
+        "Swiss Arabian", "Ard Al Zaafaran", "Ahmed Al Maghribi",
+        "Orientica", "Al Rehab", "Emir",
     )}
     found = []
     data, status, _ = ml_get(f"/categories/{BEST_SELLER_CATEGORY_IDS['🌸 Perfumes']}/attributes")
@@ -2105,21 +2175,27 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_perfumes():
-    """Teste isolado usando exatamente os 3 micro-nichos enviados."""
-    queries = list(CATALOG["🌙 Perfumes Árabes"])
+    """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
+
+    O endpoint /sites/MLB/search não está disponível para esta aplicação;
+    portanto usamos /products/search e depois resolvemos a publicação real.
+    O ranking final combina posição de busca, sinais de mais vendidos e
+    tendências quando disponíveis.
+    """
+    queries = []
+    for q in ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
+        if q not in queries:
+            queries.append(q)
+
     out = []
     seen = set()
     rank_base = 1
-
     for q in queries:
-        # Exclui decant sem alterar o micro-nicho solicitado.
-        search_q = q
         try:
-            rows = search_real_listings(search_q, limit=50)
+            rows = search_real_listings(q, limit=40)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
-
         for j, row in enumerate(rows, start=1):
             if not isinstance(row, dict):
                 continue
@@ -2142,9 +2218,9 @@ def _search_arabic_perfumes():
                 "original_price": row.get("original_price") or row.get("regular_price"),
                 "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
             }, "🌙 Perfumes Árabes"))
-        rank_base += max(50, len(rows))
+        rank_base += max(40, len(rows))
 
-    print(f"[ARABES BUSCA REAL] {len(out)} anúncios candidatos")
+    print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios candidatos")
     return out
 
 def _search_category(cat):
@@ -2159,7 +2235,10 @@ def _search_category(cat):
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
-        perfume_queries = list(CATALOG["🌸 Perfumes"])
+        perfume_queries = []
+        for q in list(CATALOG["🌸 Perfumes"]) + PERFUME_BRAND_QUERIES + PERFUME_TREND_QUERIES:
+            if q not in perfume_queries:
+                perfume_queries.append(q)
 
         rank_base = 1
         for q in perfume_queries:
@@ -2168,7 +2247,7 @@ def _search_category(cat):
             search_q = q
             print("[BUSCA PUBLICA EQUIVALENTE]", public_search_url(q))
             try:
-                rows = search_real_listings(search_q, limit=50)
+                rows = search_real_listings(search_q, limit=40)
             except Exception as exc:
                 print("[PERFUMES BUSCA]", q, repr(exc))
                 continue
@@ -2781,16 +2860,41 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 continue
             seen.add(pid)
             position = int(raw.get("highlight_position") or 99)
-            ds = {
-                "trend_score": 0,
-                "trend_keyword": None,
-                "trend_bucket": None,
-                "trend_rank": None,
-                "best_seller_position": position,
-                "best_seller_category": raw.get("highlight_category_id"),
-                "appears_both": False,
-                "demand_score": max(0, 1000 - position * 10),
-            }
+            # Para perfumes, além da posição da descoberta, aproveitamos os
+            # sinais oficiais de mais vendidos/tendências quando disponíveis.
+            if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}:
+                try:
+                    ds = demand_score(
+                        raw.get("title") or raw.get("name") or pid,
+                        cat,
+                        pid,
+                        signals,
+                        allow_direct=True,
+                    )
+                except Exception:
+                    ds = {
+                        "trend_score": 0, "trend_keyword": None,
+                        "trend_bucket": None, "trend_rank": None,
+                        "best_seller_position": position,
+                        "best_seller_category": raw.get("highlight_category_id"),
+                        "appears_both": False,
+                        "demand_score": max(0, 1000 - position * 10),
+                    }
+                if ds.get("best_seller_position") is None:
+                    ds["best_seller_position"] = position
+                if ds.get("best_seller_category") is None:
+                    ds["best_seller_category"] = raw.get("highlight_category_id")
+            else:
+                ds = {
+                    "trend_score": 0,
+                    "trend_keyword": None,
+                    "trend_bucket": None,
+                    "trend_rank": None,
+                    "best_seller_position": position,
+                    "best_seller_category": raw.get("highlight_category_id"),
+                    "appears_both": False,
+                    "demand_score": max(0, 1000 - position * 10),
+                }
             candidates.append((1000 - position, pid, raw, cat, ds, source_query))
 
     # Mantém exatamente o ranking por posição dentro de cada categoria.
@@ -2900,13 +3004,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "seller_nickname": item.get("seller_nickname"),
                 "quality_validated": False,
                 "giro_score": min(1000, float(item.get("sold_quantity") or 0) * 2),
-                "trend_score": 0,
-                "trend_keyword": None,
-                "trend_bucket": None,
-                "trend_rank": None,
-                "best_seller_position": ds["best_seller_position"],
-                "best_seller_category": ds["best_seller_category"],
-                "appears_both": False,
+                "trend_score": ds.get("trend_score", 0),
+                "trend_keyword": ds.get("trend_keyword"),
+                "trend_bucket": ds.get("trend_bucket"),
+                "trend_rank": ds.get("trend_rank"),
+                "best_seller_position": ds.get("best_seller_position"),
+                "best_seller_category": ds.get("best_seller_category"),
+                "appears_both": bool(ds.get("appears_both")),
                 "demand_score": ds["demand_score"],
                 "opportunity_score": ds["demand_score"] + (20 if free else 0) + min(20, seller_disc),
                 "cupom": None,
@@ -2945,9 +3049,33 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             or _is_arabic_perfume(o.get("title"))
         ]
 
-    # Elimina duplicatas do mesmo produto/publicação que chegam por vendedores
-    # ou rankings diferentes. Para o usuário, cada título de perfume deve aparecer
-    # uma única vez; entre duplicatas, mantém a oferta de menor total/preço.
+    # DEDUPLICAÇÃO ROBUSTA
+    # O mesmo produto pode chegar com product_id diferente e com pequenas
+    # diferenças no título (ex.: "Escapes Urina G" x "Escapes Urina Gg").
+    # O agrupamento apenas por product_id/título não é suficiente.
+    # Primeiro usamos o título exato; depois a imagem normalizada, que é um
+    # identificador muito mais confiável quando o Mercado Livre devolve a
+    # mesma publicação/catálogo por caminhos diferentes.
+    def _offer_value(x):
+        try:
+            return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
+        except Exception:
+            return 999999.0
+
+    def _image_identity(x):
+        raw = str(x.get("image") or "").strip()
+        if not raw:
+            return ""
+        try:
+            u = urlparse(raw)
+            path = re.sub(r"\s+", "", u.path.lower())
+            # Ignora parâmetros de CDN que só alteram tamanho/formato.
+            path = re.sub(r"[?&](?:width|height|size|quality|format)=[^&]+", "", path)
+            return (u.netloc.lower() + path).strip()
+        except Exception:
+            return raw.lower().split("?")[0].strip()
+
+    # 1) Título exato.
     unique_offers = {}
     for o in offers:
         title_key = norm(o.get("title") or "")
@@ -2956,24 +3084,67 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         if not key:
             continue
         current = unique_offers.get(key)
-        if current is None:
+        if current is None or _offer_value(o) < _offer_value(current):
             unique_offers[key] = o
+
+    # 2) Mesma imagem = mesmo produto visual. Isso captura publicações que
+    # possuem IDs/títulos diferentes, mas mostram exatamente o mesmo produto.
+    by_image = {}
+    no_image = []
+    for o in unique_offers.values():
+        ikey = _image_identity(o)
+        if not ikey:
+            no_image.append(o)
             continue
-        def _offer_value(x):
-            try:
-                return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
-            except Exception:
-                return 999999.0
-        if _offer_value(o) < _offer_value(current):
-            unique_offers[key] = o
-    offers = list(unique_offers.values())
+        current = by_image.get(ikey)
+        if current is None or _offer_value(o) < _offer_value(current):
+            by_image[ikey] = o
 
-    offers.sort(key=lambda o: (
-        o.get("category_name") or "",
-        float(o.get("best_seller_position") or 99),
-    ))
+    deduped = list(by_image.values()) + no_image
 
-    # Até 20 por categoria, sem cortar o conjunto global em 30.
+    # 3) Pequenas diferenças de título só são usadas como desempate quando
+    # a imagem também coincide. O objetivo é remover duplicata, não juntar
+    # variantes legítimas que possuem imagens diferentes.
+    final_offers = []
+    for o in deduped:
+        duplicate_index = None
+        title = norm(o.get("title") or "")
+        image = _image_identity(o)
+        if image and title:
+            for i, existing in enumerate(final_offers):
+                if image != _image_identity(existing):
+                    continue
+                other = norm(existing.get("title") or "")
+                if title == other or SequenceMatcher(None, title, other).ratio() >= 0.94:
+                    duplicate_index = i
+                    break
+        if duplicate_index is None:
+            final_offers.append(o)
+        elif _offer_value(o) < _offer_value(final_offers[duplicate_index]):
+            final_offers[duplicate_index] = o
+
+    offers = final_offers
+
+    def _display_demand_key(o):
+        cat = o.get("category_name") or ""
+        if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}:
+            return (
+                0 if o.get("appears_both") else 1,
+                -(float(o.get("trend_score") or 0)),
+                float(o.get("best_seller_position") or 999),
+                -(float(o.get("demand_score") or 0)),
+                float(o.get("total_price") or 999999),
+            )
+        return (
+            1, 0, float(o.get("best_seller_position") or 999),
+            -(float(o.get("demand_score") or 0)),
+            float(o.get("total_price") or 999999),
+        )
+
+    offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
+
+    # Até 20 por categoria, priorizando os que são simultaneamente mais
+    # vendidos/em alta e depois os demais mais vendidos.
     grouped = {}
     for o in offers:
         grouped.setdefault(o["category_name"], []).append(o)
@@ -2981,7 +3152,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     flat = []
     for cat in categories:
         arr = grouped.get(cat, [])
-        arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
+        arr.sort(key=_display_demand_key)
         flat.extend(arr[:20])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
