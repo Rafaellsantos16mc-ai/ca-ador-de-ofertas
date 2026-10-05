@@ -86,51 +86,16 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    "📱 Celulares": [
-        "smartphone", "iphone", "samsung galaxy", "motorola moto",
-        "xiaomi redmi", "poco smartphone", "realme smartphone"
-    ],
-    "🌸 Perfumes": [
-        "perfume masculino", "perfume feminino", "perfume importado",
-        "perfume nacional", "perfume eau de parfum"
-    ],
-    "🌙 Perfumes Árabes": [
-        "perfume árabe", "perfumes árabes", "lattafa", "rasasi",
-        "maison alhambra", "al haramain", "armaf", "afnan",
-        "al wataniah", "fragrance world", "french avenue"
-    ],
-    "🏋️ Academia": [
-        "roupa academia masculina", "roupa academia feminina",
-        "camiseta academia", "short academia", "legging academia",
-        "tenis academia", "tenis corrida", "tenis treino",
-        "whey protein", "creatina", "pre treino", "suplementos"
-    ],
-    "🔧 Ferramentas": [
-        "furadeira", "parafusadeira", "esmerilhadeira",
-        "kit ferramentas", "maleta ferramentas", "serra",
-        "chave de impacto"
-    ],
-    "🎧 Eletrônicos": [
-        "fone bluetooth", "headset", "smartwatch", "tablet",
-        "caixa de som bluetooth", "camera digital", "power bank"
-    ],
-    "🏠 Casa": [
-        "aspirador de pó", "liquidificador", "cafeteira",
-        "air fryer", "ventilador", "ferro de passar"
-    ],
-    "🍳 Cozinha": [
-        "air fryer", "panela elétrica", "jogo de panelas",
-        "cafeteira", "liquidificador", "sandwichera"
-    ],
-    "🚗 Automotivo": [
-        "compressor automotivo", "aspirador automotivo",
-        "suporte celular carro", "carregador automotivo",
-        "ferramentas automotivas", "tapete automotivo"
-    ],
-    "👕 Moda": [
-        "tenis masculino", "tenis feminino", "mochila",
-        "relogio masculino", "bolsa feminina", "oculos de sol"
-    ],
+    "📱 Celulares": ["carregador turbo", "carregador de parede", "cabo tipo c", "cabo lightning", "cabo reforçado", "power bank 10000mah", "power bank 20000mah", "fone bluetooth tws", "xiaomi tws", "qcy", "jbl fone", "capinha anti impacto", "película 3d", "película privacidade"],
+    "🌸 Perfumes": ["contratipo perfume", "perfume inspirado", "in the box", "thera cosméticos", "nuancielo", "brand collection", "perfume importado masculino", "perfume importado feminino", "perfume 30ml", "perfume 50ml", "body splash", "body mist"],
+    "🌙 Perfumes Árabes": ["perfume árabe", "perfumes árabes", "lattafa", "lattafa asad", "lattafa yara", "maison alhambra", "afnan", "rasasi", "al haramain", "armaf", "al wataniah", "fragrance world", "french avenue", "rayhaan", "orientica", "paris corner", "emir", "khadlaj", "zimaya", "swiss arabian", "ajmal"],
+    "🏋️ Academia": ["creatina monohidratada 300g", "whey protein concentrado", "growth creatina", "max titanium whey", "integralmédica whey", "garrafa térmica inox", "coqueteleira", "mini band", "short dupla face", "top sustentação", "camiseta dry fit"],
+    "🔧 Ferramentas": ["parafusadeira bateria", "furadeira bateria", "kit parafusadeira maleta", "kit ferramentas", "jogo chaves combinadas", "chave precisão eletrônica", "maleta ferramentas", "trena laser", "multímetro digital"],
+    "🎧 Eletrônicos": ["smartwatch", "smartband", "mi band", "haylou", "amazfit", "caixa de som bluetooth", "jbl go", "roku express", "fire tv stick", "câmera segurança wifi", "câmera wifi 360"],
+    "🏠 Casa": ["lâmpada smart wifi", "fita led rgb", "luminária mesa sem fio", "caixa organizadora plástico", "cesto organizador", "cabide veludo", "potes vidro herméticos", "cortina blackout", "tapete geométrico", "tapete felpudo"],
+    "🍳 Cozinha": ["air fryer grande", "chaleira elétrica inox", "mini processador usb", "colheres silicone cabo bambu", "balança digital cozinha", "suporte pratos armário", "porta temperos magnético", "porta temperos giratório"],
+    "🚗 Automotivo": ["cera cristalizadora automotiva", "revitalizador plástico automotivo", "pretinho pneu", "pano microfibra automotivo", "central multimídia 7 polegadas", "suporte magnético celular carro", "carregador veicular turbo", "kit lâmpada super led", "câmera de ré", "câmera ré sensor"],
+    "👕 Moda": ["kit camiseta algodão 3 peças", "kit camiseta algodão 5 peças", "kit cueca boxer", "kit meia sapatilha", "bermuda tactel elastano", "vestido casual feminino", "tênis casual tecido", "chinelo conforto"],
 }
 
 # ============================================================
@@ -1569,27 +1534,29 @@ _CATEGORY_CACHE = {"at": 0.0, "ids": {}}
 _DEMAND_LOCK = threading.Lock()
 
 CATEGORY_SEED = {
-    "📱 Celulares": ["smartphone", "iphone", "celular", "samsung galaxy"],
-    "🌸 Perfumes": ["perfume", "perfume masculino", "perfume feminino", "perfume importado"],
-    "🏋️ Academia": ["tenis corrida", "roupa academia", "whey protein", "creatina"],
-    "🔧 Ferramentas": ["furadeira", "parafusadeira", "kit ferramentas", "esmerilhadeira"],
-    "🎧 Eletrônicos": ["fone bluetooth", "smartwatch", "tablet", "caixa de som"],
-    "🏠 Casa": ["aspirador de pó", "liquidificador", "cafeteira", "ventilador"],
-    "🍳 Cozinha": ["air fryer", "panela elétrica", "cafeteira", "liquidificador"],
-    "🚗 Automotivo": ["aspirador automotivo", "carregador automotivo", "ferramentas automotivas"],
-    "👕 Moda": ["tenis masculino", "tenis feminino", "mochila", "camiseta"],
+    "📱 Celulares": ["carregador turbo", "cabo tipo c", "power bank", "fone bluetooth"],
+    "🌸 Perfumes": ["contratipo perfume", "perfume importado", "body splash", "brand collection"],
+    "🌙 Perfumes Árabes": ["perfume árabe", "lattafa", "maison alhambra", "afnan"],
+    "🏋️ Academia": ["creatina", "whey protein", "coqueteleira", "mini band"],
+    "🔧 Ferramentas": ["furadeira", "parafusadeira", "kit ferramentas", "trena laser"],
+    "🎧 Eletrônicos": ["smartwatch", "smartband", "caixa de som bluetooth", "câmera wifi"],
+    "🏠 Casa": ["lâmpada smart", "organizador", "cabide veludo", "cortina blackout"],
+    "🍳 Cozinha": ["air fryer", "chaleira elétrica", "mini processador", "balança cozinha"],
+    "🚗 Automotivo": ["cera automotiva", "pretinho pneu", "suporte celular carro", "câmera de ré"],
+    "👕 Moda": ["kit camiseta", "cueca boxer", "bermuda tactel", "tênis casual"],
 }
 
 DEMAND_ANCHORS = {
-    "📱 Celulares": ["smartphone","celular","iphone","galaxy","samsung","motorola","xiaomi","redmi","poco","realme"],
-    "🌸 Perfumes": ["perfume","parfum","eau de parfum","eau de toilette","fragrancia"],
-    "🏋️ Academia": ["academia","treino","corrida","tenis","whey","creatina","suplemento","legging"],
-    "🔧 Ferramentas": ["furadeira","parafusadeira","esmerilhadeira","serra","ferramenta","impacto"],
-    "🎧 Eletrônicos": ["fone","headset","smartwatch","tablet","caixa de som","camera","power bank"],
-    "🏠 Casa": ["aspirador","liquidificador","cafeteira","air fryer","ventilador","ferro"],
-    "🍳 Cozinha": ["air fryer","panela","cafeteira","liquidificador","sanduicheira","cozinha"],
-    "🚗 Automotivo": ["automotivo","carro","aspirador automotivo","carregador automotivo","tapete"],
-    "👕 Moda": ["tenis","mochila","relogio","bolsa","oculos","camiseta","vestido"],
+    "📱 Celulares": ["carregador","cabo","power bank","fone","qcy","jbl","capinha","película"],
+    "🌸 Perfumes": ["perfume","parfum","body splash","body mist","contratipo","fragrância"],
+    "🌙 Perfumes Árabes": ["árabe","lattafa","maison alhambra","afnan","rasasi","armaf","yara","asad"],
+    "🏋️ Academia": ["creatina","whey","coqueteleira","mini band","dry fit","short","top"],
+    "🔧 Ferramentas": ["furadeira","parafusadeira","chave","maleta","trena","multímetro","ferramenta"],
+    "🎧 Eletrônicos": ["smartwatch","smartband","mi band","haylou","amazfit","fone","caixa","câmera","fire tv","roku"],
+    "🏠 Casa": ["lâmpada","led","luminária","organizador","cabide","pote","cortina","tapete"],
+    "🍳 Cozinha": ["air fryer","chaleira","processador","balança","silicone","porta temperos","suporte pratos"],
+    "🚗 Automotivo": ["automotivo","carro","cera","pretinho","microfibra","multimídia","suporte celular","carregador","super led","câmera de ré"],
+    "👕 Moda": ["camiseta","cueca","meia","bermuda","vestido","tênis","chinelo"],
 }
 
 _PRODUCT_CACHE = {}
@@ -2939,123 +2906,13 @@ def _save_generated_whatsapp_image(image_bytes, extension="png"):
 
 
 def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
-    """Transforma a foto original do Mercado Livre em uma foto natural de produto.
+    """Usa somente a foto original do Mercado Livre.
 
-    Mantém a identidade do produto e cria apenas o contexto fotográfico. Se a
-    geração não estiver disponível ou falhar, retorna a foto original para
-    que a oferta continue sendo publicada normalmente.
+    A geração de imagens por OpenAI fica desativada para evitar qualquer
+    cobrança. A variável OPENAI_API_KEY pode permanecer configurada no Railway
+    para uma futura reativação, mas nenhuma chamada à API é feita.
     """
-    original = str(image_url or "").strip()
-    if not original:
-        return ""
-
-    if not OPENAI_API_KEY:
-        print("[OPENAI IMAGEM] OPENAI_API_KEY não configurada; usando foto original.")
-        return original
-
-    try:
-        source = requests.get(
-            original,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=30,
-        )
-        source.raise_for_status()
-        source_type = (source.headers.get("content-type") or "image/jpeg").split(";")[0].lower()
-        if source_type not in {"image/jpeg", "image/png", "image/webp"}:
-            source_type = "image/jpeg"
-
-        title_hint = ""
-        first_line = str(offer_text or "").strip().splitlines()
-        for line in first_line:
-            clean = line.strip()
-            if clean and not clean.startswith(("🔥", "💰", "💸", "🏷️", "🚚", "🎟️", "💥", "⚠️", "🛒", "👉")):
-                title_hint = clean
-                break
-        if not title_hint:
-            title_hint = "produto de oferta"
-
-        prompt = f"""Create a photorealistic natural product photograph for a WhatsApp shopping offer, using the supplied Mercado Livre product photo as the exact product reference.
-
-PRODUCT CONTEXT: {title_hint}
-
-CRITICAL PRODUCT FIDELITY:
-- Preserve the exact product identity, shape, proportions, packaging, bottle/container, cap, colors, materials, and visible branding from the source image.
-- Do not redesign, replace, relabel, recolor, duplicate, or invent the product.
-- Keep the product clearly recognizable as the same item shown in the source.
-- Do not add a second different product.
-
-PHOTO STYLE:
-- Make it look like a real photograph taken by a professional product photographer, not a CGI render and not an obvious AI-generated image.
-- Use a simple, tasteful real-world lifestyle setting appropriate to the product.
-- Use natural soft daylight, realistic shadows, believable reflections and depth of field.
-- Keep the product as the clear visual focus.
-- For perfumes or cosmetics, prefer an elegant real vanity, shelf or bathroom setting; a natural hand holding the original product is also acceptable when it looks realistic.
-- For electronics, home, kitchen, tools, automotive or fashion products, choose a realistic everyday environment that naturally fits that product.
-
-IMPORTANT:
-- No promotional banner.
-- No price.
-- No discount text.
-- No captions.
-- No artificial graphic elements.
-- No watermark.
-- No extra logos except branding that already exists on the original product.
-- Do not change any readable product label or packaging text unnecessarily.
-- Composition should be attractive, clean and suitable for sharing in WhatsApp.
-"""
-
-        files = {
-            "image[]": (
-                "produto_original." + ("png" if source_type == "image/png" else "webp" if source_type == "image/webp" else "jpg"),
-                source.content,
-                source_type,
-            )
-        }
-        data = {
-            "model": OPENAI_IMAGE_MODEL,
-            "prompt": prompt,
-            "size": "1024x1024",
-            "quality": "medium",
-            "output_format": "png",
-        }
-
-        response = requests.post(
-            "https://api.openai.com/v1/images/edits",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            files=files,
-            data=data,
-            timeout=120,
-        )
-
-        if not response.ok:
-            print(
-                "[OPENAI IMAGEM] Falha:",
-                response.status_code,
-                response.text[:1000],
-            )
-            return original
-
-        payload = response.json()
-        item = (payload.get("data") or [None])[0]
-        if not isinstance(item, dict):
-            print("[OPENAI IMAGEM] Resposta sem imagem.")
-            return original
-
-        b64 = item.get("b64_json")
-        if not b64:
-            print("[OPENAI IMAGEM] Resposta não trouxe b64_json.")
-            return original
-
-        image_bytes = base64.b64decode(b64)
-        generated_url = _save_generated_whatsapp_image(image_bytes, "png")
-        _cleanup_whatsapp_images()
-
-        print("[OPENAI IMAGEM] Imagem natural criada com sucesso.")
-        return generated_url
-
-    except Exception as exc:
-        print("[OPENAI IMAGEM] Erro; usando foto original:", repr(exc))
-        return original
+    return str(image_url or "").strip()
 
 
 @app.route("/whatsapp/image/<filename>")
