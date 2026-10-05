@@ -661,20 +661,43 @@ def valid_catalog_price(price):
     return True
 
 def normalize_item(x):
-    if not isinstance(x, dict) or not x.get("item_id"):
+    """Normaliza uma publicação real do Mercado Livre.
+
+    /sites/MLB/search e /items/{id} usam chaves diferentes para o ID:
+    a busca normalmente traz `id`, enquanto outros pontos do código usam
+    `item_id`. Aceitamos os dois para não descartar anúncios reais.
+    """
+    if not isinstance(x, dict):
         return None
+
+    item_id = x.get("item_id") or x.get("id")
+    if not item_id:
+        return None
+
     sh = x.get("shipping") or {}
     free = bool(sh.get("free_shipping"))
     cost = 0 if free else sh.get("cost")
+
+    seller = x.get("seller")
+    if isinstance(seller, dict):
+        seller_id = x.get("seller_id") or seller.get("id")
+    else:
+        seller_id = x.get("seller_id")
+
     return {
-        "item_id":x["item_id"], "seller_id":x.get("seller_id"),
-        "price":x.get("price"), "original_price":x.get("original_price"),
-        "condition":x.get("condition"), "listing_type_id":x.get("listing_type_id"),
-        "free_shipping":free, "shipping_cost":cost,
-        "logistic_type":sh.get("logistic_type"),
-        "shipping_mode":sh.get("mode"),
-        "permalink":x.get("permalink"), "user_product_id":x.get("user_product_id"),
-        "sold_quantity":x.get("sold_quantity") or x.get("sales") or 0,
+        "item_id": str(item_id),
+        "seller_id": seller_id,
+        "price": x.get("price") or x.get("sale_price"),
+        "original_price": x.get("original_price") or x.get("regular_price"),
+        "condition": x.get("condition"),
+        "listing_type_id": x.get("listing_type_id"),
+        "free_shipping": free,
+        "shipping_cost": cost,
+        "logistic_type": sh.get("logistic_type"),
+        "shipping_mode": sh.get("mode"),
+        "permalink": x.get("permalink"),
+        "user_product_id": x.get("user_product_id"),
+        "sold_quantity": x.get("sold_quantity") or x.get("sales") or 0,
     }
 
 # ============================================================
