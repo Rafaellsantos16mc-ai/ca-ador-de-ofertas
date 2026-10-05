@@ -1818,9 +1818,106 @@ ARABIC_PERFUME_TERMS = (
     "yara", "hayaati", "hawas", "club de nuit", "shaghaf",
 )
 
+PERFUME_POSITIVE_TERMS = (
+    "perfume", "parfum", "eau de parfum", "eau de toilette",
+    "eau de cologne", "deo colônia", "deo colonia", "desodorante colônia",
+    "desodorante colonia", "fragrance",
+)
+PERFUME_EXCLUDED_TERMS = (
+    "refil", "refill", "hidratante", "creme", "loção", "locao",
+    "sabonete", "shampoo", "condicionador", "body splash", "body mist",
+    "spray corporal", "desodorante aerosol", "kit banho", "necessaire",
+)
+
+def _is_real_perfume(title):
+    text = norm(title or "")
+    if not text:
+        return False
+    if any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
+        return False
+    return any(norm(term) in text for term in PERFUME_POSITIVE_TERMS)
+
 def _is_arabic_perfume(title):
     text = norm(title or "")
-    return any(norm(term) in text for term in ARABIC_PERFUME_TERMS)
+    return _is_real_perfume(title) and any(norm(term) in text for term in ARABIC_PERFUME_TERMS)
+
+_ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
+_ARABIC_BRAND_CACHE_LOCK = threading.Lock()
+
+def _arabic_brand_ids():
+    """Descobre IDs oficiais das marcas árabes na categoria de perfumes."""
+    now = time.time()
+    with _ARABIC_BRAND_CACHE_LOCK:
+        if now - float(_ARABIC_BRAND_CACHE.get("at") or 0) < 86400:
+            return list(_ARABIC_BRAND_CACHE.get("ids") or [])
+
+    wanted = {norm(x) for x in (
+        "Lattafa", "Rasasi", "Maison Alhambra", "Al Haramain",
+        "Armaf", "Afnan", "Al Wataniah", "Fragrance World",
+        "French Avenue",
+    )}
+    found = []
+    data, status, _ = ml_get(f"/categories/{BEST_SELLER_CATEGORY_IDS['🌸 Perfumes']}/attributes")
+    if status == 200 and isinstance(data, list):
+        for attr in data:
+            if not isinstance(attr, dict) or str(attr.get("id") or "").upper() != "BRAND":
+                continue
+            for value in attr.get("values") or []:
+                if not isinstance(value, dict):
+                    continue
+                name = norm(value.get("name") or "")
+                if name in wanted:
+                    found.append((str(value.get("id") or ""), str(value.get("name") or "")))
+            break
+
+    with _ARABIC_BRAND_CACHE_LOCK:
+        _ARABIC_BRAND_CACHE["at"] = time.time()
+        _ARABIC_BRAND_CACHE["ids"] = found
+    print(f"[PERFUMES ÁRABES] marcas oficiais encontradas: {len(found)}")
+    return list(found)
+
+def _search_arabic_perfumes():
+    """Busca os mais vendidos por marcas árabes usando o próprio ranking Highlights."""
+    category_id = BEST_SELLER_CATEGORY_IDS["🌸 Perfumes"]
+    brands = _arabic_brand_ids()
+    merged = {}
+
+    # O Highlights aceita filtro por atributo de marca. Assim não dependemos
+    # de uma busca textual comum para montar a categoria de perfumes árabes.
+    for brand_id, brand_name in brands:
+        try:
+            data, status, _ = ml_get(
+                f"/highlights/{SITE_ID}/category/{category_id}",
+                params={"attribute": "BRAND", "attributeValue": brand_id},
+            )
+            rows = data.get("content", []) if isinstance(data, dict) else []
+        except Exception as exc:
+            print("[PERFUMES ÁRABES] erro na marca", brand_name, repr(exc))
+            rows = []
+
+        for position, row in enumerate(rows[:20], start=1):
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("id") or "").strip()
+            typ = str(row.get("type") or "").upper().strip()
+            if not pid or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"}:
+                continue
+            current = merged.get(pid)
+            rank = int(row.get("position") or position)
+            if current is None or rank < current["highlight_position"]:
+                merged[pid] = {
+                    "id": pid,
+                    "name": pid,
+                    "title": pid,
+                    "source_type": typ,
+                    "highlight_position": rank,
+                    "highlight_category_id": category_id,
+                    "arabic_brand": brand_name,
+                }
+
+    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))[:20]
+    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking por marca")
+    return [(row, "🌙 Perfumes Árabes") for row in rows]
 
 def _search_category(cat):
     """Fonte única da busca: os 20 mais vendidos oficiais da categoria."""
@@ -1835,6 +1932,9 @@ def _search_category(cat):
     if not category_id:
         print(f"[TOP 20] {cat}: categoria não encontrada")
         return []
+
+    if cat == "🌙 Perfumes Árabes":
+        return _search_arabic_perfumes()
 
     try:
         ranking = highlights(category_id) or []
@@ -2331,10 +2431,17 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # “Perfumes Árabes” é uma categoria virtual: a API de Highlights não
-    # oferece uma categoria oficial separada para ela. O ranking de Perfumes
-    # continua sendo a única fonte e aqui filtramos os itens enriquecidos
-    # que têm sinais claros de perfumaria árabe.
+    # Perfumes: mostra somente produtos que realmente são perfumes/fragrâncias,
+    # evitando derivados como hidratantes, refis, sabonetes e body splash.
+    if "🌸 Perfumes" in categories:
+        offers = [
+            o for o in offers
+            if o.get("category_name") != "🌸 Perfumes"
+            or _is_real_perfume(o.get("title"))
+        ]
+
+    # Perfumes Árabes: além do ranking por marca, confirma o título para não
+    # deixar derivados passarem.
     if "🌙 Perfumes Árabes" in categories:
         offers = [
             o for o in offers
@@ -2912,7 +3019,7 @@ def get_job(job_id):
 
 def run_caca_job(job_id, category=None):
     try:
-        update_job(job_id, status="running", progress=5, message="🔎 Procurando produtos de alto giro rapidamente...")
+        update_job(job_id, status="running", progress=5, message="🔎 Iniciando busca completa dos 20 mais vendidos...")
 
         if category:
             # Uma categoria específica: busca todas as sementes dela.
@@ -2923,7 +3030,7 @@ def run_caca_job(job_id, category=None):
             queries = list(CATALOG.keys())
 
         update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
-        update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
+        update_job(job_id, progress=55, message="📦 Carregando os 20 mais vendidos de cada categoria...")
         result = scan_queries(queries, apply_coupons=True)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
         update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
@@ -3132,6 +3239,22 @@ button,input,select{width:100%;padding:13px;border-radius:10px;border:1px solid 
 </style>
 <script>
 let cacarTimer=null;
+
+async function cacarTodas(){
+ const status=document.getElementById('status');
+ status.textContent='🔄 Buscando os 20 mais vendidos de TODAS as categorias... Aguarde até terminar.';
+ document.getElementById('results').innerHTML='<p>🔎 Buscando os 20 mais vendidos de todas as categorias. Aguarde a busca completa...</p>';
+ if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
+ try{
+  const r=await fetch('/api/cacar',{cache:'no-store'});
+  const start=await r.json();
+  if(!start.job_id){throw new Error(start.erro||'Não foi possível iniciar a busca de todas as categorias.');}
+  acompanharCaca(start.job_id);
+ }catch(e){
+  status.textContent='❌ '+e.message;
+ }
+}
+
 async function cacar(cat){
  const status=document.getElementById('status');
  status.textContent='🔄 Carregando busca completa... Aguarde até terminar.';
@@ -3286,7 +3409,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
-<div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria. O sistema vai carregar a busca completa dos <b>20 mais vendidos</b> e só mostrará o resultado quando a consulta terminar.</p><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria para iniciar a busca completa.</p></div>
+<div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Escolha uma categoria para pesquisar individualmente ou use a opção abaixo para buscar <b>os 20 mais vendidos de TODAS as categorias de uma vez</b>.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold;font-size:16px;padding:16px" onclick="cacarTodas()">🔎 BUSCAR TODOS OS 20 MAIS VENDIDOS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão azul para buscar todas de uma vez.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
