@@ -1123,7 +1123,7 @@ def _extract_public_coupon_cards_from_text(text, source_url):
     lines = [re.sub(r"\s+", " ", x).strip() for x in clean.splitlines()]
     lines = [x for x in lines if x]
     coupon_re = re.compile(
-        r"\bCupom\s+(?:R\$\s*[\d\.]+(?:,[\d]{2})?|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)\b",
+        r"(?:\bCupom\s+(?:R\$\s*[\d\.]+(?:,[\d]{2})?|\d+(?:[.,]\d+)?)\s*(?:OFF|%\s*OFF)\b|\bR\$\s*[\d\.]+(?:,[\d]{2})?\s*OFF\s+com\s+Cupom\b|\b\d+(?:[.,]\d+)?\s*%\s*OFF\s+com\s+Cupom\b)",
         re.I,
     )
     money_re = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\.[0-9]{2})?)", re.I)
@@ -1332,14 +1332,31 @@ def _search_public_listing_for_coupon(title, price, item_id=None):
     return result
 
 def detect_public_coupon(text):
+    text = str(text or "")
+
+    # Formato tradicional: "Cupom R$15 OFF" / "Cupom 25% OFF".
     m = re.search(r"Cupom\s+R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*OFF", text, re.I)
     if m:
         value = parse_public_money("R$ " + m.group(1))
         return {"type":"fixed", "value":value, "label":f"Cupom {brl(value)} OFF"} if value else None
+
     m = re.search(r"Cupom\s+(\d+(?:[.,]\d+)?)\s*%\s*OFF", text, re.I)
     if m:
         value = float(m.group(1).replace(",", "."))
         return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
+
+    # Novo formato que o Mercado Livre está exibindo: "R$15 OFF com Cupom"
+    # ou "25% OFF com Cupom".
+    m = re.search(r"R\$\s*([\d\.]+,[\d]{2}|\d+(?:[.,]\d+)?)\s*OFF\s+com\s+Cupom", text, re.I)
+    if m:
+        value = parse_public_money("R$ " + m.group(1))
+        return {"type":"fixed", "value":value, "label":f"Cupom {brl(value)} OFF"} if value else None
+
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*%\s*OFF\s+com\s+Cupom", text, re.I)
+    if m:
+        value = float(m.group(1).replace(",", "."))
+        return {"type":"percent", "value":value, "label":f"Cupom {value:g}% OFF"}
+
     return None
 
 
@@ -2193,7 +2210,7 @@ def auto_scan(category=None, min_discount=0):
         queries = [category]
     else:
         queries = list(CATALOG.keys())
-    return scan_queries(queries, min_discount, apply_coupons=False)
+    return scan_queries(queries, min_discount, apply_coupons=True)
 
 # ============================================================
 # ANÚNCIO
@@ -2663,9 +2680,9 @@ def run_caca_job(job_id, category=None):
 
         update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
         update_job(job_id, progress=55, message="📦 Encontrando produtos de alto giro...")
-        result = scan_queries(queries, apply_coupons=False)
+        result = scan_queries(queries, apply_coupons=True)
         update_job(job_id, progress=96, message="📊 Finalizando ranking...")
-        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons ficam separados.", result=json_safe(result))
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
@@ -2678,7 +2695,7 @@ def run_caca_job(job_id, category=None):
 def api_buscar():
     q=request.args.get("q","").strip()
     if not q: return jsonify({"erro":"Informe uma busca."}),400
-    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=False)))
+    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=True)))
 
 @app.route("/api/cacar")
 def api_cacar():
