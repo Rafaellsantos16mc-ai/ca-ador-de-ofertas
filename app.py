@@ -3066,9 +3066,20 @@ def valid_affiliate_link(link):
         if host not in {"mercadolivre.com.br", "www.mercadolivre.com.br"}:
             return False
 
-        qs = parse_qs(parsed.query)
-        sid_values = {str(v).strip().lower() for v in qs.get("sid", [])}
-        wid_values = {str(v).strip().upper() for v in qs.get("wid", [])}
+        # Em links copiados pelo Compartilhar no iPhone, sid/wid podem vir
+        # depois do # (fragmento), e não na query string. Ex.:
+        # ...#origin=share&sid=share&wid=MLB4871129789
+        query_parts = [parsed.query or ""]
+        fragment = (parsed.fragment or "").lstrip("?#&")
+        if fragment:
+            query_parts.append(fragment)
+
+        sid_values = set()
+        wid_values = set()
+        for part in query_parts:
+            qs = parse_qs(part, keep_blank_values=True)
+            sid_values.update(str(v).strip().lower() for v in qs.get("sid", []))
+            wid_values.update(str(v).strip().upper() for v in qs.get("wid", []))
 
         return "share" in sid_values and any(re.fullmatch(r"MLB\d+", v) for v in wid_values)
     except Exception:
@@ -3755,8 +3766,18 @@ async function anuncio(id,o){
    if(/^(www\.)?meli\.la$/i.test(host) && /^\/[A-Za-z0-9]+\/?$/.test(u.pathname)){
     affiliateOk=true;
    }else if(/^(www\.)?mercadolivre\.com\.br$/i.test(host)){
-    const sid=(u.searchParams.get('sid')||'').toLowerCase();
-    const wid=(u.searchParams.get('wid')||'').toUpperCase();
+    // No iPhone, o Compartilhar pode colocar sid/wid no fragmento (#),
+    // por exemplo: #origin=share&sid=share&wid=MLB4871129789
+    const sidQuery=(u.searchParams.get('sid')||'').toLowerCase();
+    const widQuery=(u.searchParams.get('wid')||'').toUpperCase();
+    let sid=sidQuery;
+    let wid=widQuery;
+    if(!sid || !wid){
+      const hash=(u.hash||'').replace(/^#/, '');
+      const hp=new URLSearchParams(hash);
+      sid=(hp.get('sid')||sid).toLowerCase();
+      wid=(hp.get('wid')||wid).toUpperCase();
+    }
     affiliateOk=(sid==='share' && /^MLB\d+$/.test(wid));
    }
   }catch(e){}
