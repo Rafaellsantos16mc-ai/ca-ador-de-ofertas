@@ -2128,6 +2128,7 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     lines = [
         f"🛍️ {title}",
+        "",
     ]
 
     if o.get("original_price"):
