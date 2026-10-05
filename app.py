@@ -16,6 +16,9 @@ import requests
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
+
+# TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
+TESTE_SOMENTE_PERFUMES = True
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -87,58 +90,33 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    "📱 Celulares": [
-        "carregador turbo de parede", "cabo tipo c reforçado", "cabo lightning reforçado",
-        "power bank 10000mah", "power bank 20000mah", "fone bluetooth tws",
-        "fone xiaomi tws", "fone qcy tws", "fone jbl bluetooth",
-        "capinha silicone anti impacto", "película 3d privacidade celular", "kit capinha pelicula atacado",
-    ],
+    # FONTE DE VERDADE — lista exata definida para o teste de perfumes.
     "🌸 Perfumes": [
-        "perfume contratipo", "perfume in the box", "perfume thera cosméticos", "perfume nuancielo",
-        "brand collection perfume", "perfume importado masculino", "perfume importado feminino",
-        "perfume 30ml", "perfume 50ml", "body splash", "body mist",
-        "kit perfume shampoo", "kit perfume hidratante", "kit perfume creme",
+        # Contratipos Nacionais e Importados
+        "perfume contratipo",
+        "In The Box perfume",
+        "Thera Cosméticos perfume",
+        "Nuancielo perfume",
+        "Brand Collection perfume",
+
+        # Perfumaria de Grife Clássica
+        "perfume importado masculino 30ml",
+        "perfume importado masculino 50ml",
+        "perfume importado feminino 30ml",
+        "perfume importado feminino 50ml",
+
+        # Body Splashes
+        "body splash",
+        "colônia corporal",
+        "spray perfumado",
     ],
     "🌙 Perfumes Árabes": [
-        "lattafa asad", "lattafa yara", "maison alhambra perfume", "afnan perfume",
-        "lattafa perfume", "maison alhambra perfume feminino", "afnan perfume masculino",
-    ],
-    "🏋️ Academia": [
-        "creatina monohidratada 300g", "whey concentrado growth", "whey concentrado max titanium",
-        "whey concentrado integralmédica", "garrafa térmica inox stanley", "garrafa térmica inox kouda",
-        "shaker mixer", "mini bands academia", "short dupla face masculino", "top academia sustentação",
-        "camiseta dry fit academia",
-    ],
-    "🔧 Ferramentas": [
-        "parafusadeira a bateria kit maleta", "furadeira a bateria kit maleta",
-        "jogo chave combinada", "jogo chave fenda precisão eletrônica", "maleta ferramentas completa",
-        "medidor distância laser", "multímetro digital básico",
-    ],
-    "🎧 Eletrônicos": [
-        "smartwatch custo benefício", "smartband", "melhor smartwatch", "caixa de som bluetooth portátil",
-        "jbl go caixa bluetooth", "roku express", "fire tv stick", "câmera wi-fi 360 graus",
-        "câmera segurança 360 app",
-    ],
-    "🏠 Casa": [
-        "lâmpada inteligente wi-fi", "fita led rgb tv quarto", "luminária mesa sem fio",
-        "caixa organizadora plástica", "cesto organizador", "cabide veludo kit 30", "cabide veludo kit 50",
-        "pote vidro hermético", "cortina blackout", "tapete geométrico felpudo",
-    ],
-    "🍳 Cozinha": [
-        "air fryer grande capacidade", "chaleira elétrica inox", "mini processador usb recarregável",
-        "kit colher silicone cabo bambu", "balança digital cozinha precisão", "suporte pratos armário",
-        "porta temperos magnético giratório",
-    ],
-    "🚗 Automotivo": [
-        "cera cristalizadora", "revitalizador de plásticos", "pretinho pneu longa duração",
-        "flanela microfibra alta gsm", "central multimídia universal 7 polegadas",
-        "suporte celular magnético saída ar", "carregador turbo veicular", "kit super led farol",
-        "câmera de ré com sensor",
-    ],
-    "👕 Moda": [
-        "kit camiseta algodão lisa 3", "kit camiseta algodão lisa 5", "kit cueca boxer",
-        "meia sapatilha masculina kit", "meia sapatilha feminina kit", "short tactel elastano masculino",
-        "vestido feminino casual leve", "tênis casual tecido slip on", "chinelo marca popular confortável",
+        # Fragrâncias Virais do TikTok — somente as marcas definidas.
+        "Lattafa perfume",
+        "Lattafa Asad",
+        "Lattafa Yara",
+        "Maison Alhambra perfume",
+        "Afnan perfume",
     ],
 }
 
@@ -1532,16 +1510,8 @@ _DEMAND_LOCK = threading.Lock()
 CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 
 DEMAND_ANCHORS = {
-    "📱 Celulares": ["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"],
     "🌸 Perfumes": ["perfume", "parfum", "fragrance", "body splash", "body mist", "kit perfume"],
     "🌙 Perfumes Árabes": ["lattafa", "yara", "asad", "maison alhambra", "afnan"],
-    "🏋️ Academia": ["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"],
-    "🔧 Ferramentas": ["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"],
-    "🎧 Eletrônicos": ["smartwatch", "smartband", "caixa de som", "roku", "fire tv", "camera"],
-    "🏠 Casa": ["lampada", "fita led", "luminaria", "organizador", "cabide", "pote", "cortina", "tapete"],
-    "🍳 Cozinha": ["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"],
-    "🚗 Automotivo": ["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"],
-    "👕 Moda": ["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"],
 }
 
 _PRODUCT_CACHE = {}
@@ -1808,12 +1778,14 @@ BEST_SELLER_CATEGORY_IDS = {
 
 
 ARABIC_PERFUME_TERMS = (
-    "lattafa", "maison alhambra", "afnan", "asad", "yara",
+    "lattafa", "maison alhambra", "afnan",
 )
 
 PERFUME_POSITIVE_TERMS = (
     "perfume", "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
-    "fragrance", "body splash", "body mist", "kit perfume", "kit com perfume",
+    "fragrance", "body splash", "colonia corporal", "colônia corporal",
+    "spray perfumado", "contratipo", "in the box", "thera cosméticos",
+    "thera cosmeticos", "nuancielo", "brand collection",
 )
 PERFUME_EXCLUDED_TERMS = (
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
@@ -1870,47 +1842,51 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_perfumes():
-    """Busca os mais vendidos por marcas árabes usando o próprio ranking Highlights."""
-    category_id = BEST_SELLER_CATEGORY_IDS["🌸 Perfumes"]
-    brands = _arabic_brand_ids()
-    merged = {}
+    """Teste isolado: busca somente Lattafa, Maison Alhambra e Afnan."""
+    queries = [
+        "lattafa asad",
+        "lattafa yara",
+        "lattafa perfume",
+        "maison alhambra perfume",
+        "afnan perfume",
+    ]
+    out = []
+    seen = set()
+    rank_base = 1
 
-    # O Highlights aceita filtro por atributo de marca. Assim não dependemos
-    # de uma busca textual comum para montar a categoria de perfumes árabes.
-    for brand_id, brand_name in brands:
+    for q in queries:
         try:
-            data, status, _ = ml_get(
-                f"/highlights/{SITE_ID}/category/{category_id}",
-                params={"attribute": "BRAND", "attributeValue": brand_id},
-            )
-            rows = data.get("content", []) if isinstance(data, dict) else []
+            rows = search_real_listings(q, limit=50)
         except Exception as exc:
-            print("[PERFUMES ÁRABES] erro na marca", brand_name, repr(exc))
-            rows = []
+            print("[ARABES BUSCA]", q, repr(exc))
+            continue
 
-        for position, row in enumerate(rows[:20], start=1):
+        for j, row in enumerate(rows, start=1):
             if not isinstance(row, dict):
                 continue
-            pid = str(row.get("id") or "").strip()
-            typ = str(row.get("type") or "").upper().strip()
-            if not pid or typ not in {"ITEM", "PRODUCT", "USER_PRODUCT"}:
+            item_id = str(row.get("id") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if not item_id or item_id in seen or not title:
                 continue
-            current = merged.get(pid)
-            rank = int(row.get("position") or position)
-            if current is None or rank < current["highlight_position"]:
-                merged[pid] = {
-                    "id": pid,
-                    "name": pid,
-                    "title": pid,
-                    "source_type": typ,
-                    "highlight_position": rank,
-                    "highlight_category_id": category_id,
-                    "arabic_brand": brand_name,
-                }
+            seen.add(item_id)
+            out.append(({
+                "id": item_id,
+                "name": title,
+                "title": title,
+                "source_type": "ITEM",
+                "highlight_position": rank_base + j,
+                "highlight_category_id": BEST_SELLER_CATEGORY_IDS.get("🌸 Perfumes"),
+                "permalink": row.get("permalink"),
+                "thumbnail": row.get("thumbnail"),
+                "pictures": row.get("pictures") or [],
+                "price": row.get("price"),
+                "original_price": row.get("original_price") or row.get("regular_price"),
+                "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+            }, "🌙 Perfumes Árabes"))
+        rank_base += max(50, len(rows))
 
-    rows = sorted(merged.values(), key=lambda x: (x["highlight_position"], x["id"]))[:20]
-    print(f"[PERFUMES ÁRABES] {len(rows)} candidatos no ranking por marca")
-    return [(row, "🌙 Perfumes Árabes") for row in rows]
+    print(f"[ARABES BUSCA REAL] {len(out)} anúncios candidatos")
+    return out
 
 def _search_category(cat):
     """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
@@ -1924,24 +1900,7 @@ def _search_category(cat):
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
-        perfume_queries = [
-            "perfume masculino",
-            "perfume feminino",
-            "perfume importado",
-            "perfume nacional",
-            "perfume contratipo",
-            "perfume in the box",
-            "perfume thera cosméticos",
-            "perfume nuancielo",
-            "brand collection perfume",
-            "perfume 30ml",
-            "perfume 50ml",
-            "body splash",
-            "body mist",
-            "kit perfume shampoo",
-            "kit perfume hidratante",
-            "kit perfume creme",
-        ]
+        perfume_queries = list(CATALOG["🌸 Perfumes"])
 
         rank_base = 1
         for q in perfume_queries:
