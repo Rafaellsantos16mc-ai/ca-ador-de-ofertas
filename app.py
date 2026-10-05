@@ -1829,14 +1829,14 @@ ARABIC_PERFUME_TERMS = (
 # A categoria oficial de perfumes do Mercado Livre pode trazer derivados
 # misturados no ranking: hidratantes, desodorantes, body splash, kits etc.
 # Aqui a regra é propositalmente rígida: o título precisa representar um
-# perfume/fragrância como produto principal.
+# perfume/fragrância humano como produto principal.
 #
 # IMPORTANTE:
 # - "desodorante colônia" NÃO entra;
 # - "body splash/body mist" ENTRA;
-# - kits/combos/conjuntos NÃO entram;
-# - produtos de banho/cuidado corporal NÃO entram;
-# - acessórios e embalagens/refis NÃO entram.
+# - kit com shampoo/hidratante/creme ENTRA;
+# - produtos de banho/cuidado corporal de PET NÃO entram;
+# - acessórios, embalagens, amostras e refis NÃO entram.
 PERFUME_POSITIVE_TERMS = (
     "perfume",
     "parfum",
@@ -1863,6 +1863,32 @@ PERFUME_EXCLUDED_TERMS = (
     "necessaire",
     "estojo vazio",
     "frasco vazio",
+
+    # Produtos para animais: a categoria do Mercado Livre mistura
+    # "perfume/colônia" para pets com perfumes humanos.
+    "perfume para cachorro",
+    "perfume para cães",
+    "perfume para caes",
+    "perfume para gato",
+    "perfume para gatos",
+    "perfume pet",
+    "perfume para pet",
+    "colônia pet",
+    "colonia pet",
+    "pet clean",
+    "banho e tosa",
+    "banho seco pet",
+    "cachorro",
+    "cães",
+    "caes",
+    "gato",
+    "gatos",
+    "canino",
+    "canina",
+    "felino",
+    "felina",
+    "animalíssimo",
+    "animalissimo",
 )
 
 def _is_real_perfume(title):
@@ -2423,7 +2449,12 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     price = sale
                     if sale_original is not None:
                         original = sale_original
-            if price is None or price <= 0 or price > 100000:
+            # O preço mínimo de R$ 69,90 é uma regra global do Caçador.
+            # Aqui aplicamos novamente depois do enriquecimento do anúncio,
+            # porque é neste ponto que temos o preço real do item que será
+            # exibido. Isso evita que produtos de R$ 15, R$ 22,99 etc.
+            # escapem para a lista final.
+            if price is None or price <= 0 or price < MIN_PRODUCT_PRICE or price > 100000:
                 continue
 
             if original is None and isinstance(p.get("buy_box_winner"), dict):
@@ -2533,8 +2564,18 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     flat = []
     for cat in categories:
         arr = grouped.get(cat, [])
+        # Primeiro preserva somente os 20 melhores classificados da categoria.
+        # Depois embaralha a ordem de exibição para que os resultados NÃO
+        # apareçam sempre em sequência (#1, #2, #3, #4...).
         arr.sort(key=lambda o: float(o.get("best_seller_position") or 99))
-        flat.extend(arr[:20])
+        selecionados = arr[:20]
+        secrets.SystemRandom().shuffle(selecionados)
+        flat.extend(selecionados)
+
+    # Quando a busca envolve várias categorias, mistura também as categorias
+    # na tela. O ranking original continua guardado em best_seller_position,
+    # mas a apresentação fica aleatória a cada nova busca.
+    secrets.SystemRandom().shuffle(flat)
 
     if apply_coupons and flat:
         public_cards = get_public_coupon_cards_cached()
