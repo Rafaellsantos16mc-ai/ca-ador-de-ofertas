@@ -3593,9 +3593,8 @@ AFFILIATE_PORTAL_URL = "https://www.mercadolivre.com.br/l/visite-o-portal-de-afi
 
 @app.route("/afiliado/gerador")
 def afiliado_gerador():
-    # O Mercado Livre documenta o Gerador oficial, mas não documenta uma API
-    # pública para o nosso app transformar item_id em link de afiliado.
-    # Portanto abrimos o gerador oficial em vez de fabricar um link inválido.
+    # Mantido apenas para compatibilidade com versões antigas.
+    # No iPhone, o fluxo principal usa a página do produto no app.
     return redirect(AFFILIATE_PORTAL_URL)
 
 @app.route("/afiliado/portal")
@@ -3702,14 +3701,22 @@ function seller(o,mi,oi){
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
- <a href="/afiliado/portal"><button style="background:#ffe600;color:#222">📲 Abrir Central de Afiliados</button></a>
- <div class="small" style="margin-top:8px">📱 No iPhone: abra a Central de Afiliados para gerar/compartilhar seu link. O Caçador não fabrica links meli.la.</div>
+ <button onclick="abrirProdutoMercadoLivre(${JSON.stringify(o.permalink)})" style="background:#ffe600;color:#222">📱 Abrir produto no Mercado Livre</button>
+ <div class="small" style="margin-top:8px">📱 No iPhone: abra o produto no app Mercado Livre e use <b>Compartilhar</b> pela Central/Barra de Afiliados para gerar seu link. Depois cole o <b>meli.la</b> aqui.</div>
  <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link meli.la deste produto" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
  <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}','${encodeURIComponent(String(o.image||''))}')">📲 Enviar para WhatsApp</button>
  <div id="ad_${id}" class="ad"></div>
  </div>`;
+}
+
+function abrirProdutoMercadoLivre(url){
+ try{
+  window.location.href=url;
+ }catch(e){
+  window.open(url,'_blank');
+ }
 }
 
 async function copiarUrl(id,url){
