@@ -2035,7 +2035,8 @@ PERFUME_POSITIVE_TERMS = (
 
 # Itens que não devem entrar como perfume.
 PERFUME_EXCLUDED_TERMS = (
-    "contratipo", "refil", "refill", "amostra", "decant", "decante", "miniatura",
+    "contratipo", "contratipos", "refil", "refill", "amostra", "decant", "decante", "decants", "miniatura",
+    "kit", "combo", "duo", "conjunto", "pack", "par de", "2 perfumes", "2 perfume", "dois perfumes",
     "porta perfume", "necessaire", "estojo vazio", "frasco vazio",
     "desodorante aerosol", "pet perfume", "perfume pet", "perfume para cachorro",
     "perfume para gato", "colonia pet", "colônia pet", "perfume cachorro",
@@ -2049,6 +2050,15 @@ def _is_real_perfume(title):
     if not text:
         return False
     if any(norm(term) in text for term in PERFUME_EXCLUDED_TERMS):
+        return False
+
+    # Combos explícitos de duas ou mais fragrâncias não entram.
+    # Ex.: "Asad 100ml + Asad Zanzibar 100ml".
+    if re.search(r"\b\d+\s*[x×]\s*\d+", text):
+        return False
+    if re.search(r"\b(?:2|3|4|5)\s*(?:unidades?|frascos?|perfumes?)\b", text):
+        return False
+    if " + " in str(title or ""):
         return False
 
     # Perfumes, EDP/EDT, Body Splash, Body Mist e colônias entram.
@@ -2911,8 +2921,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # Perfumes: mostra somente produtos que realmente são perfumes/fragrâncias,
-    # incluindo Body Splash, Body Mist e kits permitidos.
+    # Perfumes: mostra somente perfumes/fragrâncias individuais,
+    # incluindo Body Splash e Body Mist, sem kits/combos.
     if "🌸 Perfumes" in categories:
         offers = [
             o for o in offers
@@ -2928,6 +2938,29 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if o.get("category_name") != "🌙 Perfumes Árabes"
             or _is_arabic_perfume(o.get("title"))
         ]
+
+    # Elimina duplicatas do mesmo produto/publicação que chegam por vendedores
+    # ou rankings diferentes. Para o usuário, cada título de perfume deve aparecer
+    # uma única vez; entre duplicatas, mantém a oferta de menor total/preço.
+    unique_offers = {}
+    for o in offers:
+        title_key = norm(o.get("title") or "")
+        item_key = str(o.get("item_id") or o.get("product_id") or "").strip()
+        key = title_key or item_key
+        if not key:
+            continue
+        current = unique_offers.get(key)
+        if current is None:
+            unique_offers[key] = o
+            continue
+        def _offer_value(x):
+            try:
+                return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
+            except Exception:
+                return 999999.0
+        if _offer_value(o) < _offer_value(current):
+            unique_offers[key] = o
+    offers = list(unique_offers.values())
 
     offers.sort(key=lambda o: (
         o.get("category_name") or "",
