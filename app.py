@@ -3810,6 +3810,9 @@ def _affiliate_queue_from_saved_offers(limit=50):
                 'affiliate_link': '',
                 'extra_earnings': row['extra_earnings'] or 0,
             }
+            # Antes de colocar na fila, transforma URL de catálogo (/p/MLB...)
+            # em permalink do anúncio real quando temos item_id.
+            offer = _hydrate_real_item_permalink(offer)
             payload = json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":"))
             conn.execute(
                 "INSERT INTO affiliate_queue(product_id,offer_json,status,affiliate_link,attempts) VALUES(?,?, 'pending','',0)",
@@ -3843,6 +3846,21 @@ def _affiliate_queue_next():
     conn.commit(); conn.close()
     try: offer=json.loads(row["offer_json"] or "{}")
     except Exception: offer={}
+
+    # Garante que a navegação do Safari use a publicação real.
+    # O catálogo /p/MLB... pode abrir uma página inexistente em alguns casos.
+    try:
+        offer = _hydrate_real_item_permalink(offer)
+        conn=get_db()
+        conn.execute(
+            "UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":")), row["id"]),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print("[FILA] Não foi possível atualizar permalink real:", repr(exc))
+
     return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
 
 def _affiliate_queue_complete(queue_id, affiliate_link):
@@ -4293,7 +4311,24 @@ def api_afiliado_fila_popular():
 
                     offer = dict(raw_offer)
                     product_id = str(offer.get("product_id") or offer.get("id") or "").strip()
+                    item_id = str(offer.get("item_id") or "").strip()
                     permalink = str(offer.get("permalink") or "").strip()
+
+                    # IMPORTANTE: para abrir no Safari, precisamos da URL REAL
+                    # do anúncio/item, não apenas da URL de catálogo /p/MLB....
+                    # Alguns catálogos não aceitam /p/ diretamente no navegador.
+                    # Se temos item_id, buscamos o permalink oficial do anúncio.
+                    if item_id:
+                        try:
+                            item_data, item_status, _ = ml_get(f"/items/{item_id}")
+                            real_permalink = str((item_data or {}).get("permalink") or "").strip()
+                            if item_status == 200 and real_permalink:
+                                permalink = real_permalink
+                                offer["permalink"] = real_permalink
+                        except Exception as resolve_exc:
+                            if len(erros) < 10:
+                                erros.append(f"oferta {idx}: não foi possível resolver permalink do item {item_id}: {resolve_exc}")
+
                     try:
                         price = float(offer.get("price") or 0)
                     except (TypeError, ValueError):
@@ -4330,6 +4365,12 @@ def api_afiliado_fila_popular():
                     # publicação. Não apagamos o histórico; apenas não o usamos
                     # como bloqueio nesta etapa de teste. A proteção contra
                     # duplicidade será religada na automação definitiva.
+
+                    # Último fallback: só usa /p/ quando não foi possível
+                    # obter o permalink real do anúncio.
+                    if not permalink and product_id:
+                        permalink = f"https://www.mercadolivre.com.br/p/{product_id}"
+                        offer["permalink"] = permalink
 
                     payload = json.dumps(
                         json_safe(offer),
