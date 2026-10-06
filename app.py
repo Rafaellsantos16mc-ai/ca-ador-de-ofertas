@@ -3886,65 +3886,102 @@ def _affiliate_queue_from_saved_offers(limit=50):
 
 
 def _affiliate_queue_next():
-    # MODO DE TESTE: qualquer item que ficou em processing por uma tentativa
-    # anterior pode ser retomado. O fluxo ainda não conclui a oferta até o
-    # link de afiliado ser gerado e retornado ao Caçador.
+    """Pega a próxima oferta UTILIZÁVEL da fila.
+
+    Correção importante da V16:
+    versões anteriores pegavam apenas o primeiro registro. Se aquele produto
+    não tivesse mais um anúncio ativo, _hydrate_real_item_permalink() devolvia
+    a oferta para pending e a função encerrava. A tela então dizia "nenhuma
+    oferta pendente" mesmo com dezenas de ofertas na fila.
+
+    Agora percorremos vários candidatos e só paramos quando encontramos uma
+    publicação real que possa ser aberta no Safari. Os candidatos inválidos
+    permanecem pending para uma nova tentativa futura, e o sistema segue para
+    o próximo item da fila imediatamente.
+    """
     _affiliate_queue_recover_stale()
-    conn=get_db(); ensure_affiliate_queue_table(conn)
-    row=conn.execute("SELECT * FROM affiliate_queue WHERE status=\'pending\' ORDER BY id ASC LIMIT 1").fetchone()
-    # Se não há pending, reaproveita o processing mais antigo. Isso é
-    # importante durante os testes porque as versões anteriores marcaram
-    # ofertas como processing antes de abrir o Safari.
-    if not row:
-        row=conn.execute("SELECT * FROM affiliate_queue WHERE status=\'processing\' ORDER BY id ASC LIMIT 1").fetchone()
-        if row:
-            conn.execute("UPDATE affiliate_queue SET status=\'pending\', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
+    last_error = None
+    max_candidates = 30
+
+    for _ in range(max_candidates):
+        conn = get_db()
+        ensure_affiliate_queue_table(conn)
+        row = conn.execute(
+            "SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            # Fallback para listas antigas que ainda não chegaram à fila.
+            _affiliate_queue_from_saved_offers(limit=50)
+            conn = get_db()
+            ensure_affiliate_queue_table(conn)
+            row = conn.execute(
+                "SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            conn.close()
+
+        if not row:
+            break
+
+        qid = int(row["id"])
+        conn = get_db()
+        conn.execute(
+            "UPDATE affiliate_queue SET status='processing', attempts=attempts+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (qid,)
+        )
+        conn.commit()
+        conn.close()
+
+        try:
+            offer = json.loads(row["offer_json"] or "{}")
+        except Exception:
+            offer = {}
+
+        try:
+            offer = _hydrate_real_item_permalink(offer)
+            permalink = str(offer.get("permalink") or "").strip()
+            if not permalink or re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I):
+                raise RuntimeError(
+                    f"URL pública do anúncio não resolvida para {offer.get('item_id') or offer.get('product_id')}"
+                )
+
+            conn = get_db()
+            conn.execute(
+                "UPDATE affiliate_queue SET offer_json=?, status='processing', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":")), qid),
+            )
             conn.commit()
-            row=conn.execute("SELECT * FROM affiliate_queue WHERE id=?", (row["id"],)).fetchone()
-    conn.close()
+            conn.close()
+            print("[FILA] Oferta válida encontrada:", qid, offer.get("item_id"), permalink)
+            return {"id": qid, "product_id": row["product_id"], "offer": offer}
 
-    # Se a fila estiver vazia, usa a última lista salva pelo Caçador.
-    # Assim o teste não depende de uma segunda chamada AJAX ter sido concluída.
-    if not row:
-        _affiliate_queue_from_saved_offers(limit=50)
-        conn=get_db(); ensure_affiliate_queue_table(conn); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
-        conn.close()
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            print("[FILA] Oferta não utilizável; tentando a próxima:", qid, repr(exc))
+            conn = get_db()
+            conn.execute(
+                "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (qid,),
+            )
+            conn.commit()
+            conn.close()
+            # Continua imediatamente para a próxima oferta.
+            continue
 
-    if not row: return None
-    conn=get_db()
-    conn.execute("UPDATE affiliate_queue SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],))
-    conn.commit(); conn.close()
-    try: offer=json.loads(row["offer_json"] or "{}")
-    except Exception: offer={}
-
-    # Garante que a navegação do Safari use a publicação real.
-    # O catálogo /p/MLB... pode abrir uma página inexistente em alguns casos.
+    # Se não encontramos nenhuma publicação válida, devolvemos uma mensagem
+    # específica. Não chamamos isso de "fila vazia" quando ainda existem itens.
+    conn = get_db()
     try:
-        offer = _hydrate_real_item_permalink(offer)
-
-        permalink = str(offer.get("permalink") or "").strip()
-        if not permalink or re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I):
-            raise RuntimeError(f"URL pública do anúncio não resolvida para {offer.get('item_id')}")
-
-        conn=get_db()
-        conn.execute(
-            "UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":")), row["id"]),
-        )
-        conn.commit()
+        total_ativas = conn.execute(
+            "SELECT COUNT(*) AS n FROM affiliate_queue WHERE status IN ('pending','processing')"
+        ).fetchone()["n"]
+    finally:
         conn.close()
-    except Exception as exc:
-        print("[FILA] Não foi possível validar permalink real:", repr(exc))
-        conn=get_db()
-        conn.execute(
-            "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (row["id"],),
-        )
-        conn.commit()
-        conn.close()
-        return None
 
-    return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
+    if total_ativas:
+        print("[FILA] Nenhum anúncio utilizável entre os candidatos testados:", last_error)
+    return None
 
 def _affiliate_queue_complete(queue_id, affiliate_link):
     try: qid=int(queue_id)
