@@ -688,12 +688,13 @@ def _hydrate_real_item_permalink(item):
         return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
 
     def public_permalink(data, iid):
+        # IMPORTANTE: nunca inventar uma URL de anúncio.
+        # O Mercado Livre pode devolver um item existente sem permalink
+        # público utilizável. Nesse caso o chamador deve tentar outro item.
         url = str((data or {}).get("permalink") or "").strip()
         if url and not is_catalog_url(url):
             return url
-        # O formato produto.mercadolivre.com.br/MLB-NNN é uma URL pública
-        # de anúncio e não uma URL de catálogo /p/MLB....
-        return f"https://produto.mercadolivre.com.br/MLB-{iid.replace('MLB', '', 1)}"
+        return ""
 
     # Monta candidatos: primeiro o item salvo e depois os anúncios do catálogo.
     candidate_ids = []
@@ -705,7 +706,7 @@ def _hydrate_real_item_permalink(item):
             for cand in product_items(product_id):
                 if not isinstance(cand, dict):
                     continue
-                cid = str(cand.get("item_id") or "").strip()
+                cid = str(cand.get("item_id") or cand.get("id") or "").strip()
                 if cid and cid not in candidate_ids:
                     candidate_ids.append(cid)
         except Exception as exc:
@@ -732,8 +733,13 @@ def _hydrate_real_item_permalink(item):
             if state and state not in {"active"}:
                 continue
 
+            real_permalink = public_permalink(data, cid)
+            if not real_permalink:
+                print("[PERMALINK SEM URL PUBLICA]", cid, "-> tentando próximo anúncio")
+                continue
+
             item["item_id"] = cid
-            item["permalink"] = public_permalink(data, cid)
+            item["permalink"] = real_permalink
 
             seller = data.get("seller")
             if isinstance(seller, dict) and not item.get("seller_id"):
