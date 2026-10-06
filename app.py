@@ -3572,7 +3572,7 @@ def whatsapp_image(filename):
 # PUBLICAÇÃO AUTOMÁTICA NO WHATSAPP
 # ============================================================
 
-AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = 300  # 5 minutos
 AUTO_WHATSAPP_LIMIT = 1  # exatamente 1 oferta por rodada
 AUTO_WHATSAPP_LOCK = threading.Lock()
@@ -4085,6 +4085,35 @@ def diagnostico():
 
 AFFILIATE_GENERATOR_URL = "https://www.mercadolivre.com.br/l/afiliados-gere-seus-links"
 AFFILIATE_PORTAL_URL = "https://www.mercadolivre.com.br/l/visite-o-portal-de-afiliados"
+
+@app.route("/api/afiliado/teste")
+def api_afiliado_teste():
+    """Diagnóstico seguro do fluxo de afiliado.
+
+    Esta rota NÃO fabrica nem inventa um link de afiliado. O Mercado Livre
+    documenta a geração pelo Portal/Barra de Afiliados e, na documentação
+    pública consultada, não há um endpoint público documentado que transforme
+    diretamente um MLB... em meli.la para o nosso app.
+    """
+    item_id = str(request.args.get("item_id") or "").strip().upper()
+    if item_id and not re.fullmatch(r"MLB\d+", item_id):
+        return jsonify({
+            "ok": False,
+            "erro": "item_id inválido. Use um ID no formato MLB123456789.",
+        }), 400
+
+    produto_url = f"https://www.mercadolivre.com.br/p/{item_id}" if item_id else ""
+    return jsonify({
+        "ok": True,
+        "teste": "afiliado",
+        "item_id": item_id or None,
+        "produto_url": produto_url or None,
+        "api_publica_documentada_para_gerar_link": False,
+        "gerador_oficial": AFFILIATE_GENERATOR_URL,
+        "portal_oficial": AFFILIATE_PORTAL_URL,
+        "whatsapp_automatico": AUTO_WHATSAPP_ENABLED,
+        "observacao": "A permissão 'Criar e gerenciar links e cupons de afiliados' encontrada em Colaboradores é uma permissão de colaborador humano; ela não cria automaticamente um OAuth/API scope para este Railway.",
+    })
 
 @app.route("/afiliado/gerador")
 def afiliado_gerador():
