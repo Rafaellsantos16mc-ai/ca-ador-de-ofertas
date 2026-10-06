@@ -669,63 +669,94 @@ def product_items(pid):
 
 
 def _hydrate_real_item_permalink(item):
-    """Resolve SEMPRE a URL pública do anúncio real quando há item_id.
+    """Resolve uma publicação REAL e ATIVA para abrir no Safari.
 
-    O gerador de afiliados do Mercado Livre pode rejeitar URLs de catálogo
-    no formato /p/MLB..., mesmo quando o produto tem uma publicação real.
-    Por isso, quando temos item_id, consultamos /items/{item_id} antes de
-    liberar a oferta para o fluxo do Safari.
-
-    Estratégia: usar o permalink retornado pelo item real; se a API não
-    devolver permalink, criar o formato público /MLB-ITEM_ID como fallback.
-    Nunca substituímos uma URL real por /p/MLB... .
+    O problema das versões anteriores era confiar no primeiro item/permalink.
+    Um produto de catálogo pode ter vários anúncios e o primeiro pode estar
+    encerrado, removido ou apontar para uma página que o Safari informa como
+    inexistente. Aqui testamos os candidatos e só aceitamos um anúncio ativo
+    que a API /items/{item_id} confirme como existente.
     """
     if not isinstance(item, dict):
         return item
 
-    item_id = str(item.get("item_id") or "").strip()
-    if not item_id:
-        return item
+    product_id = str(item.get("product_id") or "").strip()
+    original_item_id = str(item.get("item_id") or "").strip()
+    original_permalink = str(item.get("permalink") or "").strip()
 
-    original = str(item.get("permalink") or "").strip()
-    real_url = ""
+    def is_catalog_url(url):
+        return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
 
-    try:
-        data, status, _ = ml_get(f"/items/{item_id}")
-        if status == 200 and isinstance(data, dict):
-            real_url = str(data.get("permalink") or "").strip()
+    def public_permalink(data, iid):
+        url = str((data or {}).get("permalink") or "").strip()
+        if url and not is_catalog_url(url):
+            return url
+        # O formato produto.mercadolivre.com.br/MLB-NNN é uma URL pública
+        # de anúncio e não uma URL de catálogo /p/MLB....
+        return f"https://produto.mercadolivre.com.br/MLB-{iid.replace('MLB', '', 1)}"
 
-            if not item.get("seller_id"):
-                seller = data.get("seller")
-                if isinstance(seller, dict):
-                    item["seller_id"] = seller.get("id")
+    # Monta candidatos: primeiro o item salvo e depois os anúncios do catálogo.
+    candidate_ids = []
+    if original_item_id:
+        candidate_ids.append(original_item_id)
 
-            if not item.get("sold_quantity"):
-                item["sold_quantity"] = data.get("sold_quantity") or 0
+    if product_id:
+        try:
+            for cand in product_items(product_id):
+                if not isinstance(cand, dict):
+                    continue
+                cid = str(cand.get("item_id") or "").strip()
+                if cid and cid not in candidate_ids:
+                    candidate_ids.append(cid)
+        except Exception as exc:
+            print("[PERMALINK PRODUCT->ITEM]", product_id, repr(exc))
 
-            if not item.get("price") and data.get("price") is not None:
+    # Se a lista antiga não tinha item_id, mas trouxe um permalink de anúncio,
+    # tenta extrair MLB do próprio link antes de desistir.
+    if not candidate_ids and original_permalink:
+        m = re.search(r"(?:MLB-|/MLB)(\d+)", original_permalink, re.I)
+        if m:
+            candidate_ids.append("MLB" + m.group(1))
+
+    # Testa os candidatos diretamente na API. Só um anúncio que exista e esteja
+    # ativo pode seguir para o Safari.
+    for cid in candidate_ids:
+        try:
+            data, status, _ = ml_get(f"/items/{cid}")
+            if status != 200 or not isinstance(data, dict):
+                continue
+
+            state = str(data.get("status") or "").lower().strip()
+            # Alguns retornos não trazem status; nesse caso, o HTTP 200 já é
+            # suficiente para considerar o anúncio utilizável.
+            if state and state not in {"active"}:
+                continue
+
+            item["item_id"] = cid
+            item["permalink"] = public_permalink(data, cid)
+
+            seller = data.get("seller")
+            if isinstance(seller, dict) and not item.get("seller_id"):
+                item["seller_id"] = seller.get("id")
+            if data.get("price") is not None:
                 item["price"] = data.get("price")
-
-            if not item.get("original_price") and data.get("original_price") is not None:
+            if data.get("original_price") is not None:
                 item["original_price"] = data.get("original_price")
+            if data.get("sold_quantity") is not None:
+                item["sold_quantity"] = data.get("sold_quantity")
+            if data.get("title") and not item.get("title"):
+                item["title"] = data.get("title")
 
-    except Exception as exc:
-        print("[PERMALINK ITEM]", item_id, repr(exc))
+            print("[PERMALINK REAL ATIVO]", product_id, "=>", cid, item["permalink"])
+            return item
+        except Exception as exc:
+            print("[PERMALINK ITEM]", cid, repr(exc))
 
-    # O permalink retornado pelo /items é a primeira escolha.
-    if real_url and not re.search(r"/p/MLB\d+(?:[/?#]|$)", real_url, re.I):
-        item["permalink"] = real_url
-        return item
-
-    # Se a API não forneceu um permalink real, usamos o formato público
-    # tradicional do anúncio. Isso evita enviar /p/MLB... ao Safari.
-    fallback = f"https://produto.mercadolivre.com.br/MLB-{item_id.replace('MLB', '', 1)}" if item_id.upper().startswith("MLB") else f"https://produto.mercadolivre.com.br/{item_id}"
-    item["permalink"] = fallback
-
-    if original and re.search(r"/p/MLB\d+(?:[/?#]|$)", original, re.I):
-        print("[PERMALINK CORRIGIDO]", original, "=>", fallback)
-
-    return item
+    # Não manda catálogo nem anúncio possivelmente morto para o Safari.
+    # O chamador devolverá a oferta para pending para tentar a próxima.
+    raise RuntimeError(
+        f"Nenhum anúncio ativo encontrado para product_id={product_id or '-'} item_id={original_item_id or '-'}"
+    )
 
 PRICE_CACHE = {}
 
@@ -3772,7 +3803,6 @@ def _affiliate_queue_recover_stale():
         UPDATE affiliate_queue
            SET status='pending', updated_at=CURRENT_TIMESTAMP
          WHERE status='processing'
-           AND updated_at < datetime('now','-15 minutes')
     """)
     conn.commit()
     conn.close()
@@ -3834,8 +3864,13 @@ def _affiliate_queue_from_saved_offers(limit=50):
                 'extra_earnings': row['extra_earnings'] or 0,
             }
             # Antes de colocar na fila, transforma URL de catálogo (/p/MLB...)
-            # em permalink do anúncio real quando temos item_id.
-            offer = _hydrate_real_item_permalink(offer)
+            # em permalink de um anúncio REAL e ATIVO. Se não houver anúncio
+            # válido, apenas pula este registro e tenta o próximo.
+            try:
+                offer = _hydrate_real_item_permalink(offer)
+            except Exception as exc:
+                print("[FILA SALVA] produto sem anúncio ativo:", product_id, repr(exc))
+                continue
             payload = json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":"))
             conn.execute(
                 "INSERT INTO affiliate_queue(product_id,offer_json,status,affiliate_link,attempts) VALUES(?,?, 'pending','',0)",
