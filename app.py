@@ -104,10 +104,13 @@ CATALOG = {
         "Body Mist",
     ],
     "🌙 Perfumes Árabes": [
-        "Perfume Lattafa Asad",
-        "Perfume Lattafa Yara",
-        "Perfume Maison Alhambra",
-        "Perfume Afnan",
+        "Perfume Lattafa", "Perfume Maison Alhambra", "Perfume Afnan",
+        "Perfume Al Wataniah", "Perfume Armaf", "Perfume Rasasi",
+        "Perfume Al Haramain", "Perfume French Avenue", "Perfume Fragrance World",
+        "Perfume Paris Corner", "Perfume Rayhaan", "Perfume Khadlaj",
+        "Perfume Zimaya", "Perfume Ajmal", "Perfume Swiss Arabian",
+        "Perfume Ard Al Zaafaran", "Perfume Ahmed Al Maghribi",
+        "Perfume Orientica", "Perfume Al Rehab", "Perfume Emir",
     ],
     "🧴 Saúde, Beleza e Cuidado Pessoal": [
         "creatina monohidratada",
@@ -2191,7 +2194,7 @@ def _search_arabic_perfumes():
     rank_base = 1
     for q in queries:
         try:
-            rows = search_real_listings(q, limit=50)
+            rows = search_real_listings(q, limit=80)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -2865,7 +2868,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        for raw, source_query in raw_by_cat.get(cat, [])[:70]:
+        for raw, source_query in raw_by_cat.get(cat, [])[:140 if cat == "🌙 Perfumes Árabes" else 70]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -3053,7 +3056,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         offers = [
             o for o in offers
             if o.get("category_name") != "🌸 Perfumes"
-            or _is_real_perfume(o.get("title"))
+            or (_is_real_perfume(o.get("title")) and not _is_arabic_perfume(o.get("title")))
         ]
 
     # Perfumes Árabes: além do ranking por marca, confirma o título para não
@@ -3199,6 +3202,23 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             float(o.get("total_price") or 999999),
         )
 
+    # CASA/COZINHA: multiprocessadores não podem dominar a categoria.
+    # Só mantemos até 2 e somente quando houver desconto real de pelo menos 20%.
+    casa = [o for o in offers if o.get("category_name") == "🏡 Achadinhos de Casa e Cozinha"]
+    outros = [o for o in offers if o.get("category_name") != "🏡 Achadinhos de Casa e Cozinha"]
+    multiprocessadores = []
+    casa_sem_multi = []
+    for o in casa:
+        t = norm(o.get("title") or "")
+        if any(x in t for x in ("multiprocessador", "multi processador", "processador de alimentos")):
+            disc = float(o.get("discount") or 0)
+            if disc >= 20:
+                multiprocessadores.append(o)
+        else:
+            casa_sem_multi.append(o)
+    multiprocessadores.sort(key=lambda o: (-float(o.get("discount") or 0), float(o.get("total_price") or 999999)))
+    offers = outros + casa_sem_multi + multiprocessadores[:2]
+
     offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
 
     # Até 20 por categoria; a categoria árabe recebe 30 para aparecer com
@@ -3213,7 +3233,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         arr.sort(key=_display_demand_key)
         # A categoria árabe recebe mais espaço para aparecer com mais frequência:
         # 30 ofertas árabes contra 20 nas demais.
-        limit = 30 if cat == "🌙 Perfumes Árabes" else 20
+        limit = 60 if cat == "🌙 Perfumes Árabes" else 20
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
