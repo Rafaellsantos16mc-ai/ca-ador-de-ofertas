@@ -32,6 +32,24 @@ ML_REDIRECT_URI = os.getenv(
 ML_API = "https://api.mercadolibre.com"
 
 # ============================================================
+# GERADOR AUTOMÁTICO DE LINK DE AFILIADO (SERVIDOR)
+# ============================================================
+# Esta integração usa a sessão do Mercado Livre fornecida por cookie.
+# NÃO é uma API pública documentada do Mercado Livre. É um acesso ao
+# endpoint interno que também é usado pelo fluxo do portal de afiliados.
+#
+# Para ativar no Railway:
+#   ML_AFFILIATE_TAG=sara89164
+#   ML_AFFILIATE_COOKIES=<Cookie ou JSON de cookies da sua sessão>
+#
+# Se ML_AFFILIATE_COOKIES não estiver configurado, o fluxo antigo
+# (Safari + favorito) continua funcionando como fallback.
+ML_AFFILIATE_TAG = os.getenv("ML_AFFILIATE_TAG", "sara89164").strip()
+ML_AFFILIATE_COOKIES = os.getenv("ML_AFFILIATE_COOKIES", "").strip()
+ML_AFFILIATE_TIMEOUT = int(os.getenv("ML_AFFILIATE_TIMEOUT", "25") or "25")
+ML_AFFILIATE_URL = "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links"
+
+# ============================================================
 # WHATSAPP BOT
 # ============================================================
 
@@ -4165,6 +4183,142 @@ def diagnostico():
 # ============================================================
 
 AFFILIATE_GENERATOR_URL = "https://www.mercadolivre.com.br/l/afiliados-gere-seus-links"
+
+
+def _parse_affiliate_cookies(raw):
+    """Converte ML_AFFILIATE_COOKIES em um dicionário simples para requests."""
+    raw = str(raw or "").strip()
+    if not raw:
+        return {}
+
+    # Formato recomendado: JSON exportado pelo navegador:
+    # [{"name":"_csrf","value":"..."}, ...]
+    try:
+        parsed = __import__("json").loads(raw)
+        if isinstance(parsed, list):
+            out = {}
+            for item in parsed:
+                if isinstance(item, dict) and item.get("name"):
+                    out[str(item["name"])] = str(item.get("value", ""))
+            if out:
+                return out
+        elif isinstance(parsed, dict):
+            # Também aceita {"nome":"valor", ...}
+            return {str(k): str(v) for k, v in parsed.items() if k}
+    except Exception:
+        pass
+
+    # Formato alternativo: Cookie: nome=valor; nome2=valor2
+    out = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if name:
+            out[name] = value.strip()
+    return out
+
+
+def _affiliate_csrf_and_link(product_url):
+    """Gera meli.la usando a sessão salva no Railway."""
+    cookies = _parse_affiliate_cookies(ML_AFFILIATE_COOKIES)
+    if not cookies:
+        raise RuntimeError("ML_AFFILIATE_COOKIES não configurado")
+    if not ML_AFFILIATE_TAG:
+        raise RuntimeError("ML_AFFILIATE_TAG não configurado")
+
+    product_url = str(product_url or "").strip()
+    if not product_url:
+        raise RuntimeError("URL do produto vazia")
+
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    csrf = cookies.get("_csrf", "")
+
+    # O provider open-source consultado faz exatamente esta etapa antes
+    # do POST, pois o token da página pode ser mais atual que o cookie.
+    try:
+        page = requests.get(
+            product_url,
+            headers={"Cookie": cookie_header, "User-Agent": ua},
+            timeout=ML_AFFILIATE_TIMEOUT,
+            allow_redirects=True,
+        )
+        if page.ok:
+            m = re.search(r'csrfToken[^\"]*"([^"]+)"', page.text)
+            if not m:
+                m = re.search(r'name="csrf-token"\s+content="([^"]+)"', page.text)
+            if m:
+                csrf = m.group(1)
+    except Exception:
+        # Se a página não carregar, ainda tentamos com o _csrf do cookie.
+        pass
+
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+        "Cookie": cookie_header,
+        "Referer": product_url,
+        "Origin": "https://produto.mercadolivre.com.br",
+        "User-Agent": ua,
+    }
+    r = requests.post(
+        ML_AFFILIATE_URL,
+        headers=headers,
+        json={"url": product_url.rstrip("/"), "tag": ML_AFFILIATE_TAG},
+        timeout=ML_AFFILIATE_TIMEOUT,
+        allow_redirects=True,
+    )
+
+    if not r.ok:
+        detail = r.text[:800].replace("\n", " ").strip()
+        raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}")
+
+    try:
+        data = r.json()
+    except Exception as exc:
+        raise RuntimeError("Resposta do Mercado Livre não veio em JSON") from exc
+
+    short_url = str(data.get("short_url") or "").strip()
+    if not short_url:
+        raise RuntimeError("Mercado Livre não retornou short_url")
+    return short_url
+
+
+@app.route("/api/afiliado/gerar", methods=["POST"])
+def api_afiliado_gerar():
+    """Gera o link afiliado no servidor; sem cookies, retorna 503 para o fallback Safari."""
+    payload = request.get_json(silent=True) or {}
+    product_url = str(payload.get("url") or "").strip()
+    if not product_url:
+        return jsonify({"ok": False, "erro": "URL do produto não informada."}), 400
+
+    if not ML_AFFILIATE_COOKIES:
+        return jsonify({
+            "ok": False,
+            "configurado": False,
+            "erro": "Gerador automático ainda não configurado no Railway.",
+        }), 503
+
+    try:
+        link = _affiliate_csrf_and_link(product_url)
+        return jsonify({"ok": True, "link": link, "modo": "servidor"})
+    except Exception as exc:
+        # Não expõe cookies/token nos logs nem na resposta.
+        return jsonify({
+            "ok": False,
+            "configurado": True,
+            "erro": str(exc)[:1000],
+        }), 502
+
+
 AFFILIATE_PORTAL_URL = "https://www.mercadolivre.com.br/l/visite-o-portal-de-afiliados"
 
 @app.route("/afiliado/gerador")
@@ -4312,8 +4466,8 @@ function seller(o,mi,oi){
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',decodeURIComponent('${encodeURIComponent(String(o.permalink||""))}'))" style="background:#555">🔗 Copiar URL do produto</button>
- <button onclick="iniciarAfiliado('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))" style="background:#ffe600;color:#222;font-weight:bold">🔗 Gerar meu link afiliado no Safari</button>
- <div class="small" style="margin-top:8px">📱 <b>Teste:</b> toque em <b>Gerar meu link afiliado no Safari</b>. No produto do Mercado Livre, toque no favorito <b>Caçador Afiliado</b>. Ele gera o seu <b>meli.la</b> usando sua sessão já conectada e volta para cá.</div>
+ <button onclick="iniciarAfiliado('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))" style="background:#ffe600;color:#222;font-weight:bold">🔗 Gerar meu link afiliado</button>
+ <div class="small" style="margin-top:8px">⚡ O Caçador tenta gerar o <b>meli.la</b> automaticamente. Se a sessão do servidor não estiver configurada, ele mantém o fallback pelo Safari.</div>
  <input id="aff_${id}" type="url" inputmode="url" placeholder="Ou cole aqui um link de afiliado do Mercado Livre" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
@@ -4362,17 +4516,12 @@ async function copiarUrl(id,url){
   box.querySelector('#urlFallbackClose').onclick=()=>box.remove();
  }
 }
-function iniciarAfiliado(id,o){
+async function iniciarAfiliado(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
 
-  const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-  localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
-
-  // IMPORTANTE: para gerar o link afiliado precisamos abrir a PUBLICAÇÃO
-  // (ITEM) e não a página de catálogo /p/MLB....
-  // O catálogo é o que estava abrindo no Safari como “esta página não existe”.
-  // Quando temos item_id, usamos a URL curta de publicação do Mercado Livre.
+  // PRIMEIRO: tenta gerar automaticamente no próprio servidor.
+  // Isso elimina Safari/favorito quando ML_AFFILIATE_COOKIES estiver configurado.
   const itemId=String(o.item_id||o.id||'').trim().toUpperCase();
   let target='';
   const m=itemId.match(/^MLB(\d+)$/);
@@ -4381,14 +4530,38 @@ function iniciarAfiliado(id,o){
   }else{
    target=String(o.permalink||'').trim();
   }
-
   if(!target){throw new Error('A oferta não possui uma publicação válida do Mercado Livre.');}
 
+  try{
+   const r=await fetch('/api/afiliado/gerar',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Accept':'application/json'},
+    body:JSON.stringify({url:target})
+   });
+   const data=await r.json().catch(()=>({}));
+   if(data.ok && data.link){
+    const field=document.getElementById('aff_'+id);
+    if(field) field.value=data.link;
+    await anuncio(id,JSON.stringify(o));
+    return;
+   }
+   // Se o servidor ainda não estiver configurado, preserva exatamente
+   // o fluxo Safari que já foi testado e funcionou.
+   if(data.configurado && data.erro){
+    console.warn('Gerador automático:',data.erro);
+   }
+  }catch(e){
+   console.warn('Falha no gerador automático; usando fallback Safari:',e);
+  }
+
+  // FALLBACK: fluxo Safari já existente e funcional.
+  const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+  localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
   const u=new URL(target);
   u.hash='cacador_state='+state+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
   window.location.href=u.toString();
  }catch(e){
-  alert('❌ Não foi possível abrir o produto para gerar o link afiliado. '+e.message);
+  alert('❌ Não foi possível gerar o link afiliado. '+e.message);
  }
 }
 
