@@ -155,20 +155,6 @@ CATALOG = {
         "tênis custo benefício",
         "tênis social masculino",
     ],
-    "👕 Camisas e Camisetas de Marcas": [
-        "camiseta Nike original",
-        "camiseta Adidas original",
-        "camiseta Puma original",
-        "camiseta Lacoste original",
-        "camiseta Tommy Hilfiger original",
-        "camiseta Calvin Klein original",
-        "camiseta Levi's original",
-        "camiseta Fila original",
-        "camiseta Under Armour original",
-        "camiseta New Balance original",
-        "camiseta Hering original",
-        "camiseta Reserva original",
-    ],
 }
 
 # ============================================================
@@ -223,6 +209,13 @@ def init_db():
             last_title TEXT,
             published_count INTEGER DEFAULT 1,
             last_published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS affiliate_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT UNIQUE, offer_json TEXT NOT NULL,
+            status TEXT DEFAULT 'pending', affiliate_link TEXT DEFAULT '', state TEXT DEFAULT '',
+            attempts INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     # Compatibilidade com bancos criados pelas versões anteriores.
@@ -340,17 +333,6 @@ PROFILES = {
         "strong": ["furadeira","parafusadeira","esmerilhadeira","ferramenta","serra","impacto"],
         "bad": ["broca avulsa","peca","carvao","bateria avulsa","capa"]
     },
-    "marcas": {
-        "strong": [
-            "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
-            "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
-            "new balance", "hering", "reserva"
-        ],
-        "bad": [
-            "falsa", "falsificada", "replica", "réplica", "pirata",
-            "segunda linha", "inspirada", "similar", "sem etiqueta"
-        ]
-    },
 }
 
 def is_requested_product(title, query, category=None):
@@ -378,14 +360,6 @@ def is_requested_product(title, query, category=None):
         "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
         "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
         "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], ["cueca geriatrica", "cueca geriátrica", "geriatrica", "geriátrica", "escapes de urina", "escape de urina", "incontinencia", "incontinência"]),
-        "👕 Camisas e Camisetas de Marcas": ([
-            "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
-            "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
-            "new balance", "hering", "reserva"
-        ], [
-            "falsa", "falsificada", "réplica", "replica", "pirata", "segunda linha",
-            "inspirada", "similar"
-        ]),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -447,14 +421,6 @@ def profile_for(q):
         "whey", "creatina", "pre treino", "suplemento"
     ]):
         return "academia"
-    if any(x in t for x in [
-        "camiseta nike", "camiseta adidas", "camiseta puma",
-        "camiseta lacoste", "camiseta tommy hilfiger", "camiseta calvin klein",
-        "camiseta levi", "camiseta fila", "camiseta under armour",
-        "camiseta new balance", "camiseta hering", "camiseta reserva",
-        "camisa nike", "camisa adidas", "camisa lacoste", "camisa puma"
-    ]):
-        return "marcas"
     if any(x in t for x in ["furadeira","parafusadeira","ferramenta","esmerilhadeira","serra"]):
         return "ferramenta"
     return None
@@ -3734,48 +3700,49 @@ def _whatsapp_mark_published(offer):
     conn.close()
 
 
+def _affiliate_queue_add(offer):
+    product_id = str((offer or {}).get("product_id") or "").strip()
+    if not product_id: return None
+    payload = json.dumps(json_safe(offer or {}), ensure_ascii=False, separators=(",", ":"))
+    conn = get_db(); row = conn.execute("SELECT id,status FROM affiliate_queue WHERE product_id=?", (product_id,)).fetchone()
+    if row:
+        conn.execute("UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE product_id=? AND status IN ('pending','processing')", (payload,product_id)); qid=row["id"]
+    else:
+        qid=conn.execute("INSERT INTO affiliate_queue(product_id,offer_json,status) VALUES(?,?,?)",(product_id,payload,"pending")).lastrowid
+    conn.commit(); conn.close(); return qid
+
+def _affiliate_queue_next():
+    conn=get_db(); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
+    if not row: conn.close(); return None
+    conn.execute("UPDATE affiliate_queue SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],)); conn.commit(); conn.close()
+    try: offer=json.loads(row["offer_json"] or "{}")
+    except Exception: offer={}
+    return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
+
+def _affiliate_queue_complete(queue_id, affiliate_link):
+    try: qid=int(queue_id)
+    except Exception: return False
+    conn=get_db(); cur=conn.execute("UPDATE affiliate_queue SET status='done',affiliate_link=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(affiliate_link or ""),qid)); conn.commit(); conn.close(); return cur.rowcount>0
+
 def _whatsapp_publish_scan(result):
-    """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
-
-    Se o WhatsApp falhar, a rodada é interrompida imediatamente e os produtos
-    que ainda não foram enviados permanecem disponíveis para a próxima rodada.
-    """
-    offers = list((result or {}).get("ofertas") or [])
-    sent = 0
-    skipped = 0
-
+    """Publica com afiliado; sem afiliado, coloca a oferta na fila do Safari."""
+    offers=list((result or {}).get("ofertas") or []); sent=queued=skipped=0
     for offer in offers:
-        if sent >= AUTO_WHATSAPP_LIMIT:
-            break
-
-        product_id = str(offer.get("product_id") or "").strip()
-        if not product_id:
+        if sent>=AUTO_WHATSAPP_LIMIT: break
+        product_id=str(offer.get("product_id") or "").strip()
+        if not product_id: continue
+        try: price=float(offer.get("price"))
+        except (TypeError,ValueError): continue
+        if price<=0 or not _whatsapp_should_publish(product_id,price): skipped+=1; continue
+        affiliate=str(offer.get("affiliate_link") or "").strip()
+        if not valid_affiliate_link(affiliate):
+            qid=_affiliate_queue_add(offer)
+            if qid: queued+=1; print(f"[AFILIADO] Oferta {product_id} na fila #{qid} para o Safari.")
             continue
-
-        price = offer.get("price")
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            continue
-        if price <= 0:
-            continue
-
-        if not _whatsapp_should_publish(product_id, price):
-            skipped += 1
-            continue
-
-        text = ad_text(offer, offer.get("affiliate_link") or offer.get("permalink") or "")
-        ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
-        if not ok:
-            print("[AUTO WHATSAPP] Envio interrompido:", detail)
-            return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
-
-        _whatsapp_mark_published(offer)
-        sent += 1
-        print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
-
-    return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
-
+        text=ad_text(offer,affiliate); ok,detail=_whatsapp_send_text(text,offer.get("image") or "")
+        if not ok: return {"ok":False,"enviadas":sent,"fila_afiliado":queued,"ignoradas":skipped,"erro":detail}
+        _whatsapp_mark_published(offer); sent+=1
+    return {"ok":True,"enviadas":sent,"fila_afiliado":queued,"ignoradas":skipped,"erro":None}
 
 def executar_caca_automatica():
     """Executa uma rodada completa de busca + publicação."""
@@ -4161,6 +4128,24 @@ def diagnostico():
     return jsonify(result)
 
 # ============================================================
+# FILA DE AFILIADOS / NAVEGADOR
+# ============================================================
+@app.route("/api/afiliado/fila/proximo")
+def api_afiliado_fila_proximo():
+    item=_affiliate_queue_next()
+    if not item: return jsonify({"ok":True,"tem_oferta":False})
+    return jsonify({"ok":True,"tem_oferta":True,"queue_id":item["id"],"product_id":item["product_id"],"offer":item["offer"]})
+
+@app.route("/api/afiliado/fila/status")
+def api_afiliado_fila_status():
+    conn=get_db(); rows=conn.execute("SELECT id,product_id,status,affiliate_link,attempts,created_at,updated_at FROM affiliate_queue ORDER BY id DESC LIMIT 50").fetchall(); conn.close()
+    return jsonify({"ok":True,"fila":[dict(r) for r in rows]})
+
+@app.route("/afiliado/automacao")
+def afiliado_automacao():
+    return render_template_string("""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Caçador — Automação</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:680px;margin:auto;background:#fff;padding:22px;border-radius:16px}button{width:100%;padding:16px;border:0;border-radius:12px;background:#ffe600;font-size:18px;font-weight:bold}#s{margin-top:15px}</style></head><body><div class='card'><h2>🤖 Caçador automático</h2><p>Busca a próxima oferta da fila e abre o produto no Safari.</p><button onclick='proxima()'>🔗 Processar próxima oferta</button><div id='s'>Aguardando...</div></div><script>async function proxima(){const s=document.getElementById('s');s.textContent='🔎 Procurando...';try{const j=await (await fetch('/api/afiliado/fila/proximo')).json();if(!j.tem_oferta){s.textContent='✅ Fila vazia.';return}const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:'fila_'+j.queue_id,offer:j.offer,queue_id:j.queue_id,createdAt:Date.now()}));const u=new URL(j.offer.permalink||'');u.hash='cacador_state='+state+'&cacador_queue_id='+encodeURIComponent(j.queue_id)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');location.href=u.toString()}catch(e){s.textContent='❌ '+e.message}}</script></body></html>""")
+
+# ============================================================
 # AFILIADOS - FLUXO OFICIAL
 # ============================================================
 
@@ -4179,17 +4164,10 @@ def afiliado_portal():
 
 @app.route("/afiliado/retorno")
 def afiliado_retorno():
-    # Retorno simples e robusto do bookmarklet do Safari.
-    # Não usa url_for() aqui para evitar erro 500 caso o endpoint raiz
-    # seja alterado/registrado de forma diferente no deploy.
-    state=request.args.get("state","").strip()
-    link=request.args.get("link","").strip()
-    if not state or not link:
-        return redirect("/")
-    return redirect("/?" + urlencode({
-        "afiliado_state": state,
-        "afiliado_link": link
-    }))
+    state=request.args.get("state","").strip(); link=request.args.get("link","").strip(); queue_id=request.args.get("queue_id","").strip(); auto=request.args.get("auto","0").strip()
+    if queue_id and valid_affiliate_link(link): _affiliate_queue_complete(queue_id,link)
+    if not state or not link: return redirect("/")
+    return redirect(url_for("index",afiliado_state=state,afiliado_link=link,afiliado_auto=auto))
 
 @app.route("/afiliado/bookmarklet")
 def afiliado_bookmarklet():
@@ -4197,6 +4175,7 @@ def afiliado_bookmarklet():
         "javascript:(async()=>{try{"
         "const h=(location.hash||'').replace(/^#/,''),hp=new URLSearchParams(h);"
         "const state=hp.get('cacador_state')||'';"
+        "const queue=hp.get('cacador_queue_id')||'';"
         "const ret=hp.get('cacador_return')||'';"
         "const u=new URL(location.href);u.hash='';"
         "const tr=await fetch('/affiliate-program/api/v2/stripe/user/tags',{headers:{Accept:'application/json'}});"
@@ -4207,7 +4186,7 @@ def afiliado_bookmarklet():
         "const j=await lr.json();"
         "if(!j.short_url)throw Error(j.error?.message||'O Mercado Livre não gerou o link');"
         "if(!ret)throw Error('Retorno do Caçador não encontrado');"
-        "location.href=ret+'?state='+encodeURIComponent(state)+'&link='+encodeURIComponent(j.short_url);"
+        "location.href=ret+'?state='+encodeURIComponent(state)+'&queue_id='+encodeURIComponent(queue)+'&auto=1&link='+encodeURIComponent(j.short_url);"
         "}catch(e){alert('❌ '+(e.message||e))}})()"
     )
     return render_template_string('''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Caçador — Bookmarklet</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:700px;margin:auto;background:#fff;padding:20px;border-radius:16px;box-shadow:0 5px 20px #0001}textarea{width:100%;min-height:190px;font-size:12px;box-sizing:border-box}button{width:100%;padding:14px;border:0;border-radius:10px;background:#3483fa;color:#fff;margin-top:8px;font-size:15px}.ok{background:#eef8f0;padding:12px;border-radius:10px}</style></head><body><div class="card"><h2>🔗 Bookmarklet do Caçador</h2><div class="ok">Use esta versão no Safari. Ela pega a tag ativa da sua conta Mercado Livre, gera o link afiliado e volta automaticamente para o Caçador.</div><h3>1. Código</h3><textarea id="code" readonly>{{js}}</textarea><button onclick="copyCode()">📋 Copiar código</button><h3>2. Instalar no Safari</h3><p>Crie/edite um favorito no Safari, dê o nome <b>Caçador Afiliado</b> e substitua o endereço do favorito pelo código acima.</p><p>Depois, quando o Caçador abrir um produto, toque no favorito <b>Caçador Afiliado</b>. O link será gerado e você voltará automaticamente para o Caçador.</p></div><script>async function copyCode(){try{await navigator.clipboard.writeText(document.getElementById('code').value);alert('✅ Código copiado. Agora cole no endereço do favorito do Safari.')}catch(e){const t=document.getElementById('code');t.focus();t.select();alert('Selecione o código e copie manualmente.')}}</script></body></html>''', js=js)
@@ -4379,6 +4358,7 @@ async function processarRetornoAfiliado(){
  const p=new URLSearchParams(location.search);
  const state=p.get('afiliado_state');
  const link=p.get('afiliado_link');
+ const auto=p.get('afiliado_auto')==='1';
  if(!state || !link) return;
  const key='cacador_aff_pending_'+state;
  let pending=null;
@@ -4397,6 +4377,7 @@ async function processarRetornoAfiliado(){
  const box=document.getElementById('results');
  if(box) box.scrollIntoView({behavior:'smooth',block:'start'});
  await anuncio(id,JSON.stringify(o));
+ if(auto){const btn=document.getElementById('wa_'+id);if(btn&&btn.style.display!=='none'){await enviarWhatsApp(id);}}
 }
 
 async function anuncio(id,o){
