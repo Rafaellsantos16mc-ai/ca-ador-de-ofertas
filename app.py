@@ -4179,11 +4179,17 @@ def afiliado_portal():
 
 @app.route("/afiliado/retorno")
 def afiliado_retorno():
+    # Retorno simples e robusto do bookmarklet do Safari.
+    # Não usa url_for() aqui para evitar erro 500 caso o endpoint raiz
+    # seja alterado/registrado de forma diferente no deploy.
     state=request.args.get("state","").strip()
     link=request.args.get("link","").strip()
     if not state or not link:
         return redirect("/")
-    return redirect(url_for("index", afiliado_state=state, afiliado_link=link))
+    return redirect("/?" + urlencode({
+        "afiliado_state": state,
+        "afiliado_link": link
+    }))
 
 @app.route("/afiliado/bookmarklet")
 def afiliado_bookmarklet():
