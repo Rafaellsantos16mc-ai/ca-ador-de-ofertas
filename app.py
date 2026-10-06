@@ -3915,12 +3915,13 @@ def _affiliate_queue_from_saved_offers(limit=50):
                 'affiliate_link': '',
                 'extra_earnings': row['extra_earnings'] or 0,
             }
-            # IMPORTANTE: preserva exatamente o permalink que o Caçador
-            # salvou. A geração de afiliado que estava funcionando usava
-            # este mesmo link diretamente no Safari. Não trocar por outro
-            # anúncio do catálogo nesta etapa.
-            if not str(offer.get("permalink") or "").strip():
-                print("[FILA SALVA] oferta sem permalink; ignorando:", product_id)
+            # Antes de colocar na fila, transforma URL de catálogo (/p/MLB...)
+            # em permalink de um anúncio REAL e ATIVO. Se não houver anúncio
+            # válido, apenas pula este registro e tenta o próximo.
+            try:
+                offer = _hydrate_real_item_permalink(offer)
+            except Exception as exc:
+                print("[FILA SALVA] produto sem anúncio ativo:", product_id, repr(exc))
                 continue
             payload = json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":"))
             conn.execute(
@@ -4013,6 +4014,417 @@ def _affiliate_queue_next():
         print("[FILA] Nenhum candidato utilizável entre os registros testados:", last_error)
     return None
 
+def _affiliate_queue_complete(queue_id, affiliate_link):
+    try: qid=int(queue_id)
+    except Exception: return False
+    conn=get_db(); cur=conn.execute("UPDATE affiliate_queue SET status='done',affiliate_link=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(affiliate_link or ""),qid)); conn.commit(); conn.close(); return cur.rowcount>0
+
+def _whatsapp_publish_scan(result):
+    """Publica com afiliado; sem afiliado, coloca a oferta na fila do Safari."""
+    offers=list((result or {}).get("ofertas") or []); sent=queued=skipped=0
+    for offer in offers:
+        if sent>=AUTO_WHATSAPP_LIMIT: break
+        product_id=str(offer.get("product_id") or "").strip()
+        if not product_id: continue
+        try: price=float(offer.get("price"))
+        except (TypeError,ValueError): continue
+        if price<=0 or not _whatsapp_should_publish(product_id,price): skipped+=1; continue
+        affiliate=str(offer.get("affiliate_link") or "").strip()
+        if not valid_affiliate_link(affiliate):
+            qid=_affiliate_queue_add(offer)
+            if qid: queued+=1; print(f"[AFILIADO] Oferta {product_id} na fila #{qid} para o Safari.")
+            continue
+        text=ad_text(offer,affiliate); ok,detail=_whatsapp_send_text(text,offer.get("image") or "")
+        if not ok: return {"ok":False,"enviadas":sent,"fila_afiliado":queued,"ignoradas":skipped,"erro":detail}
+        _whatsapp_mark_published(offer); sent+=1
+    return {"ok":True,"enviadas":sent,"fila_afiliado":queued,"ignoradas":skipped,"erro":None}
+
+def executar_caca_automatica():
+    """Executa uma rodada completa de busca + publicação."""
+    if not AUTO_WHATSAPP_ENABLED:
+        return {"ok": True, "desativado": True, "enviadas": 0}
+
+    if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
+        print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
+        return {"ok": True, "ocupado": True, "enviadas": 0}
+
+    try:
+        print("[AUTO WHATSAPP] Iniciando nova caça automática...")
+        result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
+        publish = _whatsapp_publish_scan(result)
+        print(
+            f"[AUTO WHATSAPP] Rodada finalizada: "
+            f"ofertas={len(result.get('ofertas', []))}, "
+            f"enviadas={publish.get('enviadas', 0)}"
+        )
+        return publish
+    except Exception as exc:
+        print("[AUTO WHATSAPP] Erro na rodada:", repr(exc))
+        return {"ok": False, "enviadas": 0, "erro": str(exc)}
+    finally:
+        AUTO_WHATSAPP_LOCK.release()
+
+
+def iniciar_automacao_whatsapp():
+    """Inicia uma única thread de publicação automática por processo Gunicorn."""
+    global AUTO_WHATSAPP_THREAD
+    if not AUTO_WHATSAPP_ENABLED or AUTO_WHATSAPP_THREAD is not None:
+        return
+
+    def worker():
+        print(
+            f"[AUTO WHATSAPP] Ativo: a cada {AUTO_WHATSAPP_INTERVAL}s, "
+            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada."
+        )
+        while True:
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
+            executar_caca_automatica()
+
+    AUTO_WHATSAPP_THREAD = threading.Thread(
+        target=worker,
+        name="whatsapp-auto-publisher",
+        daemon=True,
+    )
+    AUTO_WHATSAPP_THREAD.start()
+
+
+@app.route("/api/whatsapp/automacao")
+def api_whatsapp_automacao():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT product_id, last_price, last_title, published_count, last_published_at
+        FROM whatsapp_publicacoes
+        ORDER BY last_published_at DESC
+        LIMIT 100
+    """).fetchall()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "ativo": AUTO_WHATSAPP_ENABLED,
+        "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
+        "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
+        "publicadas": [dict(row) for row in rows],
+    })
+
+
+# A thread começa depois que o módulo terminou de carregar as rotas e o banco.
+iniciar_automacao_whatsapp()
+
+# ============================================================
+# JOBS DE CAÇA EM SEGUNDO PLANO
+# ============================================================
+
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+def create_job():
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "message": "Aguardando início...",
+            "result": None,
+            "error": None,
+        }
+    return job_id
+
+def update_job(job_id, **kwargs):
+    with JOBS_LOCK:
+        if job_id in JOBS:
+            JOBS[job_id].update(kwargs)
+
+def get_job(job_id):
+    with JOBS_LOCK:
+        return dict(JOBS.get(job_id, {
+            "status": "not_found",
+            "progress": 0,
+            "message": "Caça não encontrada.",
+            "result": None,
+            "error": "not_found",
+        }))
+
+def run_caca_job(job_id, category=None):
+    try:
+        update_job(job_id, status="running", progress=5, message="🔎 Iniciando busca completa dos 20 mais vendidos...")
+
+        if category:
+            # Uma categoria específica: busca todas as sementes dela.
+            queries = [category]
+        else:
+            # TODAS as categorias selecionadas no catálogo. O scanner resolve
+            # cada uma separadamente; não usar somente a primeira semente.
+            queries = list(CATALOG.keys())
+
+        update_job(job_id, progress=12, message=f"🛒 Consultando Mercado Livre ({len(queries)} buscas)...")
+        update_job(job_id, progress=55, message="📦 Carregando os 20 mais vendidos de cada categoria...")
+        result = scan_queries(queries, apply_coupons=True)
+        update_job(job_id, progress=96, message="📊 Finalizando ranking...")
+        update_job(job_id, status="done", progress=100, message=f"✅ Produtos atualizados: {result.get('stats', {}).get('ofertas', 0)} ofertas. Cupons verificados e associados aos produtos quando houver correspondência pública.", result=json_safe(result))
+    except Exception as e:
+        print("[ERRO JOB CAÇA]", repr(e))
+        update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
+
+# ============================================================
+# API
+# ============================================================
+
+@app.route("/api/buscar")
+def api_buscar():
+    q=request.args.get("q","").strip()
+    if not q: return jsonify({"erro":"Informe uma busca."}),400
+    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=True)))
+
+@app.route("/api/cacar")
+def api_cacar():
+    categoria=request.args.get("categoria","").strip() or None
+    job_id=create_job()
+    thread=threading.Thread(target=run_caca_job, args=(job_id, categoria), daemon=True)
+    thread.start()
+    return jsonify({"ok":True,"job_id":job_id,"status":"queued"})
+
+@app.route("/api/cacar/status/<job_id>")
+def api_cacar_status(job_id):
+    return jsonify(json_safe(get_job(job_id)))
+
+@app.route("/api/cupons")
+def api_cupons():
+    sync = None
+    if request.args.get("atualizar")=="1":
+        sync = sync_coupons()
+    return jsonify({"cupons":json_safe(coupons()),"fontes":COUPON_SOURCE_URLS,"sincronizacao":json_safe(sync)})
+
+@app.route("/api/preco-atual")
+def api_preco_atual():
+    """Revalida o preço da publicação imediatamente antes do anúncio.
+
+    A busca pode ter sido carregada minutos antes e o Mercado Livre pode
+    alterar o preço nesse intervalo. Por isso esta rota consulta o ITEM real
+    novamente e usa o valor atual, sem alterar ranking, categorias ou cupons.
+    """
+    item_id = str(request.args.get("item_id") or "").strip()
+    affiliate_link = str(request.args.get("affiliate_link") or "").strip()
+
+    # Se o usuário colou um link meli.la, resolve o redirecionamento para
+    # descobrir o ITEM exato que o link de afiliado aponta. Isso é essencial
+    # quando o produto do catálogo possui vários vendedores/publicações.
+    resolved_item_id = _extract_item_id_from_affiliate_url(affiliate_link) if affiliate_link else None
+    if resolved_item_id:
+        item_id = resolved_item_id
+
+    if not item_id:
+        return jsonify({"ok": False, "erro": "Não foi possível identificar o ITEM desta oferta."}), 400
+
+    data, status, _ = ml_get(f"/items/{item_id}")
+    if status != 200 or not isinstance(data, dict):
+        return jsonify({"ok": False, "erro": f"Não foi possível atualizar o preço do item ({status})."}), 502
+
+    try:
+        price = float(data.get("price")) if data.get("price") is not None else None
+    except Exception:
+        price = None
+    try:
+        original = float(data.get("original_price")) if data.get("original_price") is not None else None
+    except Exception:
+        original = None
+
+    # Quando a publicação informa preço de venda separado, prioriza o valor
+    # retornado pela própria publicação e usa sale_price apenas como fallback.
+    if price is None or price <= 0:
+        sale, sale_original = get_current_sale_price(item_id)
+        if sale is not None:
+            price = sale
+            if sale_original is not None:
+                original = sale_original
+
+    if price is None or price <= 0 or price > 100000:
+        return jsonify({"ok": False, "erro": "O Mercado Livre não retornou um preço válido para este item."}), 502
+
+    shipping = data.get("shipping") or {}
+    free = bool(shipping.get("free_shipping"))
+    try:
+        shipping_cost = 0.0 if free else (float(shipping.get("cost")) if shipping.get("cost") is not None else None)
+    except Exception:
+        shipping_cost = None
+
+    pictures = data.get("pictures") or []
+    image = None
+    if isinstance(pictures, list):
+        for picture in pictures:
+            if isinstance(picture, dict):
+                image = picture.get("secure_url") or picture.get("url") or image
+                if image:
+                    break
+
+    return jsonify({
+        "ok": True,
+        "item_id": item_id,
+        "title": data.get("title"),
+        "price": round(price, 2),
+        "original_price": round(original, 2) if original is not None and original > 0 else None,
+        "free_shipping": free,
+        "shipping_cost": shipping_cost,
+        "permalink": data.get("permalink"),
+        "image": image or data.get("thumbnail"),
+    })
+
+
+@app.route("/api/gerar-anuncio")
+def api_anuncio():
+    o = {
+        "title":request.args.get("title","Produto"),
+        "price":request.args.get("price",0),
+        "original_price":request.args.get("original_price"),
+        "discount":float(request.args.get("discount",0) or 0),
+        "free_shipping":request.args.get("shipping_free")=="1",
+        "cupom":None,"preco_com_cupom":None
+    }
+    code=request.args.get("cupom","").strip()
+    if code:
+        # Cupons de cards públicos podem ser "Cupom R$ 15 OFF" ou "Cupom 10% OFF"
+        # e não possuem necessariamente um código digitável. Aceita ambos.
+        public = detect_public_coupon(code)
+        if public:
+            cup = dict(public)
+            d = calculate_public_coupon(cup, float(o["price"]))
+            cup["desconto_estimado"] = d
+            cup["label"] = cup.get("label") or code
+            o["cupom"] = cup
+            o["desconto_cupom"] = d
+            o["preco_com_cupom"] = max(0, float(o["price"]) - d)
+        else:
+            c=get_db()
+            row=c.execute("SELECT * FROM cupons WHERE code=? AND active=1",(code.upper(),)).fetchone()
+            c.close()
+            if row:
+                cup=dict(row); cup["desconto_estimado"]=coupon_discount(cup,float(o["price"]))
+                o["cupom"]=cup
+                o["desconto_cupom"]=cup["desconto_estimado"]
+                o["preco_com_cupom"]=max(0,float(o["price"])-cup["desconto_estimado"])
+    affiliate_link = request.args.get("affiliate_link", "").strip()
+    if not valid_affiliate_link(affiliate_link):
+        return jsonify({
+            "ok": False,
+            "erro": "Informe o link de afiliado desta oferta antes de gerar o anúncio.",
+            "affiliate_required": True,
+        }), 400
+    try:
+        anuncio = ad_text(o, affiliate_link)
+    except ValueError as exc:
+        return jsonify({"ok": False, "erro": str(exc)}), 400
+    return jsonify({"ok": True, "anuncio": anuncio, "affiliate_link": affiliate_link})
+
+
+@app.route("/api/enviar-whatsapp", methods=["POST"])
+def api_enviar_whatsapp():
+    """Envia para o grupo selecionado no WhatsApp Bot."""
+    if not WHATSAPP_BOT_URL:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_URL não configurada no Railway."
+        }), 500
+
+    if not WHATSAPP_BOT_KEY:
+        return jsonify({
+            "ok": False,
+            "erro": "WHATSAPP_BOT_KEY não configurada no Railway."
+        }), 500
+
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text") or "").strip()
+    image = str(data.get("image") or "").strip()
+    affiliate_link = str(data.get("affiliate_link") or "").strip()
+
+    if not valid_affiliate_link(affiliate_link):
+        return jsonify({"ok": False, "erro": "Envio bloqueado: esta oferta não possui um link de afiliado válido."}), 400
+    if affiliate_link not in text:
+        return jsonify({"ok": False, "erro": "Envio bloqueado: o anúncio não contém o mesmo link de afiliado informado."}), 400
+
+    if not text:
+        return jsonify({
+            "ok": False,
+            "erro": "O anúncio está vazio."
+        }), 400
+
+    prepared_image = gerar_imagem_natural_whatsapp(
+        image,
+        text,
+    )
+
+    try:
+        response = requests.post(
+            f"{WHATSAPP_BOT_URL}/api/send-offer",
+            headers={
+                "Content-Type": "application/json",
+                "x-bot-key": WHATSAPP_BOT_KEY,
+            },
+            json={"text": text, "image": prepared_image},
+            timeout=150,
+        )
+    except requests.RequestException as exc:
+        print("[WHATSAPP] Falha de comunicação:", repr(exc))
+        return jsonify({
+            "ok": False,
+            "erro": "Não foi possível conectar ao WhatsApp Bot.",
+            "detalhes": str(exc),
+        }), 502
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {
+            "ok": False,
+            "erro": response.text[:1000] or "Resposta inválida do WhatsApp Bot.",
+        }
+
+    if response.ok and payload.get("ok"):
+        print("[WHATSAPP] Oferta enviada com sucesso.")
+        return jsonify({
+            "ok": True,
+            "mensagem": payload.get("message") or "Oferta enviada para o WhatsApp.",
+        })
+
+    print(
+        "[WHATSAPP] Bot recusou envio:",
+        response.status_code,
+        payload,
+    )
+    return jsonify({
+        "ok": False,
+        "erro": payload.get("error") or payload.get("erro") or "O WhatsApp Bot recusou o envio.",
+        "status_http": response.status_code,
+    }), 502
+
+# ============================================================
+# TESTES / DIAGNÓSTICO
+# ============================================================
+
+@app.route("/mercadolivre/teste-produto-itens")
+def teste_items():
+    pid=request.args.get("product_id","MLB58793248")
+    data,status,_=ml_get(f"/products/{pid}/items")
+    return jsonify({"product_id":pid,"status_http":status,"resposta":data}),status
+
+@app.route("/mercadolivre/teste-produto")
+def teste_product():
+    pid=request.args.get("product_id","MLB58793248")
+    data,status,_=ml_get(f"/products/{pid}")
+    return jsonify({"product_id":pid,"status_http":status,"resposta":data}),status
+
+@app.route("/mercadolivre/diagnostico")
+def diagnostico():
+    t=tokens()
+    result={"configurado":bool(ML_CLIENT_ID),"conectado":bool(access_token())}
+    if access_token():
+        me,status,_=ml_get("/users/me")
+        result["users_me"]={"status_http":status,"resposta":me}
+    if t:
+        result["token_local"]={"user_id":t.get("user_id"),"nickname":t.get("nickname"),"expires_at":t.get("expires_at")}
+    return jsonify(result)
+
+# ============================================================
+# FILA DE AFILIADOS / NAVEGADOR
+# ============================================================
 @app.route("/api/afiliado/fila/popular", methods=["POST"])
 def api_afiliado_fila_popular():
     """Abastece a fila usando EXATAMENTE as ofertas retornadas pelo Caçador.
