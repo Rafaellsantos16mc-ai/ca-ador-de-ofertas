@@ -349,7 +349,7 @@ def is_requested_product(title, query, category=None):
         "🏠 Casa": (["lampada", "fita led", "luminaria", "organizador", "cabide", "pote", "cortina", "tapete"], []),
         "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
         "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
-        "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], []),
+        "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], ["cueca geriatrica", "cueca geriátrica", "geriatrica", "geriátrica", "escapes de urina", "escape de urina", "incontinencia", "incontinência"]),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -3064,6 +3064,33 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if o.get("category_name") != "🌙 Perfumes Árabes"
             or _is_arabic_perfume(o.get("title"))
         ]
+
+    # Moda: cueca geriátrica nunca entra. Combos de cuecas normais só entram
+    # quando são de 5 ou 10 unidades e têm desconto realmente bom.
+    if "👚 Moda Básica e Kits de Vestuário" in categories:
+        moda = []
+        for o in offers:
+            if o.get("category_name") != "👚 Moda Básica e Kits de Vestuário":
+                moda.append(o)
+                continue
+            title_norm = norm(o.get("title") or "")
+            if any(term in title_norm for term in (
+                "cueca geriatrica", "geriatrica", "escapes de urina",
+                "escape de urina", "incontinencia",
+            )):
+                continue
+            # Combos de 5/10 podem entrar, mas precisam representar uma
+            # promoção de verdade; anúncios de 2/3/4 unidades não entram.
+            if "cueca" in title_norm:
+                qty_match = re.search(r"\b(\d+)\s*(?:unidades?|unid|pecas?|pcs?)\b", title_norm)
+                if qty_match:
+                    qty = int(qty_match.group(1))
+                    if qty not in (5, 10):
+                        continue
+                    if float(o.get("discount") or 0) < 15.0:
+                        continue
+            moda.append(o)
+        offers = moda
 
     # DEDUPLICAÇÃO ROBUSTA
     # O mesmo produto pode chegar com product_id diferente e com pequenas
