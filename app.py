@@ -669,39 +669,62 @@ def product_items(pid):
 
 
 def _hydrate_real_item_permalink(item):
-    """Garante que o anúncio use a URL da PUBLICAÇÃO, não a URL do catálogo.
+    """Resolve SEMPRE a URL pública do anúncio real quando há item_id.
 
-    O catálogo pode devolver /p/MLB... mesmo quando o item real é MLB...
-    Para o gerador interno de afiliados isso pode resultar em ``URL not allowed``.
-    Quando temos o item_id, consultamos /items/{item_id} e preferimos a
-    permalink da publicação real. Se a consulta falhar, preservamos a URL original.
+    O gerador de afiliados do Mercado Livre pode rejeitar URLs de catálogo
+    no formato /p/MLB..., mesmo quando o produto tem uma publicação real.
+    Por isso, quando temos item_id, consultamos /items/{item_id} antes de
+    liberar a oferta para o fluxo do Safari.
+
+    Estratégia: usar o permalink retornado pelo item real; se a API não
+    devolver permalink, criar o formato público /MLB-ITEM_ID como fallback.
+    Nunca substituímos uma URL real por /p/MLB... .
     """
     if not isinstance(item, dict):
         return item
+
     item_id = str(item.get("item_id") or "").strip()
     if not item_id:
         return item
-    permalink = str(item.get("permalink") or "").strip()
-    # Se já parece uma URL de publicação específica, não precisa consultar.
-    # URLs de catálogo /p/MLB... são justamente as que queremos substituir.
-    needs_real = (not permalink) or bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I))
-    if not needs_real:
-        return item
+
+    original = str(item.get("permalink") or "").strip()
+    real_url = ""
+
     try:
         data, status, _ = ml_get(f"/items/{item_id}")
         if status == 200 and isinstance(data, dict):
-            real = data.get("permalink")
-            if real:
-                item["permalink"] = real
-            # Mantém os dados já calculados, mas aproveita campos reais quando disponíveis.
+            real_url = str(data.get("permalink") or "").strip()
+
             if not item.get("seller_id"):
                 seller = data.get("seller")
                 if isinstance(seller, dict):
                     item["seller_id"] = seller.get("id")
+
             if not item.get("sold_quantity"):
                 item["sold_quantity"] = data.get("sold_quantity") or 0
+
+            if not item.get("price") and data.get("price") is not None:
+                item["price"] = data.get("price")
+
+            if not item.get("original_price") and data.get("original_price") is not None:
+                item["original_price"] = data.get("original_price")
+
     except Exception as exc:
         print("[PERMALINK ITEM]", item_id, repr(exc))
+
+    # O permalink retornado pelo /items é a primeira escolha.
+    if real_url and not re.search(r"/p/MLB\d+(?:[/?#]|$)", real_url, re.I):
+        item["permalink"] = real_url
+        return item
+
+    # Se a API não forneceu um permalink real, usamos o formato público
+    # tradicional do anúncio. Isso evita enviar /p/MLB... ao Safari.
+    fallback = f"https://produto.mercadolivre.com.br/MLB-{item_id.replace('MLB', '', 1)}" if item_id.upper().startswith("MLB") else f"https://produto.mercadolivre.com.br/{item_id}"
+    item["permalink"] = fallback
+
+    if original and re.search(r"/p/MLB\d+(?:[/?#]|$)", original, re.I):
+        print("[PERMALINK CORRIGIDO]", original, "=>", fallback)
+
     return item
 
 PRICE_CACHE = {}
@@ -3851,6 +3874,11 @@ def _affiliate_queue_next():
     # O catálogo /p/MLB... pode abrir uma página inexistente em alguns casos.
     try:
         offer = _hydrate_real_item_permalink(offer)
+
+        permalink = str(offer.get("permalink") or "").strip()
+        if not permalink or re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I):
+            raise RuntimeError(f"URL pública do anúncio não resolvida para {offer.get('item_id')}")
+
         conn=get_db()
         conn.execute(
             "UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -3859,7 +3887,15 @@ def _affiliate_queue_next():
         conn.commit()
         conn.close()
     except Exception as exc:
-        print("[FILA] Não foi possível atualizar permalink real:", repr(exc))
+        print("[FILA] Não foi possível validar permalink real:", repr(exc))
+        conn=get_db()
+        conn.execute(
+            "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (row["id"],),
+        )
+        conn.commit()
+        conn.close()
+        return None
 
     return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
 
