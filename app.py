@@ -4132,92 +4132,126 @@ def diagnostico():
 # ============================================================
 @app.route("/api/afiliado/fila/popular", methods=["POST"])
 def api_afiliado_fila_popular():
-    """Recebe a lista real que o Caçador acabou de pesquisar e cria a fila.
+    """Abastece a fila usando EXATAMENTE as ofertas retornadas pelo Caçador.
 
-    A automação NÃO faz uma caça paralela diferente da tela principal.
-    Primeiro usamos exatamente /api/cacar para montar a lista do Caçador;
-    depois esta rota coloca as ofertas elegíveis na fila do afiliado.
+    Esta rota é deliberadamente tolerante a ofertas incompletas e a bancos
+    criados por versões antigas. Um único produto com problema não pode gerar
+    HTTP 500 e derrubar a atualização inteira.
     """
-    data = request.get_json(silent=True) or {}
-    offers = data.get("ofertas") or []
-    if not isinstance(offers, list):
-        return jsonify({"ok": False, "erro": "Lista de ofertas inválida."}), 400
-
-    # Recupera ofertas que ficaram presas em "processing" por uma tentativa
-    # anterior. Elas precisam voltar para pending para que o botão
-    # "Processar próxima oferta" consiga pegá-las novamente.
-    conn = get_db()
     try:
-        conn.execute("UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
-        conn.commit()
-    finally:
-        conn.close()
+        data = request.get_json(silent=True) or {}
+        offers = data.get("ofertas") or []
+        if not isinstance(offers, list):
+            return jsonify({"ok": False, "erro": "Lista de ofertas inválida."}), 400
 
-    adicionadas = 0
-    reativadas = 0
-    ignoradas = 0
-    ids = []
-    for offer in offers:
-        if not isinstance(offer, dict):
-            ignoradas += 1
-            continue
-        product_id = str(offer.get("product_id") or "").strip()
-        permalink = str(offer.get("permalink") or "").strip()
-        try:
-            price = float(offer.get("price") or 0)
-        except (TypeError, ValueError):
-            price = 0
-        if not product_id or price <= 0 or not permalink:
-            ignoradas += 1
-            continue
+        adicionadas = 0
+        reativadas = 0
+        ignoradas = 0
+        erros = []
+        ids = []
 
         conn = get_db()
-        published = conn.execute(
-            "SELECT 1 FROM whatsapp_publicacoes WHERE product_id=? LIMIT 1",
-            (product_id,),
-        ).fetchone()
-        existing = conn.execute(
-            "SELECT id,status FROM affiliate_queue WHERE product_id=? LIMIT 1",
-            (product_id,),
-        ).fetchone()
-        conn.close()
-        if published:
-            ignoradas += 1
-            continue
+        try:
+            # Recupera uma oferta que tenha ficado presa durante uma tentativa.
+            conn.execute(
+                "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'"
+            )
+            conn.commit()
 
-        # Se já existe uma fila pendente/processando, não duplica. Como acima
-        # recuperamos processing -> pending, esse caminho reaproveita a fila.
-        if existing and existing["status"] in ("pending", "processing"):
-            reativadas += 1
-            continue
+            for idx, raw_offer in enumerate(offers):
+                try:
+                    if not isinstance(raw_offer, dict):
+                        ignoradas += 1
+                        continue
 
-        # Se a oferta já terminou uma tentativa anterior (done), ela pode
-        # voltar para a fila quando o Caçador encontrar novamente uma oferta
-        # atualizada. Mantemos o mesmo registro para não criar duplicatas.
-        if existing and existing["status"] == "done":
-            qid = _affiliate_queue_add(offer)
-            if qid:
-                reativadas += 1
-                ids.append(qid)
-            else:
-                ignoradas += 1
-            continue
+                    offer = dict(raw_offer)
+                    product_id = str(offer.get("product_id") or offer.get("id") or "").strip()
+                    permalink = str(offer.get("permalink") or "").strip()
+                    try:
+                        price = float(offer.get("price") or 0)
+                    except (TypeError, ValueError):
+                        price = 0.0
 
-        qid = _affiliate_queue_add(offer)
-        if qid:
-            adicionadas += 1
-            ids.append(qid)
-        else:
-            ignoradas += 1
+                    # A fila precisa de um produto e preço válidos. O link pode
+                    # faltar em alguns resultados antigos; nesse caso tentamos
+                    # montar a URL de catálogo, sem descartar a oferta.
+                    if not permalink and product_id:
+                        permalink = f"https://www.mercadolivre.com.br/p/{product_id}"
+                        offer["permalink"] = permalink
 
-    return jsonify({
-        "ok": True,
-        "encontradas": len(offers),
-        "adicionadas": adicionadas,
-        "reativadas": reativadas,
-        "ignoradas": ignoradas,
-        "queue_ids": ids,
-    })
+                    if not product_id or price <= 0 or not permalink:
+                        ignoradas += 1
+                        continue
+
+                    published = conn.execute(
+                        "SELECT 1 FROM whatsapp_publicacoes WHERE product_id=? LIMIT 1",
+                        (product_id,),
+                    ).fetchone()
+                    if published:
+                        ignoradas += 1
+                        continue
+
+                    payload = json.dumps(
+                        json_safe(offer),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+
+                    existing = conn.execute(
+                        "SELECT id,status FROM affiliate_queue WHERE product_id=? LIMIT 1",
+                        (product_id,),
+                    ).fetchone()
+
+                    if existing:
+                        # Sempre atualiza a oferta com a versão mais recente do
+                        # Caçador e a deixa disponível para o próximo teste.
+                        conn.execute(
+                            """UPDATE affiliate_queue
+                               SET offer_json=?, status='pending', affiliate_link='',
+                                   updated_at=CURRENT_TIMESTAMP
+                               WHERE id=?""",
+                            (payload, existing["id"]),
+                        )
+                        reativadas += 1
+                        ids.append(int(existing["id"]))
+                    else:
+                        cur = conn.execute(
+                            """INSERT INTO affiliate_queue
+                               (product_id, offer_json, status, affiliate_link, attempts)
+                               VALUES (?, ?, 'pending', '', 0)""",
+                            (product_id, payload),
+                        )
+                        adicionadas += 1
+                        ids.append(int(cur.lastrowid))
+
+                except Exception as item_exc:
+                    ignoradas += 1
+                    if len(erros) < 10:
+                        erros.append(f"oferta {idx}: {type(item_exc).__name__}: {item_exc}")
+                    continue
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        return jsonify({
+            "ok": True,
+            "encontradas": len(offers),
+            "adicionadas": adicionadas,
+            "reativadas": reativadas,
+            "ignoradas": ignoradas,
+            "queue_ids": ids,
+            "erros": erros,
+        })
+
+    except Exception as exc:
+        # Nunca esconder a causa atrás de um 500 genérico.
+        print("[FILA AFILIADO] ERRO:", repr(exc))
+        return jsonify({
+            "ok": False,
+            "erro": "Não foi possível montar a fila de afiliados.",
+            "detalhes": f"{type(exc).__name__}: {exc}",
+        }), 500
 
 @app.route("/api/afiliado/fila/proximo")
 def api_afiliado_fila_proximo():
