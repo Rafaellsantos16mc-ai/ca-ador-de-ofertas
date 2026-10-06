@@ -155,6 +155,20 @@ CATALOG = {
         "tênis custo benefício",
         "tênis social masculino",
     ],
+    "👕 Camisas e Camisetas de Marcas": [
+        "camiseta Nike original",
+        "camiseta Adidas original",
+        "camiseta Puma original",
+        "camiseta Lacoste original",
+        "camiseta Tommy Hilfiger original",
+        "camiseta Calvin Klein original",
+        "camiseta Levi's original",
+        "camiseta Fila original",
+        "camiseta Under Armour original",
+        "camiseta New Balance original",
+        "camiseta Hering original",
+        "camiseta Reserva original",
+    ],
 }
 
 # ============================================================
@@ -326,6 +340,17 @@ PROFILES = {
         "strong": ["furadeira","parafusadeira","esmerilhadeira","ferramenta","serra","impacto"],
         "bad": ["broca avulsa","peca","carvao","bateria avulsa","capa"]
     },
+    "marcas": {
+        "strong": [
+            "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
+            "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
+            "new balance", "hering", "reserva"
+        ],
+        "bad": [
+            "falsa", "falsificada", "replica", "réplica", "pirata",
+            "segunda linha", "inspirada", "similar", "sem etiqueta"
+        ]
+    },
 }
 
 def is_requested_product(title, query, category=None):
@@ -353,6 +378,14 @@ def is_requested_product(title, query, category=None):
         "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
         "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
         "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], ["cueca geriatrica", "cueca geriátrica", "geriatrica", "geriátrica", "escapes de urina", "escape de urina", "incontinencia", "incontinência"]),
+        "👕 Camisas e Camisetas de Marcas": ([
+            "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
+            "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
+            "new balance", "hering", "reserva"
+        ], [
+            "falsa", "falsificada", "réplica", "replica", "pirata", "segunda linha",
+            "inspirada", "similar"
+        ]),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -414,6 +447,14 @@ def profile_for(q):
         "whey", "creatina", "pre treino", "suplemento"
     ]):
         return "academia"
+    if any(x in t for x in [
+        "camiseta nike", "camiseta adidas", "camiseta puma",
+        "camiseta lacoste", "camiseta tommy hilfiger", "camiseta calvin klein",
+        "camiseta levi", "camiseta fila", "camiseta under armour",
+        "camiseta new balance", "camiseta hering", "camiseta reserva",
+        "camisa nike", "camisa adidas", "camisa lacoste", "camisa puma"
+    ]):
+        return "marcas"
     if any(x in t for x in ["furadeira","parafusadeira","ferramenta","esmerilhadeira","serra"]):
         return "ferramenta"
     return None
