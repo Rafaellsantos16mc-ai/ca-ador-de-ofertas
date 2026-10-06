@@ -4132,9 +4132,37 @@ def diagnostico():
 # ============================================================
 @app.route("/api/afiliado/fila/proximo")
 def api_afiliado_fila_proximo():
-    item=_affiliate_queue_next()
-    if not item: return jsonify({"ok":True,"tem_oferta":False})
-    return jsonify({"ok":True,"tem_oferta":True,"queue_id":item["id"],"product_id":item["product_id"],"offer":item["offer"]})
+    # Primeiro tenta consumir uma oferta que já esteja aguardando o Safari.
+    item = _affiliate_queue_next()
+
+    # Se a fila estiver vazia, não devolve "fila vazia" imediatamente.
+    # Para o teste/manual, abastece a fila executando uma rodada real de caça.
+    # A rodada usa a mesma proteção contra duplicidade e limite da automação.
+    rodada = None
+    if not item:
+        try:
+            rodada = executar_caca_automatica()
+        except Exception as exc:
+            print("[AFILIADO] Falha ao abastecer fila:", repr(exc))
+            rodada = {"ok": False, "erro": str(exc), "fila_afiliado": 0}
+        item = _affiliate_queue_next()
+
+    if not item:
+        return jsonify({
+            "ok": True,
+            "tem_oferta": False,
+            "mensagem": "Nenhuma oferta elegível foi encontrada nesta rodada.",
+            "rodada": rodada or {},
+        })
+
+    return jsonify({
+        "ok": True,
+        "tem_oferta": True,
+        "queue_id": item["id"],
+        "product_id": item["product_id"],
+        "offer": item["offer"],
+        "rodada": rodada or {},
+    })
 
 @app.route("/api/afiliado/fila/status")
 def api_afiliado_fila_status():
