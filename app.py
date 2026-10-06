@@ -3701,15 +3701,58 @@ def _whatsapp_mark_published(offer):
 
 
 def _affiliate_queue_add(offer):
+    """Adiciona/reativa uma oferta na fila sem quebrar por UNIQUE(product_id).
+
+    O mesmo produto pode aparecer novamente em uma nova lista do Caçador.
+    Versões anteriores tentavam INSERT quando já existia uma linha com status
+    ``done`` e isso podia gerar IntegrityError/HTTP 500 ao popular a fila.
+    Agora reaproveitamos a linha existente e a colocamos novamente como
+    ``pending`` quando necessário.
+    """
     product_id = str((offer or {}).get("product_id") or "").strip()
-    if not product_id: return None
+    if not product_id:
+        return None
+
     payload = json.dumps(json_safe(offer or {}), ensure_ascii=False, separators=(",", ":"))
-    conn = get_db(); row = conn.execute("SELECT id,status FROM affiliate_queue WHERE product_id=?", (product_id,)).fetchone()
-    if row:
-        conn.execute("UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE product_id=? AND status IN ('pending','processing')", (payload,product_id)); qid=row["id"]
-    else:
-        qid=conn.execute("INSERT INTO affiliate_queue(product_id,offer_json,status) VALUES(?,?,?)",(product_id,payload,"pending")).lastrowid
-    conn.commit(); conn.close(); return qid
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id,status FROM affiliate_queue WHERE product_id=?",
+            (product_id,),
+        ).fetchone()
+
+        if row:
+            status = str(row["status"] or "").lower()
+            if status in {"pending", "processing"}:
+                conn.execute(
+                    "UPDATE affiliate_queue SET offer_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (payload, row["id"]),
+                )
+            else:
+                # done/cancelled/errored: permite uma nova tentativa em uma
+                # nova rodada do Caçador, sem criar outra linha duplicada.
+                conn.execute(
+                    """UPDATE affiliate_queue
+                       SET offer_json=?, status='pending', affiliate_link='',
+                           state='', attempts=0, updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (payload, row["id"]),
+                )
+            qid = row["id"]
+        else:
+            qid = conn.execute(
+                "INSERT INTO affiliate_queue(product_id,offer_json,status) VALUES(?,?,?)",
+                (product_id, payload, "pending"),
+            ).lastrowid
+
+        conn.commit()
+        return qid
+    except Exception as exc:
+        conn.rollback()
+        print("[FILA AFILIADO] Erro ao adicionar", product_id, repr(exc))
+        return None
+    finally:
+        conn.close()
 
 def _affiliate_queue_next():
     conn=get_db(); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
@@ -4174,7 +4217,11 @@ def api_afiliado_fila_popular():
             ignoradas += 1
             continue
 
-        qid = _affiliate_queue_add(offer)
+        try:
+            qid = _affiliate_queue_add(offer)
+        except Exception as exc:
+            print("[FILA AFILIADO] Falha isolada ao enfileirar", product_id, repr(exc))
+            qid = None
         if qid:
             adicionadas += 1
             ids.append(qid)
