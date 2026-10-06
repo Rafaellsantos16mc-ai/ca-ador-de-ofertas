@@ -4235,7 +4235,7 @@ function seller(o,mi,oi){
  ${o.cash_discount>0?`<div class="coupon" style="background:#eefaf2;border-color:#78c995"><b>💳 ${esc(o.cash_label||'Pagamento à vista')}</b><div>Desconto informado: ${brl(o.cash_discount)}</div><div class="final">💥 Final estimado: ${brl(o.cash_final)}</div><div class="small">⚠️ Não somado ao cupom automaticamente.</div></div>`:''}
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
- <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
+ <button onclick="copiarUrl('${id}',decodeURIComponent('${encodeURIComponent(String(o.permalink||""))}'))" style="background:#555">🔗 Copiar URL do produto</button>
  <div class="small" style="margin-top:8px">📱 No iPhone: toque em <b>Ver produto</b> para abrir o produto no Mercado Livre. Depois use <b>Compartilhar</b> pela Central/Barra de Afiliados, copie o seu link de afiliado e cole aqui.</div>
  <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link de afiliado do Mercado Livre" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
@@ -4247,11 +4247,43 @@ function seller(o,mi,oi){
 
 
 async function copiarUrl(id,url){
+ const value=String(url||'').trim();
+ if(!value){alert('❌ Este produto não possui uma URL válida.');return;}
  try{
-  if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(url);}
-  else{const ta=document.createElement('textarea');ta.value=url;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove();}
-  alert('✅ URL do produto copiada. Agora abra a Central de Afiliados do Mercado Livre para gerar/compartilhar seu link.');
- }catch(e){alert('URL do produto: '+url);}
+  if(navigator.clipboard && typeof navigator.clipboard.writeText==='function'){
+   await navigator.clipboard.writeText(value);
+  }else{
+   const ta=document.createElement('textarea');
+   ta.value=value;
+   ta.setAttribute('readonly','');
+   ta.style.position='fixed';
+   ta.style.left='-9999px';
+   ta.style.top='0';
+   ta.style.opacity='0';
+   document.body.appendChild(ta);
+   ta.focus();
+   ta.select();
+   ta.setSelectionRange(0,ta.value.length);
+   const ok=document.execCommand('copy');
+   ta.remove();
+   if(!ok) throw new Error('copy_failed');
+  }
+  alert('✅ URL copiada! Agora cole no Gerador oficial de afiliado do Mercado Livre.');
+ }catch(e){
+  // No iPhone, alguns navegadores bloqueiam a área de transferência.
+  // Mostramos a URL em um campo selecionável para o usuário copiar manualmente.
+  const box=document.createElement('div');
+  box.style.cssText='position:fixed;z-index:99999;left:12px;right:12px;top:18%;background:#fff;border:2px solid #3483fa;border-radius:14px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.25);';
+  box.innerHTML='<b style="font-size:17px">🔗 URL do produto</b><div style="margin:10px 0 6px;font-size:12px;color:#666">Toque no campo, selecione e copie:</div>'+
+   '<textarea id="urlFallbackCopy" readonly style="width:100%;min-height:110px;font-size:13px;padding:10px;box-sizing:border-box;border:1px solid #ccc;border-radius:8px;">'+esc(value)+'</textarea>'+
+   '<button id="urlFallbackClose" style="width:100%;margin-top:10px;background:#3483fa;color:#fff">Fechar</button>';
+  document.body.appendChild(box);
+  const ta=box.querySelector('#urlFallbackCopy');
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0,ta.value.length);
+  box.querySelector('#urlFallbackClose').onclick=()=>box.remove();
+ }
 }
 async function anuncio(id,o){
  try{
