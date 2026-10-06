@@ -4130,9 +4130,69 @@ def diagnostico():
 # ============================================================
 # FILA DE AFILIADOS / NAVEGADOR
 # ============================================================
+@app.route("/api/afiliado/fila/popular", methods=["POST"])
+def api_afiliado_fila_popular():
+    """Recebe a lista real que o Caçador acabou de pesquisar e cria a fila.
+
+    A automação NÃO faz uma caça paralela diferente da tela principal.
+    Primeiro usamos exatamente /api/cacar para montar a lista do Caçador;
+    depois esta rota coloca as ofertas elegíveis na fila do afiliado.
+    """
+    data = request.get_json(silent=True) or {}
+    offers = data.get("ofertas") or []
+    if not isinstance(offers, list):
+        return jsonify({"ok": False, "erro": "Lista de ofertas inválida."}), 400
+
+    adicionadas = 0
+    ignoradas = 0
+    ids = []
+    for offer in offers:
+        if not isinstance(offer, dict):
+            ignoradas += 1
+            continue
+        product_id = str(offer.get("product_id") or "").strip()
+        permalink = str(offer.get("permalink") or "").strip()
+        try:
+            price = float(offer.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if not product_id or price <= 0 or not permalink:
+            ignoradas += 1
+            continue
+
+        conn = get_db()
+        published = conn.execute(
+            "SELECT 1 FROM whatsapp_publicacoes WHERE product_id=? LIMIT 1",
+            (product_id,),
+        ).fetchone()
+        pending = conn.execute(
+            "SELECT 1 FROM affiliate_queue WHERE product_id=? AND status IN ('pending','processing') LIMIT 1",
+            (product_id,),
+        ).fetchone()
+        conn.close()
+        if published or pending:
+            ignoradas += 1
+            continue
+
+        qid = _affiliate_queue_add(offer)
+        if qid:
+            adicionadas += 1
+            ids.append(qid)
+        else:
+            ignoradas += 1
+
+    return jsonify({
+        "ok": True,
+        "encontradas": len(offers),
+        "adicionadas": adicionadas,
+        "ignoradas": ignoradas,
+        "queue_ids": ids,
+    })
+
 @app.route("/api/afiliado/fila/proximo")
 def api_afiliado_fila_proximo():
-    # Primeiro tenta uma oferta já enfileirada.
+    # IMPORTANTE: a fila só deve ser abastecida depois que o Caçador
+    # pesquisou a lista principal. Não fazemos uma segunda caça escondida.
     item = _affiliate_queue_next()
     if item:
         return jsonify({
@@ -4141,72 +4201,14 @@ def api_afiliado_fila_proximo():
             "queue_id": item["id"],
             "product_id": item["product_id"],
             "offer": item["offer"],
-            "origem": "fila",
+            "origem": "lista_cacador",
         })
 
-    # Se a fila estiver vazia, faz uma caça imediata.
-    # Não depende da thread de 5 minutos nem do AUTO_WHATSAPP_ENABLED.
-    try:
-        print("[FILA AFILIADO] Fila vazia; iniciando caça imediata...")
-        result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
-        offers = list((result or {}).get("ofertas") or [])
-        print(f"[FILA AFILIADO] Caça retornou {len(offers)} ofertas.")
-
-        # Escolhe a primeira oferta válida que ainda não foi publicada e
-        # que não esteja aguardando/processando na fila.
-        for offer in offers:
-            product_id = str(offer.get("product_id") or "").strip()
-            if not product_id:
-                continue
-            try:
-                price = float(offer.get("price") or 0)
-            except (TypeError, ValueError):
-                continue
-            if price <= 0:
-                continue
-
-            conn = get_db()
-            published = conn.execute(
-                "SELECT 1 FROM whatsapp_publicacoes WHERE product_id=? LIMIT 1",
-                (product_id,),
-            ).fetchone()
-            pending = conn.execute(
-                "SELECT 1 FROM affiliate_queue WHERE product_id=? AND status IN ('pending','processing') LIMIT 1",
-                (product_id,),
-            ).fetchone()
-            conn.close()
-            if published or pending:
-                continue
-
-            qid = _affiliate_queue_add(offer)
-            if not qid:
-                continue
-
-            item = _affiliate_queue_next()
-            if item:
-                return jsonify({
-                    "ok": True,
-                    "tem_oferta": True,
-                    "queue_id": item["id"],
-                    "product_id": item["product_id"],
-                    "offer": item["offer"],
-                    "origem": "caca_imediata",
-                    "total_encontradas": len(offers),
-                })
-
-        return jsonify({
-            "ok": True,
-            "tem_oferta": False,
-            "total_encontradas": len(offers),
-            "mensagem": "A caça terminou, mas nenhuma oferta nova elegível foi encontrada.",
-        })
-    except Exception as exc:
-        print("[FILA AFILIADO] Erro na caça imediata:", repr(exc))
-        return jsonify({
-            "ok": False,
-            "tem_oferta": False,
-            "erro": str(exc),
-        }), 500
+    return jsonify({
+        "ok": True,
+        "tem_oferta": False,
+        "mensagem": "A fila está vazia. Primeiro atualize a lista de produtos do Caçador.",
+    })
 
 @app.route("/api/afiliado/fila/status")
 def api_afiliado_fila_status():
@@ -4215,7 +4217,8 @@ def api_afiliado_fila_status():
 
 @app.route("/afiliado/automacao")
 def afiliado_automacao():
-    return render_template_string("""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Caçador — Automação</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:680px;margin:auto;background:#fff;padding:22px;border-radius:16px}button{width:100%;padding:16px;border:0;border-radius:12px;background:#ffe600;font-size:18px;font-weight:bold}#s{margin-top:15px}</style></head><body><div class='card'><h2>🤖 Caçador automático</h2><p>Busca a próxima oferta da fila e abre o produto no Safari.</p><button onclick='proxima()'>🔗 Processar próxima oferta</button><div id='s'>Aguardando...</div></div><script>async function proxima(){const s=document.getElementById('s');s.textContent='🔎 Procurando...';try{const r=await fetch('/api/afiliado/fila/proximo');const j=await r.json();if(!r.ok||j.ok===false){throw Error(j.erro||'Falha ao procurar oferta')}if(!j.tem_oferta){s.textContent='⚠️ '+(j.mensagem||'Nenhuma oferta nova encontrada.')+(j.total_encontradas!=null?' Encontradas: '+j.total_encontradas:'');return}const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:'fila_'+j.queue_id,offer:j.offer,queue_id:j.queue_id,createdAt:Date.now()}));const u=new URL(j.offer.permalink||'');u.hash='cacador_state='+state+'&cacador_queue_id='+encodeURIComponent(j.queue_id)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');location.href=u.toString()}catch(e){s.textContent='❌ '+e.message}}</script></body></html>""")
+    return render_template_string("""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Caçador — Automação</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:720px;margin:auto;background:#fff;padding:22px;border-radius:16px;box-shadow:0 5px 20px #0001}.btn{width:100%;padding:16px;border:0;border-radius:12px;background:#ffe600;font-size:18px;font-weight:bold;margin-top:8px}.btn2{background:#3483fa;color:#fff}.status{margin-top:15px;padding:12px;border-radius:10px;background:#f1f3f5}.item{padding:10px;border-bottom:1px solid #eee}.muted{color:#666;font-size:13px}</style></head><body><div class='card'><h2>🤖 Caçador automático</h2><p>Primeiro o sistema faz <b>a mesma busca do Caçador</b> e monta a lista de produtos. Só depois a oferta entra na fila do afiliado.</p><button class='btn btn2' onclick='atualizarLista()'>🔎 1. Atualizar lista do Caçador</button><button class='btn' onclick='proxima()'>🔗 2. Processar próxima oferta</button><div id='s' class='status'>Aguardando...</div><div id='lista' style='margin-top:14px'></div></div><script>let timer=null;async function atualizarLista(){const s=document.getElementById('s'),lista=document.getElementById('lista');s.textContent='🔎 Procurando a lista completa de produtos...';lista.innerHTML='';if(timer)clearTimeout(timer);try{const r=await fetch('/api/cacar',{cache:'no-store'});const j=await r.json();if(!r.ok||!j.job_id)throw Error(j.erro||'Não foi possível iniciar a busca');acompanhar(j.job_id)}catch(e){s.textContent='❌ '+e.message}}async function acompanhar(id){const s=document.getElementById('s'),lista=document.getElementById('lista');try{const r=await fetch('/api/cacar/status/'+encodeURIComponent(id),{cache:'no-store'});const j=await r.json();s.textContent=(j.message||'🔄 Atualizando...')+' '+(j.progress||0)+'%';if(j.status==='done'){const result=j.result||{};const offers=result.ofertas||[];const q=await fetch('/api/afiliado/fila/popular',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ofertas:offers})});const qj=await q.json();if(!q.ok||qj.ok===false)throw Error(qj.erro||'Não foi possível criar a fila');const modelos=result.modelos||[];lista.innerHTML='<h3>📦 Lista encontrada</h3>'+modelos.slice(0,20).map(m=>'<div class="item"><b>'+esc(m.modelo_nome||'Produto')+'</b><div class="muted">'+(m.ofertas||[]).length+' vendedor(es)</div></div>').join('');s.textContent='✅ Lista atualizada: '+offers.length+' ofertas encontradas. '+qj.adicionadas+' colocadas na fila.';return}if(j.status==='error'){s.textContent='❌ '+(j.error||j.message||'Erro durante a busca');return}timer=setTimeout(()=>acompanhar(id),1200)}catch(e){s.textContent='⚠️ '+e.message;timer=setTimeout(()=>acompanhar(id),1800)}}function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function proxima(){const s=document.getElementById('s');s.textContent='🔗 Pegando a próxima oferta da lista...';try{const r=await fetch('/api/afiliado/fila/proximo',{cache:'no-store'});const j=await r.json();if(!r.ok||j.ok===false)throw Error(j.erro||'Falha ao pegar oferta');if(!j.tem_oferta){s.textContent='⚠️ '+(j.mensagem||'Fila vazia. Atualize a lista primeiro.');return}const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:'fila_'+j.queue_id,offer:j.offer,queue_id:j.queue_id,createdAt:Date.now()}));const u=new URL(j.offer.permalink||'');u.hash='cacador_state='+state+'&cacador_queue_id='+encodeURIComponent(j.queue_id)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');location.href=u.toString()}catch(e){s.textContent='❌ '+e.message}}</script></body></html>""")
+
 
 # ============================================================
 # AFILIADOS - FLUXO OFICIAL
