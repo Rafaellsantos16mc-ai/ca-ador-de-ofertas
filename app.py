@@ -1,5 +1,4 @@
 import random
-import json
 import os
 import sqlite3
 import secrets
@@ -669,110 +668,40 @@ def product_items(pid):
 
 
 def _hydrate_real_item_permalink(item):
-    """Resolve uma publicação REAL e ATIVA para abrir no Safari.
+    """Garante que o anúncio use a URL da PUBLICAÇÃO, não a URL do catálogo.
 
-    O problema das versões anteriores era confiar no primeiro item/permalink.
-    Um produto de catálogo pode ter vários anúncios e o primeiro pode estar
-    encerrado, removido ou apontar para uma página que o Safari informa como
-    inexistente. Aqui testamos os candidatos e só aceitamos um anúncio ativo
-    que a API /items/{item_id} confirme como existente.
+    O catálogo pode devolver /p/MLB... mesmo quando o item real é MLB...
+    Para o gerador interno de afiliados isso pode resultar em ``URL not allowed``.
+    Quando temos o item_id, consultamos /items/{item_id} e preferimos a
+    permalink da publicação real. Se a consulta falhar, preservamos a URL original.
     """
     if not isinstance(item, dict):
         return item
-
-    product_id = str(item.get("product_id") or "").strip()
-    original_item_id = str(item.get("item_id") or "").strip()
-    original_permalink = str(item.get("permalink") or "").strip()
-
-    def is_catalog_url(url):
-        return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
-
-    def public_permalink(data, iid):
-        # IMPORTANTE: nunca inventar uma URL de anúncio.
-        # O Mercado Livre pode devolver um item existente sem permalink
-        # público utilizável. Nesse caso o chamador deve tentar outro item.
-        url = str((data or {}).get("permalink") or "").strip()
-        if url and not is_catalog_url(url):
-            return url
-        return ""
-
-    # PRIMEIRO preserva o permalink original do Caçador quando ele já é um
-    # link público de anúncio. Essa era a rota que já estava funcionando.
-    # Só fazemos a resolução product -> item quando o link salvo é catálogo
-    # (/p/MLB...) ou está realmente ausente. Isso evita trocar um anúncio
-    # válido por outro item do mesmo catálogo e acabar em "página não existe".
-    if original_permalink and not is_catalog_url(original_permalink):
-        item["permalink"] = original_permalink
-        print("[PERMALINK ORIGINAL PRESERVADO]", product_id, "=>", original_item_id, original_permalink)
+    item_id = str(item.get("item_id") or "").strip()
+    if not item_id:
         return item
-
-    # Só agora monta candidatos: primeiro o item salvo e depois os anúncios do catálogo.
-    candidate_ids = []
-    if original_item_id:
-        candidate_ids.append(original_item_id)
-
-    if product_id:
-        try:
-            for cand in product_items(product_id):
-                if not isinstance(cand, dict):
-                    continue
-                cid = str(cand.get("item_id") or cand.get("id") or "").strip()
-                if cid and cid not in candidate_ids:
-                    candidate_ids.append(cid)
-        except Exception as exc:
-            print("[PERMALINK PRODUCT->ITEM]", product_id, repr(exc))
-
-    # Se a lista antiga não tinha item_id, mas trouxe um permalink de anúncio,
-    # tenta extrair MLB do próprio link antes de desistir.
-    if not candidate_ids and original_permalink:
-        m = re.search(r"(?:MLB-|/MLB)(\d+)", original_permalink, re.I)
-        if m:
-            candidate_ids.append("MLB" + m.group(1))
-
-    # Testa os candidatos diretamente na API. Só um anúncio que exista e esteja
-    # ativo pode seguir para o Safari.
-    for cid in candidate_ids:
-        try:
-            data, status, _ = ml_get(f"/items/{cid}")
-            if status != 200 or not isinstance(data, dict):
-                continue
-
-            state = str(data.get("status") or "").lower().strip()
-            # Alguns retornos não trazem status; nesse caso, o HTTP 200 já é
-            # suficiente para considerar o anúncio utilizável.
-            if state and state not in {"active"}:
-                continue
-
-            real_permalink = public_permalink(data, cid)
-            if not real_permalink:
-                print("[PERMALINK SEM URL PUBLICA]", cid, "-> tentando próximo anúncio")
-                continue
-
-            item["item_id"] = cid
-            item["permalink"] = real_permalink
-
-            seller = data.get("seller")
-            if isinstance(seller, dict) and not item.get("seller_id"):
-                item["seller_id"] = seller.get("id")
-            if data.get("price") is not None:
-                item["price"] = data.get("price")
-            if data.get("original_price") is not None:
-                item["original_price"] = data.get("original_price")
-            if data.get("sold_quantity") is not None:
-                item["sold_quantity"] = data.get("sold_quantity")
-            if data.get("title") and not item.get("title"):
-                item["title"] = data.get("title")
-
-            print("[PERMALINK REAL ATIVO]", product_id, "=>", cid, item["permalink"])
-            return item
-        except Exception as exc:
-            print("[PERMALINK ITEM]", cid, repr(exc))
-
-    # Não manda catálogo nem anúncio possivelmente morto para o Safari.
-    # O chamador devolverá a oferta para pending para tentar a próxima.
-    raise RuntimeError(
-        f"Nenhum anúncio ativo encontrado para product_id={product_id or '-'} item_id={original_item_id or '-'}"
-    )
+    permalink = str(item.get("permalink") or "").strip()
+    # Se já parece uma URL de publicação específica, não precisa consultar.
+    # URLs de catálogo /p/MLB... são justamente as que queremos substituir.
+    needs_real = (not permalink) or bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I))
+    if not needs_real:
+        return item
+    try:
+        data, status, _ = ml_get(f"/items/{item_id}")
+        if status == 200 and isinstance(data, dict):
+            real = data.get("permalink")
+            if real:
+                item["permalink"] = real
+            # Mantém os dados já calculados, mas aproveita campos reais quando disponíveis.
+            if not item.get("seller_id"):
+                seller = data.get("seller")
+                if isinstance(seller, dict):
+                    item["seller_id"] = seller.get("id")
+            if not item.get("sold_quantity"):
+                item["sold_quantity"] = data.get("sold_quantity") or 0
+    except Exception as exc:
+        print("[PERMALINK ITEM]", item_id, repr(exc))
+    return item
 
 PRICE_CACHE = {}
 
@@ -2452,7 +2381,7 @@ def _search_category(cat):
                 "highlight_category_id": category_id,
             }, cat))
         rank_base += 30
-        if len(out) >= 100:
+        if len(out) >= 70:
             break
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
@@ -2651,18 +2580,13 @@ def _fetch_product_fast(pid, raw=None, base=None):
         bb = raw.get("buy_box_winner") or raw.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
-            try:
-                item = _hydrate_real_item_permalink(item)
-                p = dict(raw)
-                p.setdefault("name", raw.get("title") or pid)
-                result = (pid, p, item, base)
-                with _PRODUCT_CACHE_LOCK:
-                    _PRODUCT_CACHE[cache_key] = result
-                return result
-            except Exception as exc:
-                # Um Buy Box inválido NÃO pode matar o produto inteiro.
-                # O mesmo produto pode ter outros anúncios ativos.
-                print("[BUY BOX] anúncio inválido; tentando outras publicações:", pid, repr(exc))
+            item = _hydrate_real_item_permalink(item)
+            p = dict(raw)
+            p.setdefault("name", raw.get("title") or pid)
+            result = (pid, p, item, base)
+            with _PRODUCT_CACHE_LOCK:
+                _PRODUCT_CACHE[cache_key] = result
+            return result
 
     # 2) detalhe do catálogo.
     p = product(pid)
@@ -2670,16 +2594,11 @@ def _fetch_product_fast(pid, raw=None, base=None):
         bb = p.get("buy_box_winner") or p.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
-            try:
-                item = _hydrate_real_item_permalink(item)
-                result = (pid, p, item, base)
-                with _PRODUCT_CACHE_LOCK:
-                    _PRODUCT_CACHE[cache_key] = result
-                return result
-            except Exception as exc:
-                # Não descarta o catálogo inteiro só porque o Buy Box atual
-                # está encerrado. Vamos procurar anúncios alternativos abaixo.
-                print("[CATÁLOGO] Buy Box sem anúncio ativo; buscando alternativas:", pid, repr(exc))
+            item = _hydrate_real_item_permalink(item)
+            result = (pid, p, item, base)
+            with _PRODUCT_CACHE_LOCK:
+                _PRODUCT_CACHE[cache_key] = result
+            return result
 
     # 3) tenta publicações associadas ao produto.
     with _ITEMS_CACHE_LOCK:
@@ -2694,14 +2613,8 @@ def _fetch_product_fast(pid, raw=None, base=None):
         item = normalize_item(candidate)
         if not item:
             continue
-        try:
-            item = _hydrate_real_item_permalink(item)
-        except Exception as exc:
-            # CORREÇÃO PRINCIPAL DA LISTA: se o primeiro anúncio do produto
-            # estiver morto/encerrado, NÃO abandona o produto. Testa o próximo.
-            print("[ITEM ALTERNATIVO] anúncio não utilizável; tentando próximo:", pid, candidate.get("item_id") or candidate.get("id"), repr(exc))
-            continue
-        item["sold_quantity"] = candidate.get("sold_quantity") or item.get("sold_quantity") or 0
+        item = _hydrate_real_item_permalink(item)
+        item["sold_quantity"] = candidate.get("sold_quantity") or 0
         if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
             best = item
 
@@ -3002,7 +2915,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        for raw, source_query in raw_by_cat.get(cat, [])[:160 if cat == "🌙 Perfumes Árabes" else 100]:
+        for raw, source_query in raw_by_cat.get(cat, [])[:140 if cat == "🌙 Perfumes Árabes" else 70]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -3365,30 +3278,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        # Mantemos bastante espaço por categoria para não terminar com apenas
-        # 20-30 produtos quando várias categorias têm candidatos válidos.
-        limit = 30 if cat == "🌙 Perfumes Árabes" else 20
+        # A categoria árabe recebe mais espaço para aparecer com mais frequência:
+        # 30 ofertas árabes contra 20 nas demais.
+        limit = 60 if cat == "🌙 Perfumes Árabes" else 20
         flat.extend(arr[:limit])
-
-    # O modo automático historicamente trabalha com uma lista ampla, mas não
-    # precisa mandar centenas de anúncios para a fila de uma vez. O alvo é
-    # 80 ofertas, preservando a diversidade entre categorias.
-    if len(flat) > 80:
-        selected = []
-        pools = {cat: [o for o in flat if o.get("category_name") == cat] for cat in categories}
-        # Primeiro garante até 10 por categoria, depois preenche pelo ranking.
-        for cat in categories:
-            selected.extend(pools.get(cat, [])[:10])
-        used = {id(o) for o in selected}
-        if len(selected) < 80:
-            for o in flat:
-                if id(o) in used:
-                    continue
-                selected.append(o)
-                used.add(id(o))
-                if len(selected) >= 80:
-                    break
-        flat = selected[:80]
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
     random.shuffle(flat)
@@ -3818,201 +3711,13 @@ def _affiliate_queue_add(offer):
         qid=conn.execute("INSERT INTO affiliate_queue(product_id,offer_json,status) VALUES(?,?,?)",(product_id,payload,"pending")).lastrowid
     conn.commit(); conn.close(); return qid
 
-
-
-def ensure_affiliate_queue_table(conn):
-    """Garante a estrutura da fila mesmo quando o ofertas.db veio de uma versão antiga."""
-    conn.execute("""CREATE TABLE IF NOT EXISTS affiliate_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id TEXT UNIQUE,
-        offer_json TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        affiliate_link TEXT DEFAULT '',
-        state TEXT DEFAULT '',
-        attempts INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )""")
-    # Bancos antigos podem ter a tabela, mas faltar alguma coluna.
-    cols={r[1] for r in conn.execute("PRAGMA table_info(affiliate_queue)").fetchall()}
-    migrations={
-        "affiliate_link":"ALTER TABLE affiliate_queue ADD COLUMN affiliate_link TEXT DEFAULT ''",
-        "state":"ALTER TABLE affiliate_queue ADD COLUMN state TEXT DEFAULT ''",
-        "attempts":"ALTER TABLE affiliate_queue ADD COLUMN attempts INTEGER DEFAULT 0",
-        "created_at":"ALTER TABLE affiliate_queue ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        "updated_at":"ALTER TABLE affiliate_queue ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-    }
-    for name,sql in migrations.items():
-        if name not in cols:
-            try: conn.execute(sql)
-            except sqlite3.OperationalError: pass
-
-def _affiliate_queue_recover_stale():
-    """Libera itens que ficaram presos em processing por uma tentativa interrompida."""
-    conn = get_db()
-    ensure_affiliate_queue_table(conn)
-    conn.execute("""
-        UPDATE affiliate_queue
-           SET status='pending', updated_at=CURRENT_TIMESTAMP
-         WHERE status='processing'
-    """)
-    conn.commit()
-    conn.close()
-
-
-def _affiliate_queue_from_saved_offers(limit=50):
-    """Abastece a fila a partir da última lista salva pelo próprio Caçador.
-
-    Isto é um fallback deliberado: se o botão de atualização terminou, mas a
-    chamada AJAX que popularia a fila não chegou ao servidor, o botão
-    'Processar próxima oferta' ainda consegue continuar usando exatamente os
-    produtos que o Caçador acabou de salvar na tabela ofertas. Não faz uma
-    nova caça e não usa produtos externos à lista salva.
-    """
-    added = 0
-    conn = get_db()
-    ensure_affiliate_queue_table(conn)
-    try:
-        rows = conn.execute("""
-            SELECT product_id,item_id,title,permalink,price,original_price,discount,
-                   seller_id,image,category_id,category_name,condition,listing_type_id,
-                   free_shipping,shipping_cost,total_price,relevance_score,affiliate_link,extra_earnings
-              FROM ofertas
-             WHERE product_id IS NOT NULL AND TRIM(product_id) <> ''
-             ORDER BY id DESC
-             LIMIT ?
-        """, (int(limit),)).fetchall()
-
-        for row in rows:
-            product_id = str(row['product_id'] or '').strip()
-            if not product_id:
-                continue
-            existing = conn.execute(
-                "SELECT id,status FROM affiliate_queue WHERE product_id=? LIMIT 1",
-                (product_id,)
-            ).fetchone()
-            # Não ressuscita algo que já foi concluído; só cria se não existir.
-            if existing:
-                continue
-            offer = {
-                'product_id': product_id,
-                'item_id': row['item_id'],
-                'title': row['title'] or 'Produto',
-                'permalink': row['permalink'] or f"https://www.mercadolivre.com.br/p/{product_id}",
-                'price': row['price'],
-                'original_price': row['original_price'],
-                'discount': row['discount'] or 0,
-                'seller_id': row['seller_id'],
-                'image': row['image'],
-                'category_id': row['category_id'],
-                'category_name': row['category_name'],
-                'condition': row['condition'],
-                'listing_type_id': row['listing_type_id'],
-                'free_shipping': bool(row['free_shipping']),
-                'shipping_cost': row['shipping_cost'],
-                'total_price': row['total_price'],
-                'relevance_score': row['relevance_score'] or 0,
-                'affiliate_link': '',
-                'extra_earnings': row['extra_earnings'] or 0,
-            }
-            # Antes de colocar na fila, transforma URL de catálogo (/p/MLB...)
-            # em permalink de um anúncio REAL e ATIVO. Se não houver anúncio
-            # válido, apenas pula este registro e tenta o próximo.
-            try:
-                offer = _hydrate_real_item_permalink(offer)
-            except Exception as exc:
-                print("[FILA SALVA] produto sem anúncio ativo:", product_id, repr(exc))
-                continue
-            payload = json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":"))
-            conn.execute(
-                "INSERT INTO affiliate_queue(product_id,offer_json,status,affiliate_link,attempts) VALUES(?,?, 'pending','',0)",
-                (product_id, payload)
-            )
-            added += 1
-            if added >= limit:
-                break
-        conn.commit()
-    finally:
-        conn.close()
-    return added
-
-
 def _affiliate_queue_next():
-    """Retorna a próxima oferta usando o MESMO link salvo pelo Caçador.
-
-    A V20 volta ao fluxo que já funcionava: o botão de afiliado abre
-    diretamente offer.permalink no Safari. A correção da V16 (pular itens
-    problemáticos da fila) continua, mas não altera a URL da oferta.
-    """
-    _affiliate_queue_recover_stale()
-
-    max_candidates = 30
-    last_error = None
-
-    for _ in range(max_candidates):
-        conn = get_db()
-        ensure_affiliate_queue_table(conn)
-        row = conn.execute(
-            "SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1"
-        ).fetchone()
-        conn.close()
-
-        if not row:
-            _affiliate_queue_from_saved_offers(limit=50)
-            conn = get_db()
-            ensure_affiliate_queue_table(conn)
-            row = conn.execute(
-                "SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1"
-            ).fetchone()
-            conn.close()
-
-        if not row:
-            break
-
-        qid = int(row["id"])
-        conn = get_db()
-        conn.execute(
-            "UPDATE affiliate_queue SET status='processing', attempts=attempts+1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (qid,)
-        )
-        conn.commit()
-        conn.close()
-
-        try:
-            offer = json.loads(row["offer_json"] or "{}")
-        except Exception:
-            offer = {}
-
-        permalink = str(offer.get("permalink") or "").strip()
-        if not permalink:
-            last_error = "Oferta sem permalink salvo"
-            print("[FILA] Oferta sem permalink; pulando:", qid)
-            conn = get_db()
-            conn.execute(
-                "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (qid,),
-            )
-            conn.commit()
-            conn.close()
-            continue
-
-        # Não chama _hydrate_real_item_permalink aqui. Essa era a alteração
-        # que fazia o Safari receber outra URL e quebrava o fluxo que já
-        # funcionava no Caçador.
-        print("[FILA] Oferta preservada para o Safari:", qid, offer.get("item_id"), permalink)
-        return {"id": qid, "product_id": row["product_id"], "offer": offer}
-
-    conn = get_db()
-    try:
-        total_ativas = conn.execute(
-            "SELECT COUNT(*) AS n FROM affiliate_queue WHERE status IN ('pending','processing')"
-        ).fetchone()["n"]
-    finally:
-        conn.close()
-
-    if total_ativas:
-        print("[FILA] Nenhum candidato utilizável entre os registros testados:", last_error)
-    return None
+    conn=get_db(); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
+    if not row: conn.close(); return None
+    conn.execute("UPDATE affiliate_queue SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],)); conn.commit(); conn.close()
+    try: offer=json.loads(row["offer_json"] or "{}")
+    except Exception: offer={}
+    return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
 
 def _affiliate_queue_complete(queue_id, affiliate_link):
     try: qid=int(queue_id)
@@ -4425,205 +4130,20 @@ def diagnostico():
 # ============================================================
 # FILA DE AFILIADOS / NAVEGADOR
 # ============================================================
-@app.route("/api/afiliado/fila/popular", methods=["POST"])
-def api_afiliado_fila_popular():
-    """Abastece a fila usando EXATAMENTE as ofertas retornadas pelo Caçador.
-
-    Esta rota é deliberadamente tolerante a ofertas incompletas e a bancos
-    criados por versões antigas. Um único produto com problema não pode gerar
-    HTTP 500 e derrubar a atualização inteira.
-    """
-    try:
-        data = request.get_json(silent=True) or {}
-        offers = data.get("ofertas") or []
-        if not isinstance(offers, list):
-            return jsonify({"ok": False, "erro": "Lista de ofertas inválida."}), 400
-
-        adicionadas = 0
-        reativadas = 0
-        ignoradas = 0
-        erros = []
-        ids = []
-
-        conn = get_db()
-        ensure_affiliate_queue_table(conn)
-        try:
-            # Recupera uma oferta que tenha ficado presa durante uma tentativa.
-            conn.execute(
-                "UPDATE affiliate_queue SET status='pending', updated_at=CURRENT_TIMESTAMP WHERE status='processing'"
-            )
-            conn.commit()
-
-            for idx, raw_offer in enumerate(offers):
-                try:
-                    if not isinstance(raw_offer, dict):
-                        ignoradas += 1
-                        continue
-
-                    offer = dict(raw_offer)
-                    product_id = str(offer.get("product_id") or offer.get("id") or "").strip()
-                    item_id = str(offer.get("item_id") or "").strip()
-                    permalink = str(offer.get("permalink") or "").strip()
-
-                    # IMPORTANTE: para abrir no Safari, precisamos da URL REAL
-                    # do anúncio/item, não apenas da URL de catálogo /p/MLB....
-                    # Alguns catálogos não aceitam /p/ diretamente no navegador.
-                    # NÃO substitui um permalink público que já veio do Caçador.
-                    # Essa URL era a que funcionava antes. Só resolve via /items
-                    # quando a URL salva estiver ausente ou for catálogo /p/MLB....
-                    is_catalog_saved = bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I))
-                    if (not permalink or is_catalog_saved) and item_id:
-                        try:
-                            item_data, item_status, _ = ml_get(f"/items/{item_id}")
-                            real_permalink = str((item_data or {}).get("permalink") or "").strip()
-                            if item_status == 200 and real_permalink and not re.search(r"/p/MLB\d+(?:[/?#]|$)", real_permalink, re.I):
-                                permalink = real_permalink
-                                offer["permalink"] = real_permalink
-                        except Exception as resolve_exc:
-                            if len(erros) < 10:
-                                erros.append(f"oferta {idx}: não foi possível resolver permalink do item {item_id}: {resolve_exc}")
-
-                    try:
-                        price = float(offer.get("price") or 0)
-                    except (TypeError, ValueError):
-                        price = 0.0
-
-                    # A fila precisa de um produto e preço válidos. O link pode
-                    # faltar em alguns resultados antigos; nesse caso tentamos
-                    # montar a URL de catálogo, sem descartar a oferta.
-                    if not permalink and product_id:
-                        permalink = f"https://www.mercadolivre.com.br/p/{product_id}"
-                        offer["permalink"] = permalink
-
-                    # Para abastecer a fila, o identificador do produto é o
-                    # único campo obrigatório. Preço/publicação podem ser
-                    # recuperados novamente quando a oferta for processada.
-                    # Isso evita que uma resposta parcial do Caçador transforme
-                    # 79 produtos encontrados em 0 itens na fila.
-                    if not product_id:
-                        ignoradas += 1
-                        if len(erros) < 10:
-                            erros.append(f"oferta {idx}: sem product_id")
-                        continue
-                    if price <= 0:
-                        # Não bloqueia a fila. O processamento posterior
-                        # poderá consultar o preço atual do produto.
-                        price = None
-                        offer["price"] = None
-                    if not permalink:
-                        permalink = f"https://www.mercadolivre.com.br/p/{product_id}"
-                        offer["permalink"] = permalink
-
-                    # MODO TESTE: a lista do Caçador precisa conseguir alimentar
-                    # a fila mesmo que esse produto tenha histórico antigo de
-                    # publicação. Não apagamos o histórico; apenas não o usamos
-                    # como bloqueio nesta etapa de teste. A proteção contra
-                    # duplicidade será religada na automação definitiva.
-
-                    # Último fallback: só usa /p/ quando não foi possível
-                    # obter o permalink real do anúncio.
-                    if not permalink and product_id:
-                        permalink = f"https://www.mercadolivre.com.br/p/{product_id}"
-                        offer["permalink"] = permalink
-
-                    payload = json.dumps(
-                        json_safe(offer),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-
-                    existing = conn.execute(
-                        "SELECT id,status FROM affiliate_queue WHERE product_id=? LIMIT 1",
-                        (product_id,),
-                    ).fetchone()
-
-                    if existing:
-                        # Sempre atualiza a oferta com a versão mais recente do
-                        # Caçador e a deixa disponível para o próximo teste.
-                        conn.execute(
-                            """UPDATE affiliate_queue
-                               SET offer_json=?, status='pending', affiliate_link='',
-                                   updated_at=CURRENT_TIMESTAMP
-                               WHERE id=?""",
-                            (payload, existing["id"]),
-                        )
-                        reativadas += 1
-                        ids.append(int(existing["id"]))
-                    else:
-                        cur = conn.execute(
-                            """INSERT INTO affiliate_queue
-                               (product_id, offer_json, status, affiliate_link, attempts)
-                               VALUES (?, ?, 'pending', '', 0)""",
-                            (product_id, payload),
-                        )
-                        adicionadas += 1
-                        ids.append(int(cur.lastrowid))
-
-                except Exception as item_exc:
-                    ignoradas += 1
-                    if len(erros) < 10:
-                        erros.append(f"oferta {idx}: {type(item_exc).__name__}: {item_exc}")
-                    continue
-
-            conn.commit()
-        finally:
-            conn.close()
-
-        return jsonify({
-            "ok": True,
-            "encontradas": len(offers),
-            "adicionadas": adicionadas,
-            "reativadas": reativadas,
-            "ignoradas": ignoradas,
-            "queue_ids": ids,
-            "erros": erros,
-        })
-
-    except Exception as exc:
-        # Nunca esconder a causa atrás de um 500 genérico.
-        print("[FILA AFILIADO] ERRO:", repr(exc))
-        return jsonify({
-            "ok": False,
-            "erro": "Não foi possível montar a fila de afiliados.",
-            "detalhes": f"{type(exc).__name__}: {exc}",
-        }), 500
-
 @app.route("/api/afiliado/fila/proximo")
 def api_afiliado_fila_proximo():
-    # Não faz uma nova caça aqui. Se a fila estiver vazia, recupera a última
-    # lista que o Caçador já salvou no banco e coloca o primeiro item pendente.
-    item = _affiliate_queue_next()
-    if item:
-        return jsonify({
-            "ok": True,
-            "tem_oferta": True,
-            "queue_id": item["id"],
-            "product_id": item["product_id"],
-            "offer": item["offer"],
-            "origem": "lista_cacador",
-        })
-
-    conn=get_db()
-    try:
-        total_salvas = conn.execute("SELECT COUNT(*) AS n FROM ofertas WHERE product_id IS NOT NULL AND TRIM(product_id)<>''").fetchone()["n"]
-        total_fila = conn.execute("SELECT COUNT(*) AS n FROM affiliate_queue WHERE status IN ('pending','processing')").fetchone()["n"]
-    finally:
-        conn.close()
-    return jsonify({
-        "ok": True,
-        "tem_oferta": False,
-        "mensagem": f"Nenhuma oferta pendente. Lista salva: {total_salvas}; fila ativa: {total_fila}.",
-    })
+    item=_affiliate_queue_next()
+    if not item: return jsonify({"ok":True,"tem_oferta":False})
+    return jsonify({"ok":True,"tem_oferta":True,"queue_id":item["id"],"product_id":item["product_id"],"offer":item["offer"]})
 
 @app.route("/api/afiliado/fila/status")
 def api_afiliado_fila_status():
-    conn=get_db(); ensure_affiliate_queue_table(conn); rows=conn.execute("SELECT id,product_id,status,affiliate_link,attempts,created_at,updated_at FROM affiliate_queue ORDER BY id DESC LIMIT 50").fetchall(); conn.close()
+    conn=get_db(); rows=conn.execute("SELECT id,product_id,status,affiliate_link,attempts,created_at,updated_at FROM affiliate_queue ORDER BY id DESC LIMIT 50").fetchall(); conn.close()
     return jsonify({"ok":True,"fila":[dict(r) for r in rows]})
 
 @app.route("/afiliado/automacao")
 def afiliado_automacao():
-    return render_template_string("""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Caçador — Automação</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:720px;margin:auto;background:#fff;padding:22px;border-radius:16px;box-shadow:0 5px 20px #0001}.btn{width:100%;padding:16px;border:0;border-radius:12px;background:#ffe600;font-size:18px;font-weight:bold;margin-top:8px}.btn2{background:#3483fa;color:#fff}.status{margin-top:15px;padding:12px;border-radius:10px;background:#f1f3f5}.item{padding:10px;border-bottom:1px solid #eee}.muted{color:#666;font-size:13px}</style></head><body><div class='card'><h2>🤖 Caçador automático</h2><p>Primeiro o sistema faz <b>a mesma busca do Caçador</b> e monta a lista de produtos. Só depois a oferta entra na fila do afiliado.</p><p style='background:#fff3cd;padding:10px;border-radius:10px'><b>🧪 Modo de teste:</b> o histórico antigo do WhatsApp não bloqueia a primeira oferta. Nenhum histórico será apagado.</p><button class='btn btn2' onclick='atualizarLista()'>🔎 1. Atualizar lista do Caçador</button><button class='btn' onclick='proxima()'>🔗 2. Processar próxima oferta</button><div id='s' class='status'>Aguardando...</div><div id='lista' style='margin-top:14px'></div></div><script>let timer=null;async function atualizarLista(){const s=document.getElementById('s'),lista=document.getElementById('lista');s.textContent='🔎 Procurando a lista completa de produtos...';lista.innerHTML='';if(timer)clearTimeout(timer);try{const r=await fetch('/api/cacar',{cache:'no-store'});const j=await r.json();if(!r.ok||!j.job_id)throw Error(j.erro||'Não foi possível iniciar a busca');acompanhar(j.job_id)}catch(e){s.textContent='❌ '+e.message}}async function acompanhar(id){const s=document.getElementById('s'),lista=document.getElementById('lista');try{const r=await fetch('/api/cacar/status/'+encodeURIComponent(id),{cache:'no-store'});const j=await r.json();s.textContent=(j.message||'🔄 Atualizando...')+' '+(j.progress||0)+'%';if(j.status==='done'){const result=j.result||{};const offers=result.ofertas||[];const q=await fetch('/api/afiliado/fila/popular',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ofertas:offers})});const qj=await q.json();if(!q.ok||qj.ok===false)throw Error(qj.erro||'Não foi possível criar a fila');const modelos=result.modelos||[];lista.innerHTML='<h3>📦 Lista encontrada</h3>'+modelos.slice(0,20).map(m=>'<div class="item"><b>'+esc(m.modelo_nome||'Produto')+'</b><div class="muted">'+(m.ofertas||[]).length+' vendedor(es)</div></div>').join('');s.textContent='✅ Lista atualizada: '+offers.length+' ofertas encontradas. '+(qj.adicionadas||0)+' novas + '+(qj.reativadas||0)+' já existentes colocadas na fila.'+(qj.ignoradas?(' ⚠️ '+qj.ignoradas+' ignoradas. '+((qj.erros||[])[0]||'')):'');return}if(j.status==='error'){s.textContent='❌ '+(j.error||j.message||'Erro durante a busca');return}timer=setTimeout(()=>acompanhar(id),1200)}catch(e){s.textContent='⚠️ '+e.message;timer=setTimeout(()=>acompanhar(id),1800)}}function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function proxima(){const s=document.getElementById('s');s.textContent='🔗 Pegando a próxima oferta da lista...';try{const r=await fetch('/api/afiliado/fila/proximo',{cache:'no-store'});const j=await r.json();if(!r.ok||j.ok===false)throw Error(j.erro||'Falha ao pegar oferta');if(!j.tem_oferta){s.textContent='⚠️ '+(j.mensagem||'Fila vazia. Atualize a lista primeiro.');return}const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:'fila_'+j.queue_id,offer:j.offer,queue_id:j.queue_id,createdAt:Date.now()}));const u=new URL(j.offer.permalink||'');u.hash='cacador_state='+state+'&cacador_queue_id='+encodeURIComponent(j.queue_id)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');location.href=u.toString()}catch(e){s.textContent='❌ '+e.message}}</script></body></html>""")
-
+    return render_template_string("""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Caçador — Automação</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:680px;margin:auto;background:#fff;padding:22px;border-radius:16px}button{width:100%;padding:16px;border:0;border-radius:12px;background:#ffe600;font-size:18px;font-weight:bold}#s{margin-top:15px}</style></head><body><div class='card'><h2>🤖 Caçador automático</h2><p>Busca a próxima oferta da fila e abre o produto no Safari.</p><button onclick='proxima()'>🔗 Processar próxima oferta</button><div id='s'>Aguardando...</div></div><script>async function proxima(){const s=document.getElementById('s');s.textContent='🔎 Procurando...';try{const j=await (await fetch('/api/afiliado/fila/proximo')).json();if(!j.tem_oferta){s.textContent='✅ Fila vazia.';return}const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:'fila_'+j.queue_id,offer:j.offer,queue_id:j.queue_id,createdAt:Date.now()}));const u=new URL(j.offer.permalink||'');u.hash='cacador_state='+state+'&cacador_queue_id='+encodeURIComponent(j.queue_id)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');location.href=u.toString()}catch(e){s.textContent='❌ '+e.message}}</script></body></html>""")
 
 # ============================================================
 # AFILIADOS - FLUXO OFICIAL
@@ -4821,12 +4341,38 @@ async function copiarUrl(id,url){
   box.querySelector('#urlFallbackClose').onclick=()=>box.remove();
  }
 }
-function iniciarAfiliado(id,o){
+async function iniciarAfiliado(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
+
+  // CORREÇÃO ÚNICA: antes de sair do Caçador, revalida o ITEM exato
+  // usando a rota /api/preco-atual que já existia no código estável.
+  // Não altera busca, ranking, filtros, fila ou WhatsApp.
+  // Se o Mercado Livre devolver um permalink real, usamos exatamente ele.
+  // Se não devolver, preservamos o permalink original.
+  try{
+   const itemId=String(o.item_id||'').trim();
+   if(itemId){
+    const r=await fetch('/api/preco-atual?item_id='+encodeURIComponent(itemId),{cache:'no-store'});
+    const pd=await r.json();
+    if(r.ok && pd && pd.ok && pd.permalink){
+     const p=String(pd.permalink).trim();
+     if(p && !/\/p\/MLB\d+(?:[/?#]|$)/i.test(p)){
+      o.permalink=p;
+      o.item_id=pd.item_id||o.item_id;
+     }
+    }
+   }
+  }catch(_e){}
+
+  const target=String(o.permalink||'').trim();
+  if(!target){
+   throw new Error('A oferta não possui um link público de produto.');
+  }
+
   const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
-  const u=new URL(String(o.permalink||''));
+  const u=new URL(target);
   u.hash='cacador_state='+state+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
   window.location.href=u.toString();
  }catch(e){
