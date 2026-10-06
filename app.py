@@ -696,7 +696,17 @@ def _hydrate_real_item_permalink(item):
             return url
         return ""
 
-    # Monta candidatos: primeiro o item salvo e depois os anúncios do catálogo.
+    # PRIMEIRO preserva o permalink original do Caçador quando ele já é um
+    # link público de anúncio. Essa era a rota que já estava funcionando.
+    # Só fazemos a resolução product -> item quando o link salvo é catálogo
+    # (/p/MLB...) ou está realmente ausente. Isso evita trocar um anúncio
+    # válido por outro item do mesmo catálogo e acabar em "página não existe".
+    if original_permalink and not is_catalog_url(original_permalink):
+        item["permalink"] = original_permalink
+        print("[PERMALINK ORIGINAL PRESERVADO]", product_id, "=>", original_item_id, original_permalink)
+        return item
+
+    # Só agora monta candidatos: primeiro o item salvo e depois os anúncios do catálogo.
     candidate_ids = []
     if original_item_id:
         candidate_ids.append(original_item_id)
@@ -4479,12 +4489,15 @@ def api_afiliado_fila_popular():
                     # IMPORTANTE: para abrir no Safari, precisamos da URL REAL
                     # do anúncio/item, não apenas da URL de catálogo /p/MLB....
                     # Alguns catálogos não aceitam /p/ diretamente no navegador.
-                    # Se temos item_id, buscamos o permalink oficial do anúncio.
-                    if item_id:
+                    # NÃO substitui um permalink público que já veio do Caçador.
+                    # Essa URL era a que funcionava antes. Só resolve via /items
+                    # quando a URL salva estiver ausente ou for catálogo /p/MLB....
+                    is_catalog_saved = bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I))
+                    if (not permalink or is_catalog_saved) and item_id:
                         try:
                             item_data, item_status, _ = ml_get(f"/items/{item_id}")
                             real_permalink = str((item_data or {}).get("permalink") or "").strip()
-                            if item_status == 200 and real_permalink:
+                            if item_status == 200 and real_permalink and not re.search(r"/p/MLB\d+(?:[/?#]|$)", real_permalink, re.I):
                                 permalink = real_permalink
                                 offer["permalink"] = real_permalink
                         except Exception as resolve_exc:
