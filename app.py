@@ -4365,9 +4365,26 @@ async function copiarUrl(id,url){
 function iniciarAfiliado(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
+
   const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
-  const u=new URL(String(o.permalink||''));
+
+  // IMPORTANTE: para gerar o link afiliado precisamos abrir a PUBLICAÇÃO
+  // (ITEM) e não a página de catálogo /p/MLB....
+  // O catálogo é o que estava abrindo no Safari como “esta página não existe”.
+  // Quando temos item_id, usamos a URL curta de publicação do Mercado Livre.
+  const itemId=String(o.item_id||o.id||'').trim().toUpperCase();
+  let target='';
+  const m=itemId.match(/^MLB(\d+)$/);
+  if(m){
+   target='https://produto.mercadolivre.com.br/MLB-'+m[1];
+  }else{
+   target=String(o.permalink||'').trim();
+  }
+
+  if(!target){throw new Error('A oferta não possui uma publicação válida do Mercado Livre.');}
+
+  const u=new URL(target);
   u.hash='cacador_state='+state+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
   window.location.href=u.toString();
  }catch(e){
