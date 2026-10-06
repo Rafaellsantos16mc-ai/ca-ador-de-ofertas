@@ -3711,10 +3711,104 @@ def _affiliate_queue_add(offer):
         qid=conn.execute("INSERT INTO affiliate_queue(product_id,offer_json,status) VALUES(?,?,?)",(product_id,payload,"pending")).lastrowid
     conn.commit(); conn.close(); return qid
 
+def _affiliate_queue_recover_stale():
+    """Libera itens que ficaram presos em processing por uma tentativa interrompida."""
+    conn = get_db()
+    conn.execute("""
+        UPDATE affiliate_queue
+           SET status='pending', updated_at=CURRENT_TIMESTAMP
+         WHERE status='processing'
+           AND updated_at < datetime('now','-15 minutes')
+    """)
+    conn.commit()
+    conn.close()
+
+
+def _affiliate_queue_from_saved_offers(limit=50):
+    """Abastece a fila a partir da última lista salva pelo próprio Caçador.
+
+    Isto é um fallback deliberado: se o botão de atualização terminou, mas a
+    chamada AJAX que popularia a fila não chegou ao servidor, o botão
+    'Processar próxima oferta' ainda consegue continuar usando exatamente os
+    produtos que o Caçador acabou de salvar na tabela ofertas. Não faz uma
+    nova caça e não usa produtos externos à lista salva.
+    """
+    added = 0
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT product_id,item_id,title,permalink,price,original_price,discount,
+                   seller_id,image,category_id,category_name,condition,listing_type_id,
+                   free_shipping,shipping_cost,total_price,relevance_score,affiliate_link,extra_earnings
+              FROM ofertas
+             WHERE product_id IS NOT NULL AND TRIM(product_id) <> ''
+             ORDER BY id DESC
+             LIMIT ?
+        """, (int(limit),)).fetchall()
+
+        for row in rows:
+            product_id = str(row['product_id'] or '').strip()
+            if not product_id:
+                continue
+            existing = conn.execute(
+                "SELECT id,status FROM affiliate_queue WHERE product_id=? LIMIT 1",
+                (product_id,)
+            ).fetchone()
+            # Não ressuscita algo que já foi concluído; só cria se não existir.
+            if existing:
+                continue
+            offer = {
+                'product_id': product_id,
+                'item_id': row['item_id'],
+                'title': row['title'] or 'Produto',
+                'permalink': row['permalink'] or f"https://www.mercadolivre.com.br/p/{product_id}",
+                'price': row['price'],
+                'original_price': row['original_price'],
+                'discount': row['discount'] or 0,
+                'seller_id': row['seller_id'],
+                'image': row['image'],
+                'category_id': row['category_id'],
+                'category_name': row['category_name'],
+                'condition': row['condition'],
+                'listing_type_id': row['listing_type_id'],
+                'free_shipping': bool(row['free_shipping']),
+                'shipping_cost': row['shipping_cost'],
+                'total_price': row['total_price'],
+                'relevance_score': row['relevance_score'] or 0,
+                'affiliate_link': '',
+                'extra_earnings': row['extra_earnings'] or 0,
+            }
+            payload = json.dumps(json_safe(offer), ensure_ascii=False, separators=(",", ":"))
+            conn.execute(
+                "INSERT INTO affiliate_queue(product_id,offer_json,status,affiliate_link,attempts) VALUES(?,?, 'pending','',0)",
+                (product_id, payload)
+            )
+            added += 1
+            if added >= limit:
+                break
+        conn.commit()
+    finally:
+        conn.close()
+    return added
+
+
 def _affiliate_queue_next():
+    # Primeiro recupera somente tentativas realmente abandonadas.
+    _affiliate_queue_recover_stale()
     conn=get_db(); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
-    if not row: conn.close(); return None
-    conn.execute("UPDATE affiliate_queue SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],)); conn.commit(); conn.close()
+    conn.close()
+
+    # Se a fila estiver vazia, usa a última lista salva pelo Caçador.
+    # Assim o teste não depende de uma segunda chamada AJAX ter sido concluída.
+    if not row:
+        _affiliate_queue_from_saved_offers(limit=50)
+        conn=get_db(); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
+        conn.close()
+
+    if not row: return None
+    conn=get_db()
+    conn.execute("UPDATE affiliate_queue SET status='processing',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",(row["id"],))
+    conn.commit(); conn.close()
     try: offer=json.loads(row["offer_json"] or "{}")
     except Exception: offer={}
     return {"id":row["id"],"product_id":row["product_id"],"offer":offer}
@@ -4268,8 +4362,8 @@ def api_afiliado_fila_popular():
 
 @app.route("/api/afiliado/fila/proximo")
 def api_afiliado_fila_proximo():
-    # IMPORTANTE: a fila só deve ser abastecida depois que o Caçador
-    # pesquisou a lista principal. Não fazemos uma segunda caça escondida.
+    # Não faz uma nova caça aqui. Se a fila estiver vazia, recupera a última
+    # lista que o Caçador já salvou no banco e coloca o primeiro item pendente.
     item = _affiliate_queue_next()
     if item:
         return jsonify({
@@ -4281,10 +4375,16 @@ def api_afiliado_fila_proximo():
             "origem": "lista_cacador",
         })
 
+    conn=get_db()
+    try:
+        total_salvas = conn.execute("SELECT COUNT(*) AS n FROM ofertas WHERE product_id IS NOT NULL AND TRIM(product_id)<>''").fetchone()["n"]
+        total_fila = conn.execute("SELECT COUNT(*) AS n FROM affiliate_queue WHERE status IN ('pending','processing')").fetchone()["n"]
+    finally:
+        conn.close()
     return jsonify({
         "ok": True,
         "tem_oferta": False,
-        "mensagem": "A fila está vazia. Primeiro atualize a lista de produtos do Caçador.",
+        "mensagem": f"Nenhuma oferta pendente. Lista salva: {total_salvas}; fila ativa: {total_fila}.",
     })
 
 @app.route("/api/afiliado/fila/status")
