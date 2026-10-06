@@ -4136,6 +4136,35 @@ def afiliado_gerador():
 def afiliado_portal():
     return redirect(AFFILIATE_PORTAL_URL)
 
+@app.route("/afiliado/retorno")
+def afiliado_retorno():
+    state=request.args.get("state","").strip()
+    link=request.args.get("link","").strip()
+    if not state or not link:
+        return redirect("/")
+    return redirect(url_for("index", afiliado_state=state, afiliado_link=link))
+
+@app.route("/afiliado/bookmarklet")
+def afiliado_bookmarklet():
+    js=(
+        "javascript:(async()=>{try{"
+        "const h=(location.hash||'').replace(/^#/,''),hp=new URLSearchParams(h);"
+        "const state=hp.get('cacador_state')||'';"
+        "const ret=hp.get('cacador_return')||'';"
+        "const u=new URL(location.href);u.hash='';"
+        "const tr=await fetch('/affiliate-program/api/v2/stripe/user/tags',{headers:{Accept:'application/json'}});"
+        "const tj=await tr.json();"
+        "const tag=(tj.tags||[]).find(x=>x.in_use)?.tag;"
+        "if(!tag)throw Error('Tag de afiliado não encontrada');"
+        "const lr=await fetch('/affiliate-program/api/v2/stripe/user/links',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({url:u.toString(),tag})});"
+        "const j=await lr.json();"
+        "if(!j.short_url)throw Error(j.error?.message||'O Mercado Livre não gerou o link');"
+        "if(!ret)throw Error('Retorno do Caçador não encontrado');"
+        "location.href=ret+'?state='+encodeURIComponent(state)+'&link='+encodeURIComponent(j.short_url);"
+        "}catch(e){alert('❌ '+(e.message||e))}})()"
+    )
+    return render_template_string('''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Caçador — Bookmarklet</title><style>body{font-family:Arial;background:#f4f5f7;padding:18px}.card{max-width:700px;margin:auto;background:#fff;padding:20px;border-radius:16px;box-shadow:0 5px 20px #0001}textarea{width:100%;min-height:190px;font-size:12px;box-sizing:border-box}button{width:100%;padding:14px;border:0;border-radius:10px;background:#3483fa;color:#fff;margin-top:8px;font-size:15px}.ok{background:#eef8f0;padding:12px;border-radius:10px}</style></head><body><div class="card"><h2>🔗 Bookmarklet do Caçador</h2><div class="ok">Use esta versão no Safari. Ela pega a tag ativa da sua conta Mercado Livre, gera o link afiliado e volta automaticamente para o Caçador.</div><h3>1. Código</h3><textarea id="code" readonly>{{js}}</textarea><button onclick="copyCode()">📋 Copiar código</button><h3>2. Instalar no Safari</h3><p>Crie/edite um favorito no Safari, dê o nome <b>Caçador Afiliado</b> e substitua o endereço do favorito pelo código acima.</p><p>Depois, quando o Caçador abrir um produto, toque no favorito <b>Caçador Afiliado</b>. O link será gerado e você voltará automaticamente para o Caçador.</p></div><script>async function copyCode(){try{await navigator.clipboard.writeText(document.getElementById('code').value);alert('✅ Código copiado. Agora cole no endereço do favorito do Safari.')}catch(e){const t=document.getElementById('code');t.focus();t.select();alert('Selecione o código e copie manualmente.')}}</script></body></html>''', js=js)
+
 # ============================================================
 # HTML
 # ============================================================
@@ -4236,8 +4265,9 @@ function seller(o,mi,oi){
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
  <button onclick="copiarUrl('${id}',decodeURIComponent('${encodeURIComponent(String(o.permalink||""))}'))" style="background:#555">🔗 Copiar URL do produto</button>
- <div class="small" style="margin-top:8px">📱 No iPhone: toque em <b>Ver produto</b> para abrir o produto no Mercado Livre. Depois use <b>Compartilhar</b> pela Central/Barra de Afiliados, copie o seu link de afiliado e cole aqui.</div>
- <input id="aff_${id}" type="url" inputmode="url" placeholder="Cole aqui o seu link de afiliado do Mercado Livre" autocomplete="off">
+ <button onclick="iniciarAfiliado('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))" style="background:#ffe600;color:#222;font-weight:bold">🔗 Gerar meu link afiliado no Safari</button>
+ <div class="small" style="margin-top:8px">📱 <b>Teste:</b> toque em <b>Gerar meu link afiliado no Safari</b>. No produto do Mercado Livre, toque no favorito <b>Caçador Afiliado</b>. Ele gera o seu <b>meli.la</b> usando sua sessão já conectada e volta para cá.</div>
+ <input id="aff_${id}" type="url" inputmode="url" placeholder="Ou cole aqui um link de afiliado do Mercado Livre" autocomplete="off">
  <button onclick="anuncio('${id}',decodeURIComponent('${encodeURIComponent(JSON.stringify(o))}'))">📢 Gerar anúncio com meu link afiliado</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
  <button id="wa_${id}" style="display:none;background:#25D366;color:#fff" onclick="enviarWhatsApp('${id}')">📲 Enviar para WhatsApp</button>
@@ -4285,6 +4315,43 @@ async function copiarUrl(id,url){
   box.querySelector('#urlFallbackClose').onclick=()=>box.remove();
  }
 }
+function iniciarAfiliado(id,o){
+ try{
+  if(typeof o==='string'){o=JSON.parse(o);}
+  const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+  localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
+  const u=new URL(String(o.permalink||''));
+  u.hash='cacador_state='+state+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
+  window.location.href=u.toString();
+ }catch(e){
+  alert('❌ Não foi possível abrir o produto para gerar o link afiliado. '+e.message);
+ }
+}
+
+async function processarRetornoAfiliado(){
+ const p=new URLSearchParams(location.search);
+ const state=p.get('afiliado_state');
+ const link=p.get('afiliado_link');
+ if(!state || !link) return;
+ const key='cacador_aff_pending_'+state;
+ let pending=null;
+ try{pending=JSON.parse(localStorage.getItem(key)||'null');}catch(e){}
+ localStorage.removeItem(key);
+ history.replaceState({},document.title,location.pathname);
+ if(!pending || !pending.offer){
+  alert('⚠️ O link afiliado foi gerado, mas a oferta anterior não foi encontrada nesta sessão.');
+  return;
+ }
+ const o=pending.offer;
+ render({stats:{'Link afiliado':'Gerado'},modelos:[{modelo_nome:o.title||o.product_title||'Oferta encontrada',image:o.image||'',especificacoes:[],ofertas:[o]}]});
+ const id='a0_0';
+ const field=document.getElementById('aff_'+id);
+ if(field) field.value=link;
+ const box=document.getElementById('results');
+ if(box) box.scrollIntoView({behavior:'smooth',block:'start'});
+ await anuncio(id,JSON.stringify(o));
+}
+
 async function anuncio(id,o){
  try{
   if(typeof o==='string'){o=JSON.parse(o);}
@@ -4392,7 +4459,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
-</div></body></html>
+</div><script>window.addEventListener('load',()=>{processarRetornoAfiliado();});</script></body></html>
 """
 
 @app.route("/")
