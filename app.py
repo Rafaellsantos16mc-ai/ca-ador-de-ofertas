@@ -3851,9 +3851,21 @@ def _affiliate_queue_from_saved_offers(limit=50):
 
 
 def _affiliate_queue_next():
-    # Primeiro recupera somente tentativas realmente abandonadas.
+    # MODO DE TESTE: qualquer item que ficou em processing por uma tentativa
+    # anterior pode ser retomado. O fluxo ainda não conclui a oferta até o
+    # link de afiliado ser gerado e retornado ao Caçador.
     _affiliate_queue_recover_stale()
-    conn=get_db(); ensure_affiliate_queue_table(conn); row=conn.execute("SELECT * FROM affiliate_queue WHERE status='pending' ORDER BY id ASC LIMIT 1").fetchone()
+    conn=get_db(); ensure_affiliate_queue_table(conn)
+    row=conn.execute("SELECT * FROM affiliate_queue WHERE status=\'pending\' ORDER BY id ASC LIMIT 1").fetchone()
+    # Se não há pending, reaproveita o processing mais antigo. Isso é
+    # importante durante os testes porque as versões anteriores marcaram
+    # ofertas como processing antes de abrir o Safari.
+    if not row:
+        row=conn.execute("SELECT * FROM affiliate_queue WHERE status=\'processing\' ORDER BY id ASC LIMIT 1").fetchone()
+        if row:
+            conn.execute("UPDATE affiliate_queue SET status=\'pending\', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
+            conn.commit()
+            row=conn.execute("SELECT * FROM affiliate_queue WHERE id=?", (row["id"],)).fetchone()
     conn.close()
 
     # Se a fila estiver vazia, usa a última lista salva pelo Caçador.
