@@ -638,18 +638,64 @@ def valid_catalog_price(price):
     return True
 
 def normalize_item(x):
-    if not isinstance(x, dict) or not x.get("item_id"):
+    """Normaliza sempre uma PUBLICAÇÃO real, aceitando item_id ou id.
+
+    O catálogo usa IDs de produto (MLBxxxxxxxx), enquanto /items e a busca
+    pública usam o ID da publicação. Para afiliado precisamos preferir a URL
+    da publicação real, não apenas /p/MLB<produto>.
+    """
+    if not isinstance(x, dict):
+        return None
+    item_id = x.get("item_id") or x.get("id")
+    if not item_id:
         return None
     sh = x.get("shipping") or {}
+    if not isinstance(sh, dict):
+        sh = {}
     free = bool(sh.get("free_shipping"))
     cost = 0 if free else sh.get("cost")
+    seller = x.get("seller")
+    seller_id = x.get("seller_id")
+    if seller_id is None and isinstance(seller, dict):
+        seller_id = seller.get("id")
     return {
-        "item_id":x["item_id"], "seller_id":x.get("seller_id"),
-        "price":x.get("price"), "original_price":x.get("original_price"),
-        "condition":x.get("condition"), "listing_type_id":x.get("listing_type_id"),
-        "free_shipping":free, "shipping_cost":cost,
-        "permalink":x.get("permalink"), "user_product_id":x.get("user_product_id")
+        "item_id": str(item_id),
+        "seller_id": seller_id,
+        "price": x.get("price") or x.get("sale_price"),
+        "original_price": x.get("original_price") or x.get("regular_price"),
+        "condition": x.get("condition"),
+        "listing_type_id": x.get("listing_type_id"),
+        "free_shipping": free,
+        "shipping_cost": cost,
+        "permalink": x.get("permalink"),
+        "user_product_id": x.get("user_product_id"),
+        "sold_quantity": x.get("sold_quantity") or x.get("sales") or 0,
     }
+
+def item_details(item_id):
+    """Busca o anúncio real e sua permalink canônica pelo ITEM_ID."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None
+    data, status, _ = ml_get(f"/items/{item_id}")
+    if status == 200 and isinstance(data, dict):
+        return data
+    print(f"[ITEM DETALHE] {item_id} -> HTTP {status}")
+    return None
+
+def resolve_real_item(item):
+    """Troca uma representação de buy-box/catalog por publicação real."""
+    if not isinstance(item, dict):
+        return None
+    item_id = item.get("item_id") or item.get("id")
+    if not item_id:
+        return None
+    detail = item_details(item_id)
+    if detail:
+        normalized = normalize_item(detail)
+        if normalized:
+            return normalized
+    return normalize_item(item)
 
 # ============================================================
 # CUPONS
@@ -1690,14 +1736,40 @@ def _fetch_product_fast(pid, raw=None, base=None):
         if cache_key in _PRODUCT_CACHE:
             return _PRODUCT_CACHE[cache_key]
 
-    # 1) aproveita qualquer buy box que já tenha vindo na busca.
+    # 0) Se a busca já trouxe um ITEM_ID, consulte diretamente a publicação.
+    # Isso corrige o problema em que o código guardava somente /p/MLB<produto>
+    # e perdia o anúncio real necessário para o link de afiliado.
+    if isinstance(raw, dict):
+        raw_item_id = raw.get("item_id") or (raw.get("id") if str(raw.get("id") or "").startswith("MLB") else None)
+        if raw_item_id and raw_item_id != pid:
+            detail = item_details(raw_item_id)
+            if detail:
+                item = normalize_item(detail)
+                if item and valid_catalog_price(item.get("price")):
+                    p = dict(raw)
+                    p.update({
+                        "id": pid,
+                        "name": detail.get("title") or raw.get("name") or raw.get("title") or pid,
+                        "title": detail.get("title") or raw.get("title") or raw.get("name") or pid,
+                        "pictures": detail.get("pictures") or raw.get("pictures") or [],
+                        "permalink": detail.get("permalink") or raw.get("permalink"),
+                    })
+                    result = (pid, p, item, base)
+                    with _PRODUCT_CACHE_LOCK:
+                        _PRODUCT_CACHE[cache_key] = result
+                    return result
+
+    # 1) aproveita buy-box, mas sempre tenta resolver o ITEM_ID para anúncio real.
     if isinstance(raw, dict):
         bb = raw.get("buy_box_winner") or raw.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
+            real_item = resolve_real_item(item) or item
             p = dict(raw)
-            p.setdefault("name", raw.get("title") or pid)
-            result = (pid, p, item, base)
+            p.setdefault("name", raw.get("title") or raw.get("name") or pid)
+            if real_item.get("permalink"):
+                p["permalink"] = real_item.get("permalink")
+            result = (pid, p, real_item, base)
             with _PRODUCT_CACHE_LOCK:
                 _PRODUCT_CACHE[cache_key] = result
             return result
@@ -1708,12 +1780,16 @@ def _fetch_product_fast(pid, raw=None, base=None):
         bb = p.get("buy_box_winner") or p.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
-            result = (pid, p, item, base)
+            real_item = resolve_real_item(item) or item
+            if real_item.get("permalink"):
+                p = dict(p)
+                p["permalink"] = real_item.get("permalink")
+            result = (pid, p, real_item, base)
             with _PRODUCT_CACHE_LOCK:
                 _PRODUCT_CACHE[cache_key] = result
             return result
 
-    # 3) tenta publicações associadas ao produto.
+    # 3) publicações associadas ao produto.
     with _ITEMS_CACHE_LOCK:
         cached_items = _ITEMS_CACHE.get(cache_key)
     items = cached_items if cached_items is not None else product_items(pid)
@@ -1726,22 +1802,27 @@ def _fetch_product_fast(pid, raw=None, base=None):
         item = normalize_item(candidate)
         if not item:
             continue
-        item["sold_quantity"] = candidate.get("sold_quantity") or 0
+        if not valid_catalog_price(item.get("price")):
+            continue
         if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
             best = item
 
-    # 4) Mesmo sem buy box, se a própria busca trouxer preço/permalink,
-    # aproveita. Isso impede que um produto válido desapareça só porque o
-    # catálogo não expôs um vencedor para o token atual.
-    if best is None and isinstance(raw, dict):
+    if best is not None:
+        result = (pid, p or dict(raw or {}), best, base)
+        with _PRODUCT_CACHE_LOCK:
+            _PRODUCT_CACHE[cache_key] = result
+        return result
+
+    # 4) Fallback da própria busca.
+    if isinstance(raw, dict):
         raw_price = raw.get("price") or raw.get("sale_price")
         try:
             raw_price = float(raw_price) if raw_price is not None else None
         except Exception:
             raw_price = None
         if valid_catalog_price(raw_price):
-            best = {
-                "item_id": raw.get("item_id"),
+            item = {
+                "item_id": raw.get("item_id") or raw.get("id"),
                 "seller_id": raw.get("seller_id"),
                 "price": raw_price,
                 "original_price": raw.get("original_price") or raw.get("regular_price"),
@@ -1751,53 +1832,12 @@ def _fetch_product_fast(pid, raw=None, base=None):
                 "permalink": raw.get("permalink"),
                 "sold_quantity": raw.get("sold_quantity") or 0,
             }
+            result = (pid, dict(raw), item, base)
+            with _PRODUCT_CACHE_LOCK:
+                _PRODUCT_CACHE[cache_key] = result
+            return result
 
-    if best is None:
-        return None
-    if p is None:
-        p = dict(raw or {})
-    p.setdefault("name", (raw or {}).get("title") or pid)
-    result = (pid, p, best, base)
-    with _PRODUCT_CACHE_LOCK:
-        _PRODUCT_CACHE[cache_key] = result
-    return result
-
-
-def _resolve_scan_categories(queries):
-    """Resolve corretamente uma ou várias categorias sem perder as demais.
-
-    O bug crítico anterior era usar apenas queries[0]. Quando a rotina de
-    atualização enviava uma semente de cada categoria, a primeira semente
-    (smartphone) fazia o scanner trabalhar somente em Celulares.
-    """
-    values = [str(x).strip() for x in (queries or []) if str(x).strip()]
-    if not values:
-        return list(CATALOG.keys())
-
-    # Se vierem os nomes das categorias, respeita exatamente a seleção.
-    direct = []
-    for value in values:
-        if value in CATALOG and value not in direct:
-            direct.append(value)
-    if direct:
-        return direct
-
-    # Se vierem várias sementes, recupera TODAS as categorias representadas.
-    mapped = []
-    for value in values:
-        cat = query_category(value)
-        if cat and cat not in mapped:
-            mapped.append(cat)
-    if mapped:
-        return mapped
-
-    # Uma consulta livre ainda tenta identificar a categoria; se não houver
-    # correspondência, pesquisa todas as categorias para não retornar vazio.
-    if len(values) == 1:
-        cat = query_category(values[0])
-        return [cat] if cat else list(CATALOG.keys())
-    return list(CATALOG.keys())
-
+    return None
 
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     categories = _resolve_scan_categories(queries)
@@ -1826,10 +1866,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if not pid or pid in seen:
                 continue
             title = raw.get("name") or raw.get("title") or pid
-            # Filtro continua apenas para excluir acessórios/itens claramente
-            # fora da categoria; ele não decide sozinho a prioridade.
-            if not is_requested_product(title, source_query, cat):
-                continue
+            # Não descarte candidatos aqui. A busca do catálogo pode usar um
+            # título/seed diferente do título final. O filtro principal ocorre
+            # depois do enriquecimento, quando temos o anúncio real.
             seen.add(pid)
             ds = demand_score(title, cat, pid, signals)
             rel = relevance(title, source_query)
@@ -1920,7 +1959,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         try:
             pid, p, item, base = result
             title = p.get("name") or p.get("title") or pid
-            if not is_requested_product(title, source_query, cat):
+            if not is_requested_product(title, "", cat):
                 continue
 
             price = None
@@ -1974,10 +2013,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "especificacoes": specs(title),
                 "image": image,
                 "category_name": cat,
-                # URL canônica do produto: nunca reaproveitar querystring de carrinho,
-                # checkout ou navegação (ex.: ?pdp_filters=...&sid=cart), pois
-                # essas URLs podem ser rejeitadas pelo Programa de Afiliados.
-                "permalink": f"https://www.mercadolivre.com.br/p/{pid}",
+                "permalink": item.get("permalink") or p.get("permalink") or (f"https://www.mercadolivre.com.br/p/{pid}" if not item.get("item_id") else ""),
                 "price": price,
                 "original_price": original,
                 "discount": seller_disc,
@@ -2376,7 +2412,7 @@ function seller(o,mi,oi){
  ${o.cash_discount>0?`<div class="coupon" style="background:#eefaf2;border-color:#78c995"><b>💳 ${esc(o.cash_label||'Pagamento à vista')}</b><div>Desconto informado: ${brl(o.cash_discount)}</div><div class="final">💥 Final estimado: ${brl(o.cash_final)}</div><div class="small">⚠️ Não somado ao cupom automaticamente.</div></div>`:''}
  <div class="small">👤 Vendedor: ${o.seller_id||'N/A'}</div><br>
  <a href="${o.permalink}" target="_blank">🛒 Ver produto</a>
- <button type="button" onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)});return false;" style="background:#555">🔗 Copiar URL do produto</button>
+ <button onclick="copiarUrl('${id}',${JSON.stringify(o.permalink)})" style="background:#555">🔗 Copiar URL do produto</button>
  <a href="/afiliado/gerador" target="_blank"><button style="background:#ffe600;color:#222">💰 Abrir Gerador oficial de afiliado</button></a>
  <button onclick="anuncio('${id}',${JSON.stringify(o)})">📢 Gerar anúncio</button>
  <button id="copy_${id}" style="display:none;background:#ff8a00" onclick="copyAd('${id}')">📋 Copiar oferta</button>
@@ -2385,35 +2421,11 @@ function seller(o,mi,oi){
 }
 
 async function copiarUrl(id,url){
- const cleanUrl=String(url||'').trim();
- if(!cleanUrl){alert('⚠️ Este produto não possui uma URL válida.');return false;}
-
- // 1) Tenta a API moderna de clipboard.
  try{
-  if(navigator.clipboard && window.isSecureContext){
-   await navigator.clipboard.writeText(cleanUrl);
-   alert('✅ URL do produto copiada!\n\n'+cleanUrl+'\n\nAgora abra o Gerador oficial de afiliado e cole a URL.');
-   return true;
-  }
- }catch(e){/* continua para os métodos compatíveis com iPhone */}
-
- // 2) Fallback para Safari/iPhone: cria um campo visível e selecionável.
- try{
-  const wrap=document.createElement('div');
-  wrap.style.cssText='position:fixed;z-index:99999;left:12px;right:12px;top:50%;transform:translateY(-50%);background:#fff;padding:18px;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.35);font-family:Arial,sans-serif';
-  wrap.innerHTML='<div style="font-size:18px;font-weight:700;margin-bottom:10px;color:#222">🔗 URL do produto</div><div style="font-size:13px;color:#555;margin-bottom:8px">Toque no campo, selecione tudo e copie.</div><input id="urlFallbackInput" readonly style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #bbb;border-radius:10px;font-size:13px;color:#111" value="'+esc(cleanUrl)+'"><div style="display:flex;gap:8px;margin-top:10px"><button id="urlSelectBtn" type="button" style="flex:1;background:#555;color:#fff;border:0;border-radius:10px;padding:12px">Selecionar URL</button><button id="urlCloseBtn" type="button" style="flex:1;background:#eee;color:#222;border:0;border-radius:10px;padding:12px">Fechar</button></div>';
-  document.body.appendChild(wrap);
-  const input=wrap.querySelector('#urlFallbackInput');
-  const select=()=>{input.focus();input.select();try{input.setSelectionRange(0,input.value.length);}catch(e){}};
-  wrap.querySelector('#urlSelectBtn').onclick=select;
-  wrap.querySelector('#urlCloseBtn').onclick=()=>wrap.remove();
-  select();
-  return false;
- }catch(e){
-  // Último recurso: mostra a URL em uma caixa nativa do Safari.
-  window.prompt('Copie a URL do produto:',cleanUrl);
-  return false;
- }
+  if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(url);}
+  else{const ta=document.createElement('textarea');ta.value=url;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove();}
+  alert('✅ URL do produto copiada. Agora abra o Gerador oficial e cole a URL.');
+ }catch(e){alert('URL do produto: '+url);}
 }
 async function anuncio(id,o){
  const p=new URLSearchParams({title:o.title,price:o.price,discount:o.discount,shipping_free:o.free_shipping?'1':'0',cupom:o.cupom?(o.cupom.code || o.cupom.label || ''):'',affiliate_link:''});
