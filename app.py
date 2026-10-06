@@ -2436,7 +2436,7 @@ def _search_category(cat):
                 "highlight_category_id": category_id,
             }, cat))
         rank_base += 30
-        if len(out) >= 70:
+        if len(out) >= 100:
             break
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
@@ -2635,13 +2635,18 @@ def _fetch_product_fast(pid, raw=None, base=None):
         bb = raw.get("buy_box_winner") or raw.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
-            item = _hydrate_real_item_permalink(item)
-            p = dict(raw)
-            p.setdefault("name", raw.get("title") or pid)
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+            try:
+                item = _hydrate_real_item_permalink(item)
+                p = dict(raw)
+                p.setdefault("name", raw.get("title") or pid)
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
+            except Exception as exc:
+                # Um Buy Box inválido NÃO pode matar o produto inteiro.
+                # O mesmo produto pode ter outros anúncios ativos.
+                print("[BUY BOX] anúncio inválido; tentando outras publicações:", pid, repr(exc))
 
     # 2) detalhe do catálogo.
     p = product(pid)
@@ -2649,11 +2654,16 @@ def _fetch_product_fast(pid, raw=None, base=None):
         bb = p.get("buy_box_winner") or p.get("buy_box")
         item = _build_item_from_buy_box(bb)
         if item is not None:
-            item = _hydrate_real_item_permalink(item)
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+            try:
+                item = _hydrate_real_item_permalink(item)
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
+            except Exception as exc:
+                # Não descarta o catálogo inteiro só porque o Buy Box atual
+                # está encerrado. Vamos procurar anúncios alternativos abaixo.
+                print("[CATÁLOGO] Buy Box sem anúncio ativo; buscando alternativas:", pid, repr(exc))
 
     # 3) tenta publicações associadas ao produto.
     with _ITEMS_CACHE_LOCK:
@@ -2668,8 +2678,14 @@ def _fetch_product_fast(pid, raw=None, base=None):
         item = normalize_item(candidate)
         if not item:
             continue
-        item = _hydrate_real_item_permalink(item)
-        item["sold_quantity"] = candidate.get("sold_quantity") or 0
+        try:
+            item = _hydrate_real_item_permalink(item)
+        except Exception as exc:
+            # CORREÇÃO PRINCIPAL DA LISTA: se o primeiro anúncio do produto
+            # estiver morto/encerrado, NÃO abandona o produto. Testa o próximo.
+            print("[ITEM ALTERNATIVO] anúncio não utilizável; tentando próximo:", pid, candidate.get("item_id") or candidate.get("id"), repr(exc))
+            continue
+        item["sold_quantity"] = candidate.get("sold_quantity") or item.get("sold_quantity") or 0
         if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
             best = item
 
@@ -2970,7 +2986,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        for raw, source_query in raw_by_cat.get(cat, [])[:140 if cat == "🌙 Perfumes Árabes" else 70]:
+        for raw, source_query in raw_by_cat.get(cat, [])[:160 if cat == "🌙 Perfumes Árabes" else 100]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -3333,10 +3349,30 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        # A categoria árabe recebe mais espaço para aparecer com mais frequência:
-        # 30 ofertas árabes contra 20 nas demais.
-        limit = 60 if cat == "🌙 Perfumes Árabes" else 20
+        # Mantemos bastante espaço por categoria para não terminar com apenas
+        # 20-30 produtos quando várias categorias têm candidatos válidos.
+        limit = 30 if cat == "🌙 Perfumes Árabes" else 20
         flat.extend(arr[:limit])
+
+    # O modo automático historicamente trabalha com uma lista ampla, mas não
+    # precisa mandar centenas de anúncios para a fila de uma vez. O alvo é
+    # 80 ofertas, preservando a diversidade entre categorias.
+    if len(flat) > 80:
+        selected = []
+        pools = {cat: [o for o in flat if o.get("category_name") == cat] for cat in categories}
+        # Primeiro garante até 10 por categoria, depois preenche pelo ranking.
+        for cat in categories:
+            selected.extend(pools.get(cat, [])[:10])
+        used = {id(o) for o in selected}
+        if len(selected) < 80:
+            for o in flat:
+                if id(o) in used:
+                    continue
+                selected.append(o)
+                used.add(id(o))
+                if len(selected) >= 80:
+                    break
+        flat = selected[:80]
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
     random.shuffle(flat)
