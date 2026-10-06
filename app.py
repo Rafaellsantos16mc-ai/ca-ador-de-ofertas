@@ -3672,10 +3672,41 @@ def whatsapp_image(filename):
 # ============================================================
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-AUTO_WHATSAPP_INTERVAL = 300  # 5 minutos
-AUTO_WHATSAPP_LIMIT = 1  # exatamente 1 oferta por rodada
+AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
+AUTO_WHATSAPP_LIMIT = 2  # exatamente 2 ofertas por rodada
+AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
+AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "23:30").strip()
+AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
+
+def _auto_whatsapp_horario_atual():
+    """Retorna se a automação está dentro da janela diária configurada."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
+    except Exception:
+        now = datetime.now()
+
+    def _parse_hhmm(value, default):
+        try:
+            h, m = str(value).split(":", 1)
+            h, m = int(h), int(m)
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return h * 60 + m
+        except Exception:
+            pass
+        return default
+
+    start = _parse_hhmm(AUTO_WHATSAPP_START, 8 * 60 + 30)
+    end = _parse_hhmm(AUTO_WHATSAPP_END, 23 * 60 + 30)
+    current = now.hour * 60 + now.minute
+
+    # Janela normal no mesmo dia.
+    if start <= end:
+        return start <= current <= end, now, start, end
+    # Também suporta, caso configurado no futuro, uma janela que atravesse meia-noite.
+    return current >= start or current <= end, now, start, end
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -3782,7 +3813,51 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
-        text = ad_text(offer, offer.get("affiliate_link") or offer.get("permalink") or "")
+        # ========================================================
+        # LINK AFILIADO AUTOMÁTICO
+        # ========================================================
+        # A rotina manual já gera o meli.la pelo servidor. A automação
+        # precisa executar exatamente a mesma etapa antes de montar o
+        # anúncio; nunca usamos o permalink normal como link de afiliado.
+        affiliate_link = str(offer.get("affiliate_link") or "").strip()
+
+        if not valid_affiliate_link(affiliate_link):
+            product_url = str(offer.get("permalink") or "").strip()
+
+            # Se por algum motivo a oferta vier sem permalink, monta a
+            # publicação real a partir do item_id MLBxxxxxxxx.
+            if not product_url:
+                item_id = str(offer.get("item_id") or product_id).strip().upper()
+                m = re.fullmatch(r"MLB(\d+)", item_id)
+                if m:
+                    product_url = f"https://produto.mercadolivre.com.br/MLB-{m.group(1)}"
+
+            if not product_url:
+                skipped += 1
+                print(f"[AUTO WHATSAPP] {product_id}: sem URL de publicação válida.")
+                continue
+
+            try:
+                affiliate_link = _affiliate_csrf_and_link(product_url)
+                offer["affiliate_link"] = affiliate_link
+                print(f"[AUTO AFILIADO] {product_id}: {affiliate_link}")
+            except Exception as exc:
+                # Não marca a oferta como publicada. Ela ficará disponível
+                # para uma próxima rodada, caso a sessão/cookie seja
+                # renovada ou o Mercado Livre volte a responder.
+                print(f"[AUTO AFILIADO] Falha em {product_id}: {exc}")
+                skipped += 1
+                continue
+
+        # Gera o mesmo anúncio usado pelo fluxo manual, agora com o
+        # meli.la recém-criado, e só então envia ao WhatsApp.
+        try:
+            text = ad_text(offer, affiliate_link)
+        except Exception as exc:
+            print(f"[AUTO WHATSAPP] Falha ao gerar anúncio de {product_id}: {exc}")
+            skipped += 1
+            continue
+
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -3829,12 +3904,20 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] Ativo: a cada {AUTO_WHATSAPP_INTERVAL}s, "
-            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada."
+            f"[AUTO WHATSAPP] Ativo: {AUTO_WHATSAPP_START} às {AUTO_WHATSAPP_END}, "
+            f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
+            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
+            f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            time.sleep(AUTO_WHATSAPP_INTERVAL)
-            executar_caca_automatica()
+            ativo, now, start, end = _auto_whatsapp_horario_atual()
+            if ativo:
+                executar_caca_automatica()
+                # A partir de uma execução, aguarda o intervalo configurado.
+                time.sleep(AUTO_WHATSAPP_INTERVAL)
+            else:
+                # Fora do horário, verifica novamente em no máximo 60 segundos.
+                time.sleep(60)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
