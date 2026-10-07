@@ -3987,52 +3987,61 @@ def _extract_item_id_from_affiliate_url(link):
 
 
 def ad_text(o, affiliate=""):
-    """Monta uma legenda curta e comercial para a foto enviada ao WhatsApp."""
+    """Monta o anúncio no formato curto definido para o WhatsApp.
+
+    Ordem:
+    1) frase curta de marketing/resenha leve
+    2) nome do produto, sem emoji
+    3) preço original, quando disponível
+    4) cupom, somente quando existir
+    5) preço atual
+    6) chamada para promoção
+    7) link de afiliado
+    """
     title = str(o.get("title") or "Produto").strip()
+    marketing = _marketing_phrase(title)
+
     lines = [
-        f"🛍️ {title}",
+        marketing,
         "",
+        title,
     ]
 
     if o.get("original_price"):
-        lines.append(f"~De: {brl(o['original_price'])}~")
-
-    price_line = f"💰 Por: {brl(o['price'])} 🔥"
-    lines.append(price_line)
-
-    if o.get("discount", 0) > 0:
-        lines.append(f"🏷️ {o['discount']}% OFF")
-
-    if o.get("free_shipping"):
-        lines.append("🚚 Frete grátis")
+        lines.append(f"De {brl(o['original_price'])}")
 
     if o.get("cupom"):
-        c = o["cupom"]
+        c = o["cupom"] or {}
         label = c.get("code") or c.get("label") or "Cupom disponível"
-        lines += ["", f"🎟️ Cupom: {label}"]
+        lines.append(f"Cupom: {label}")
 
-        if c.get("discount_percent") or c.get("type") == "percent":
-            value = c.get("discount_percent") or c.get("value")
-            lines.append(f"🔥 Até {value}% OFF")
-
-        if c.get("fixed_discount") or c.get("type") == "fixed":
-            value = c.get("fixed_discount") or c.get("value")
-            lines.append(f"💸 {brl(value)} OFF")
-
-        if o.get("desconto_cupom") is not None and o.get("preco_com_cupom") is not None:
-            lines.append(f"💥 Com cupom: {brl(o['preco_com_cupom'])}")
-
-        if c.get("min_purchase"):
-            lines.append(f"🛒 Compra mínima: {brl(c['min_purchase'])}")
-
-        lines += ["", "⚠️ Consulte as condições e confirme o cupom no checkout."]
+    lines.append(f"Por {brl(o['price'])}")
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
-    lines += ["", "🛒 Pegar promoção:", link]
+
+    lines += ["", "Pegar promoção", "", link]
 
     return "\n".join(lines)
+
+
+def _marketing_phrase(title):
+    """Gera uma abertura curta de marketing, sem emojis e sem inventar atributos."""
+    t = str(title or "Produto").strip()
+    n = norm(t)
+
+    if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
+        return "Uma opção estilosa e versátil para renovar o visual sem pesar no bolso."
+    if any(x in n for x in ["perfume", "parfum", "eau de"]):
+        return "Uma fragrância que chama atenção e pode ser uma ótima escolha para o dia a dia."
+    if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
+        return "Uma ótima oportunidade para quem quer um produto moderno por um preço mais interessante."
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
+        return "Uma boa oportunidade para facilitar a rotina e aproveitar um preço especial."
+    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
+        return "Uma opção prática para quem procura uma boa ferramenta por um preço melhor."
+    return "Uma oportunidade que vale a pena conferir enquanto o preço está especial."
 
 # ============================================================
 # IMAGEM NATURAL PARA WHATSAPP
