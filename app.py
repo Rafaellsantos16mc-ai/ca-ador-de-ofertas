@@ -166,54 +166,184 @@ CATALOG = {
 
 
     "🌸 Perfumes": [
-        "perfumes",
-        "perfume masculino",
-        "perfume feminino",
-        "eau de parfum",
-        "eau de toilette",
-        "parfum",
-        "colônia",
-        "body splash",
-        "body mist",
+        # 🇧🇷 NACIONAIS — marcas e modelos fortes
+        "Natura perfume",
+        "Natura Kaiak",
+        "Natura Essencial",
+        "Natura Luna",
+        "Natura Homem",
+        "Natura Una",
+        "Natura Humor",
+        "Natura Biografia",
+        "Natura Ilía",
+        "Natura Kriska",
+        "Natura Águas",
+        "O Boticário perfume",
+        "Boticário Malbec",
+        "Boticário Malbec Gold",
+        "Boticário Malbec Black",
+        "Boticário Malbec Bleu",
+        "Boticário Egeo",
+        "Boticário Egeo Bomb Caramelo",
+        "Boticário Lily",
+        "Boticário Coffee",
+        "Boticário Coffee Woman",
+        "Boticário Coffee Man",
+        "Boticário Quasar",
+        "Boticário The Blend",
+        "Boticário Zaad",
+        "Boticário Floratta",
+        "Boticário Glamour",
+        "Boticário Botica 214",
+        "Eudora perfume",
+        "Eudora Club 6",
+        "Eudora La Victorie",
+        "Eudora Lyra",
+        "Eudora Rouge",
+        "Eudora Impression",
+        "Eudora Instance",
+        "Eudora Velvet Cristal",
+
+        # 🌎 IMPORTADOS — principais marcas e modelos procurados
+        "Carolina Herrera Good Girl",
+        "Carolina Herrera 212 VIP",
+        "Carolina Herrera 212 Men",
+        "Carolina Herrera 212 Heroes",
+        "Carolina Herrera CH Men",
+        "Dior Sauvage",
+        "Dior Homme",
+        "Dior Miss Dior",
+        "Dior J'adore",
+        "Chanel Bleu de Chanel",
+        "Chanel Coco Mademoiselle",
+        "Chanel Chance",
+        "Chanel Allure",
+        "Yves Saint Laurent Libre",
+        "Yves Saint Laurent Y",
+        "Yves Saint Laurent Black Opium",
+        "Yves Saint Laurent La Nuit de L'Homme",
+        "Giorgio Armani Acqua di Gio",
+        "Armani Code",
+        "Armani My Way",
+        "Armani Stronger With You",
+        "Versace Eros",
+        "Versace Dylan Blue",
+        "Versace Bright Crystal",
+        "Dolce Gabbana Light Blue",
+        "Dolce Gabbana The One",
+        "Dolce Gabbana K",
+        "Paco Rabanne 1 Million",
+        "Paco Rabanne Invictus",
+        "Paco Rabanne Phantom",
+        "Paco Rabanne Olympea",
+        "Rabanne 1 Million",
+        "Rabanne Invictus",
+        "Jean Paul Gaultier Le Male",
+        "Jean Paul Gaultier Ultra Male",
+        "Jean Paul Gaultier Scandal",
+        "Jean Paul Gaultier La Belle",
+        "Prada Paradoxe",
+        "Prada Luna Rossa",
+        "Prada L'Homme",
+        "Gucci Guilty",
+        "Gucci Bloom",
+        "Gucci Flora",
+        "Valentino Born in Roma",
+        "Valentino Donna",
+        "Givenchy Gentleman",
+        "Givenchy L'Interdit",
+        "Lancôme La Vie Est Belle",
+        "Lancôme Idôle",
+        "Hugo Boss Bottled",
+        "Hugo Boss The Scent",
+        "Montblanc Explorer",
+        "Montblanc Legend",
+        "Narciso Rodriguez For Her",
+        "Narciso Rodriguez Bleu Noir",
+        "Azzaro Wanted",
+        "Azzaro The Most Wanted",
+        "Azzaro Chrome",
+        "Bvlgari Man in Black",
+        "Bvlgari Aqva",
+        "Mugler Alien",
+        "Mugler Angel",
+        "Burberry Her",
+        "Burberry London",
+        "Calvin Klein One",
+        "Calvin Klein Euphoria",
+        "Kenzo Flower",
+        "Issey Miyake L'Eau d'Issey",
+        "JPG perfume",
         "perfume importado",
         "perfume nacional",
+        "perfumes mais vendidos",
     ],
     "🌙 Perfumes Árabes": [
-        "Lattafa Asad",
-        "Lattafa Yara",
-        "Lattafa Khamrah",
-        "Lattafa Khamrah Qahwa",
-        "Afnan 9PM",
-        "Armaf Club de Nuit Intense Man",
-        "Rasasi Hawas",
-        "Lattafa Oud for Glory",
-        "Lattafa Bade'e Al Oud Amethyst",
-        "Lattafa Fakhar Black",
-        "Lattafa Fakhar Rose",
-        "Lattafa Raghba",
-        "Lattafa Ana Abiyedh",
-        "Lattafa Ana Abiyedh Rouge",
-        "Lattafa Qaed Al Fursan",
-        "Lattafa Najdia",
-        "Lattafa Haya",
-        "Lattafa Hayaati",
-        "Lattafa Maahir Legacy",
-        "Afnan 9PM Rebel",
-        "Afnan Supremacy Not Only Intense",
-        "Afnan Turathi Blue",
-        "Al Haramain L'Aventure",
-        "Maison Alhambra Detour Noir",
-        "Maison Alhambra Kismet Angel",
-        "Maison Alhambra Porto Neroli",
-        "Maison Alhambra Bright Peach",
-        "Maison Alhambra Tobacco Touch",
-        "Maison Alhambra Amber & Leather",
-        "Maison Alhambra Lovely Cherie",
-        "Maison Alhambra Delilah",
-        "Maison Alhambra Perseus",
-        "Maison Alhambra The Tux",
-        "Maison Alhambra Barakkat Rouge 540",
-        "Lattafa Emeer",
+        # LATTAFA
+        "Lattafa Asad", "Lattafa Asad Zanzibar", "Lattafa Asad Bourbon",
+        "Lattafa Yara", "Lattafa Yara Moi", "Lattafa Yara Tous",
+        "Lattafa Khamrah", "Lattafa Khamrah Qahwa", "Lattafa Khamrah Dukhan",
+        "Lattafa Oud for Glory", "Lattafa Bade'e Al Oud Amethyst",
+        "Lattafa Bade'e Al Oud Honor & Glory", "Lattafa Fakhar Black",
+        "Lattafa Fakhar Rose", "Lattafa Raghba", "Lattafa Raghba Wood Intense",
+        "Lattafa Ana Abiyedh", "Lattafa Ana Abiyedh Rouge", "Lattafa Ana Abiyedh Poudree",
+        "Lattafa Qaed Al Fursan", "Lattafa Najdia", "Lattafa Najdia Tribute",
+        "Lattafa Haya", "Lattafa Hayaati", "Lattafa Hayaati Gold Elixir",
+        "Lattafa Maahir Legacy", "Lattafa Maahir Black", "Lattafa Maahir Gold",
+        "Lattafa Emeer", "Lattafa Liam Grey", "Lattafa Liam Blue Shine",
+        "Lattafa Nebras", "Lattafa Nebras Elixir", "Lattafa Ameer Al Oudh Intense Oud",
+        "Lattafa Al Nashama Caprice", "Lattafa Al Nashama", "Lattafa Vintage Radio",
+        "Lattafa Honor & Glory", "Lattafa Teriaq", "Lattafa Teriaq Intense",
+        "Lattafa Mayar", "Lattafa Mayar Cherry", "Lattafa Mayar Natural Intense",
+        "Lattafa Musamam", "Lattafa Musamam White Intense", "Lattafa Badee Al Oud Sublime",
+
+        # AFNAN
+        "Afnan 9PM", "Afnan 9PM Rebel", "Afnan 9PM Elixir",
+        "Afnan Supremacy Not Only Intense", "Afnan Supremacy Silver",
+        "Afnan Turathi Blue", "Afnan Turathi Brown", "Afnan Modest Une",
+        "Afnan Rare Carbon", "Afnan Historic Olmeda", "Afnan Mirsaal With Love",
+
+        # ARMAF
+        "Armaf Club de Nuit Intense Man", "Armaf Club de Nuit Woman",
+        "Armaf Club de Nuit Untold", "Armaf Club de Nuit Milestone",
+        "Armaf Club de Nuit Sillage", "Armaf Club de Nuit Iconic",
+        "Armaf Odyssey Homme", "Armaf Odyssey Mandarin Sky", "Armaf Tres Nuit",
+
+        # RASASI / AL HARAMAIN / AL WATANIAH
+        "Rasasi Hawas", "Rasasi Hawas Ice", "Rasasi Hawas for Her",
+        "Rasasi Daarej", "Rasasi La Yuqawam", "Rasasi Fattan",
+        "Al Haramain L'Aventure", "Al Haramain Amber Oud Gold Edition",
+        "Al Haramain Amber Oud Tobacco Edition", "Al Haramain Detour Noir",
+        "Al Wataniah Sabah Al Ward", "Al Wataniah Kayaan Classic",
+        "Al Wataniah Attar Al Wesal", "Al Wataniah Shagaf Al Ward",
+
+        # MAISON ALHAMBRA / FRAGRANCE WORLD / PARIS CORNER
+        "Maison Alhambra Detour Noir", "Maison Alhambra Kismet Angel",
+        "Maison Alhambra Kismet Magic", "Maison Alhambra Porto Neroli",
+        "Maison Alhambra Bright Peach", "Maison Alhambra Tobacco Touch",
+        "Maison Alhambra Amber & Leather", "Maison Alhambra Lovely Cherie",
+        "Maison Alhambra Delilah", "Maison Alhambra Perseus",
+        "Maison Alhambra The Tux", "Maison Alhambra Barakkat Rouge 540",
+        "Maison Alhambra Woody Oud", "Maison Alhambra Fabulo Intense",
+        "Maison Alhambra Glacier Ultra", "Maison Alhambra Glacier Bold",
+        "Maison Alhambra Yeah!", "Fragrance World Suits",
+        "Fragrance World Imperium", "Fragrance World Cocktail Intense",
+        "Paris Corner Emir Cedrat Essence", "Paris Corner Emir Voux Elegante",
+        "Paris Corner Emir Vibrant Vetiver", "Paris Corner Khair Pistachio",
+        "Paris Corner Khair Fusion", "Paris Corner Qissa Delicious",
+
+        # OUTRAS MARCAS ÁRABES FORTES
+        "French Avenue Liquid Brun", "French Avenue After Effect",
+        "French Avenue Aether", "French Avenue Spectre Ghost",
+        "Khadlaj Island", "Khadlaj Hareem Al Sultan", "Khadlaj Shiyaaka",
+        "Zimaya Sharaf Blend", "Zimaya Sharaf The Club", "Zimaya Fatima",
+        "Ajmal Evoke Gold", "Ajmal Aristocrat", "Ajmal Amber Wood",
+        "Swiss Arabian Shaghaf Oud", "Swiss Arabian Shaghaf Oud Azraq",
+        "Swiss Arabian Casablanca", "Ard Al Zaafaran Dirham",
+        "Ard Al Zaafaran Oud 24 Hours", "Ard Al Zaafaran Al Dirgham",
+        "Ahmed Al Maghribi Kaaf", "Ahmed Al Maghribi Bin Shaikh",
+        "Orientica Royal Amber", "Orientica Oud Saffron",
+        "Al Rehab Choco Musk", "Emir Celestial",
     ],
 }
 
@@ -2307,10 +2437,10 @@ PERFUME_EXCLUDED_TERMS = (
 # termos genéricos. A busca continua limitada a fragrâncias individuais e
 # o ranking/tendência é aplicado depois do enriquecimento.
 PERFUME_BRAND_QUERIES = [
-    # Nacionais
-    "O Boticário perfume", "Natura perfume", "Eudora perfume",
-    "Jequiti perfume", "O.U.i perfume",
-    # Importados
+    # 🇧🇷 Nacionais
+    "Natura perfume", "O Boticário perfume", "Eudora perfume",
+    "Phebo perfume",
+    # 🌎 Importados — marcas de grande procura
     "Carolina Herrera perfume", "Rabanne perfume", "Paco Rabanne perfume",
     "Dior perfume", "Chanel perfume", "Yves Saint Laurent perfume",
     "YSL perfume", "Armani perfume", "Giorgio Armani perfume",
@@ -2321,6 +2451,15 @@ PERFUME_BRAND_QUERIES = [
     "Montblanc perfume", "Narciso Rodriguez perfume", "Mugler perfume",
     "Issey Miyake perfume", "Kenzo perfume", "Azzaro perfume",
     "Bvlgari perfume", "Jovan perfume", "Elizabeth Arden perfume",
+    "Narciso Rodriguez perfume", "Jo Malone perfume", "Tom Ford perfume",
+    "Creed perfume", "Parfums de Marly perfume", "Xerjoff perfume",
+    "Mancera perfume", "Montale perfume", "Amouage perfume",
+    "Nishane perfume", "Byredo perfume", "Maison Francis Kurkdjian perfume",
+    "Initio perfume", "Diptyque perfume", "Hermès perfume", "Hermes perfume",
+    "Chloé perfume", "Moschino perfume", "Marc Jacobs perfume",
+    "Michael Kors perfume", "Coach perfume", "Jimmy Choo perfume",
+    "Ralph Lauren perfume", "DKNY perfume", "Ferragamo perfume",
+    "Jil Sander perfume", "Lacoste perfume",
 ]
 
 # Marcas árabes que aparecem nas buscas atuais do Mercado Livre, além das
@@ -2347,7 +2486,7 @@ ARABIC_TREND_QUERIES = [
     "perfume árabe mais vendido", "perfume árabe mais procurado",
 ]
 
-# 35 fragrâncias árabes de alta procura para direcionar a busca.
+# Lista ampliada de fragrâncias árabes de alta procura para direcionar a busca.
 # A lista combina nomes recorrentes em rankings/lojas brasileiras e não
 # representa um ranking oficial nacional único, já que não existe uma base
 # pública consolidada de vendas do Mercado Livre para todos os vendedores.
@@ -2386,7 +2525,23 @@ ARABIC_BESTSELLERS_35 = [
     "Maison Alhambra Perseus",
     "Maison Alhambra The Tux",
     "Maison Alhambra Barakkat Rouge 540",
+    "Maison Alhambra Woody Oud",
+    "Maison Alhambra Glacier Ultra",
+    "Maison Alhambra The Tux",
+    "French Avenue Liquid Brun",
+    "French Avenue After Effect",
+    "Paris Corner Khair Pistachio",
+    "Paris Corner Emir Voux Elegante",
+    "Khadlaj Island",
+    "Khadlaj Hareem Al Sultan",
+    "Zimaya Sharaf Blend",
+    "Ajmal Evoke Gold",
+    "Swiss Arabian Shaghaf Oud",
+    "Ard Al Zaafaran Dirham",
+    "Ahmed Al Maghribi Kaaf",
+    "Orientica Royal Amber",
     "Al Wataniah Sabah Al Ward",
+    "Al Wataniah Kayaan Classic",
 ]
 
 def _is_real_perfume(title):
@@ -2909,10 +3064,12 @@ def _search_arabic_perfumes(fast=False):
     seen = set()
     rank_base = 1
     if fast:
-        queries = queries[:12]
+        # Teste rápido: percorre uma lista grande de modelos/marcas, mas
+        # limita cada consulta para reduzir 429 e ainda gerar variedade.
+        queries = queries[:24]
     for q in queries:
         try:
-            rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
+            rows = _search_arabic_real_listings(q, limit=20 if fast else 80)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -2962,7 +3119,9 @@ def _search_category(cat, fast=False):
 
         rank_base = 1
         if fast:
-            perfume_queries = perfume_queries[:8]
+            # Antes eram só 8 buscas; isso fazia a categoria nacional/importada
+            # terminar com poucas opções. Agora percorremos 24 marcas/modelos.
+            perfume_queries = perfume_queries[:24]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -2974,7 +3133,7 @@ def _search_category(cat, fast=False):
                 # /products/search, que pode retornar produto sem publicação
                 # utilizável para o perfume normal.
                 rows = _search_arabic_real_listings(
-                    search_q, limit=20 if fast else 40
+                    search_q, limit=25 if fast else 40
                 )
 
                 # IMPORTANTE: para perfumes normais, não podemos usar a busca
@@ -2988,7 +3147,7 @@ def _search_category(cat, fast=False):
                 # quais anúncios realmente entram. Isso não altera as outras
                 # categorias nem o fluxo de afiliado/WhatsApp.
                 public_rows = _search_perfume_public_fallback(
-                    search_q, limit=8 if fast else 16
+                    search_q, limit=10 if fast else 16
                 )
                 if public_rows:
                     known_ids = {
@@ -3696,7 +3855,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     if "🌸 Perfumes" in categories:
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
         seen_perfume_items = set()
-        direct_limit = 120 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        direct_limit = 180 if FAST_ALL_CATEGORIES and len(categories) > 1 else 400
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -3715,7 +3874,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     if "🌙 Perfumes Árabes" in categories:
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         seen_arabic_items = set()
-        direct_limit = 120 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        direct_limit = 180 if FAST_ALL_CATEGORIES and len(categories) > 1 else 400
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -4119,9 +4278,15 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        # A categoria árabe recebe mais espaço para aparecer com mais frequência:
-        # 30 ofertas árabes contra 20 nas demais.
-        limit = 80 if cat == "🌙 Perfumes Árabes" else 30
+        # As duas categorias de perfumes têm espaço próprio. A quantidade
+        # final depende dos anúncios reais encontrados, preço, imagem e
+        # filtros; não cortamos cedo em 15/20.
+        if cat == "🌙 Perfumes Árabes":
+            limit = 50
+        elif cat == "🌸 Perfumes":
+            limit = 50
+        else:
+            limit = 30
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
