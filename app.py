@@ -89,15 +89,14 @@ MIN_PRODUCT_PRICE = 69.90
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
 # ============================================================
-# Somente anúncios que comprovem, no recurso /items do Mercado Livre:
-# - Mercado Envios Full (logistic_type=fulfillment);
-# - vendedor MercadoLíder Gold ou Platinum;
-# - pelo menos 100 vendas no próprio anúncio.
+# Os filtros de Full, Gold/Platinum e 100 vendas foram removidos.
 # A posição em Mais Vendidos, tendências e buscas continua sendo usada
-# para ordenar os aprovados; estes três requisitos abaixo são eliminatórios.
-MIN_ITEM_SOLD_QUANTITY = 100
-ALLOWED_POWER_SELLER_STATUS = {"gold", "platinum"}
-REQUIRE_FULL_LOGISTICS = True
+# para ordenar os anúncios, mas esses três critérios não eliminam ofertas.
+# Filtros de giro/reputação DESATIVADOS para não eliminar ofertas válidas.
+# O Caçador continua validando que o anúncio é uma publicação real.
+MIN_ITEM_SOLD_QUANTITY = 0
+ALLOWED_POWER_SELLER_STATUS = set()
+REQUIRE_FULL_LOGISTICS = False
 
 _ITEM_QUALITY_CACHE = {}
 _ITEM_QUALITY_CACHE_LOCK = threading.Lock()
@@ -2739,7 +2738,12 @@ def _get_seller_quality(seller_id):
 
 
 def _approve_real_item(item_id, base_item=None):
-    """Valida um item específico contra os três critérios eliminatórios."""
+    """Valida somente que o ITEM é uma publicação real.
+
+    Os filtros antigos de Full, Gold/Platinum e 100 vendas foram removidos.
+    Isso evita que a busca fique vazia quando o Mercado Livre não retorna
+    esses dados para determinado anúncio/vendedor.
+    """
     item_id = str(item_id or "").strip()
     if not item_id:
         return None
@@ -2748,28 +2752,12 @@ def _approve_real_item(item_id, base_item=None):
     if not real:
         return None
 
-    seller_id = real.get("seller_id") or (base_item or {}).get("seller_id")
-    seller = _get_seller_quality(seller_id)
-    if not seller:
-        return None
-
-    sold = int(real.get("sold_quantity") or 0)
-    logistic = str(real.get("logistic_type") or "").strip().lower()
-    power = str(seller.get("power_seller_status") or "").strip().lower()
-
-    if REQUIRE_FULL_LOGISTICS and logistic != "fulfillment":
-        return None
-    if power not in ALLOWED_POWER_SELLER_STATUS:
-        return None
-    if sold < MIN_ITEM_SOLD_QUANTITY:
-        return None
-
     approved = dict(base_item or {})
     approved.update({
         "item_id": real.get("item_id") or item_id,
-        "seller_id": seller_id,
-        "sold_quantity": sold,
-        "logistic_type": logistic,
+        "seller_id": real.get("seller_id") or approved.get("seller_id"),
+        "sold_quantity": int(real.get("sold_quantity") or 0),
+        "logistic_type": real.get("logistic_type"),
         "shipping_mode": real.get("shipping_mode"),
         "free_shipping": bool(real.get("free_shipping")),
         "price": real.get("price") if real.get("price") is not None else approved.get("price"),
@@ -2777,14 +2765,26 @@ def _approve_real_item(item_id, base_item=None):
         "permalink": real.get("permalink") or approved.get("permalink"),
         "condition": real.get("condition") or approved.get("condition"),
         "listing_type_id": real.get("listing_type_id") or approved.get("listing_type_id"),
-        "seller_status": power,
-        "seller_level_id": seller.get("level_id"),
-        "seller_completed_sales": seller.get("completed_sales") or 0,
-        "seller_nickname": seller.get("seller_nickname"),
+        "seller_status": None,
+        "seller_level_id": None,
+        "seller_completed_sales": None,
+        "seller_nickname": None,
         "quality_validated": True,
     })
-    return approved
 
+    # Reputação do vendedor agora é apenas informativa.
+    seller_id = approved.get("seller_id")
+    if seller_id:
+        seller = _get_seller_quality(seller_id)
+        if seller:
+            approved.update({
+                "seller_status": seller.get("power_seller_status"),
+                "seller_level_id": seller.get("level_id"),
+                "seller_completed_sales": seller.get("completed_sales") or 0,
+                "seller_nickname": seller.get("seller_nickname"),
+            })
+
+    return approved
 
 def validate_high_turnover_item(item, product_id=None):
     """Validação eliminatória: Full + Gold/Platinum + >=100 vendas.
@@ -3643,8 +3643,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "produtos em alta": 0,
         "validados alto giro": 0,
         "Full": sum(1 for o in flat if str(o.get("logistic_type") or "").lower() == "fulfillment"),
-        "Gold/Platinum": sum(1 for o in flat if str(o.get("seller_status") or "").lower() in {"gold", "platinum"}),
-        "100+ vendas": sum(1 for o in flat if int(o.get("sold_quantity") or 0) >= MIN_ITEM_SOLD_QUANTITY),
+        "Gold/Platinum": 0,
+        "100+ vendas": 0,
         "cupom candidato": coupon_count,
         "cupons com limite": coupon_limit_count,
         "maior desconto estimado": brl(best_coupon_discount),
@@ -3652,7 +3652,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "20 por categoria + 30 perfumes árabes, priorizando bons descontos",
+        "modo": "20 por categoria + 30 perfumes árabes, sem filtro Full/Gold/100 vendas",
     }
     print(f"[RESULTADO TOP 20] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
