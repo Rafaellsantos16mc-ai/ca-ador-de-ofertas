@@ -1122,7 +1122,7 @@ def _extract_official_store_id(obj):
 
 
 def _is_official_store(obj):
-    """Somente publicações vinculadas a uma Loja Oficial do Mercado Livre."""
+    """Informa se a publicação traz o selo de Loja Oficial (não é filtro)."""
     return bool(_extract_official_store_id(obj))
 
 
@@ -2364,9 +2364,9 @@ def search_real_listings(q, limit=50):
             if price is None or price < MIN_PRODUCT_PRICE:
                 continue
 
+            # Loja Oficial NÃO é mais obrigatória. Mantemos o campo apenas
+            # como informação quando o Mercado Livre o fornecer.
             official_store_id = _extract_official_store_id(item) or _extract_official_store_id(product_row)
-            if not official_store_id:
-                continue
             shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
             pictures = item.get("pictures") or product_row.get("pictures") or []
             thumbnail = item.get("thumbnail") or product_row.get("thumbnail") or ""
@@ -3110,19 +3110,20 @@ def _search_arabic_real_listings(q, limit=80):
         if price < MIN_PRODUCT_PRICE or price > 100000:
             return
 
+        # Loja Oficial NÃO é mais obrigatória.
         official_store_id = _extract_official_store_id(candidate) or _extract_official_store_id(fallback_product)
-        if not official_store_id:
+        # Se ainda não houver preço original, tenta enriquecer pela publicação
+        # real. Isso ajuda o filtro de desconto sem exigir Loja Oficial.
+        if candidate.get("original_price") is None:
             try:
                 data, status, _ = ml_get(f"/items/{iid}")
                 if status == 200 and isinstance(data, dict):
-                    official_store_id = _extract_official_store_id(data)
-                    if candidate.get("original_price") is None:
-                        candidate = dict(candidate)
-                        candidate["original_price"] = data.get("original_price") or data.get("base_price")
+                    if not official_store_id:
+                        official_store_id = _extract_official_store_id(data)
+                    candidate = dict(candidate)
+                    candidate["original_price"] = data.get("original_price") or data.get("base_price")
             except Exception as exc:
-                print("[LOJA OFICIAL] falha ao confirmar", iid, repr(exc))
-        if not official_store_id:
-            return
+                print("[PRECO ORIGINAL] falha ao confirmar", iid, repr(exc))
 
         shipping = candidate.get("shipping") or {}
         if not isinstance(shipping, dict):
@@ -3388,9 +3389,8 @@ def _search_perfume_public_fallback(q, limit=20):
         seller = data.get("seller") or {}
         if not isinstance(seller, dict):
             seller = {}
+        # Loja Oficial NÃO é obrigatória. O campo é apenas informativo.
         official_store_id = _extract_official_store_id(data)
-        if not official_store_id:
-            continue
         pictures = data.get("pictures") or []
         thumbnail = str(data.get("thumbnail") or "").strip()
         if not thumbnail and pictures and isinstance(pictures[0], dict):
@@ -3488,15 +3488,50 @@ def _search_category(cat, fast=False):
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
+        # Prioridade da busca: aumentar a presença de perfumes masculinos
+        # importados sem retirar os femininos. A lista prioritária entra antes
+        # das demais porque o modo rápido usa as primeiras 40 consultas.
+        PERFUME_PRIORITY_QUERIES = [
+            # 🌎 Masculinos importados — prioridade maior
+            "Dior Sauvage", "Dior Homme", "Dior Homme Intense",
+            "Chanel Bleu de Chanel", "Chanel Allure Homme Sport",
+            "Yves Saint Laurent Y", "Yves Saint Laurent La Nuit de L'Homme",
+            "Yves Saint Laurent Y Eau de Parfum",
+            "Giorgio Armani Acqua di Gio", "Armani Code",
+            "Armani Stronger With You", "Armani Acqua di Gio Profumo",
+            "Versace Eros", "Versace Dylan Blue", "Versace Pour Homme",
+            "Paco Rabanne 1 Million", "Paco Rabanne Invictus",
+            "Paco Rabanne Phantom", "Rabanne 1 Million",
+            "Jean Paul Gaultier Le Male", "Jean Paul Gaultier Ultra Male",
+            "Jean Paul Gaultier Le Beau", "Jean Paul Gaultier Scandal Pour Homme",
+            "Hugo Boss Bottled", "Hugo Boss The Scent",
+            "Montblanc Explorer", "Montblanc Legend Spirit",
+            "Azzaro Wanted", "Azzaro The Most Wanted",
+            "Givenchy Gentleman", "Lacoste L.12.12 Blanc",
+            "Bvlgari Man in Black", "Calvin Klein Eternity Men",
+            "Issey Miyake L'Eau d'Issey Pour Homme",
+            # 🌎 Femininos importados — continuam com boa presença
+            "Carolina Herrera Good Girl", "Carolina Herrera 212 VIP",
+            "Dior J'adore", "Dior Miss Dior",
+            "Chanel Coco Mademoiselle", "Chanel Chance",
+            "Yves Saint Laurent Libre", "Yves Saint Laurent Black Opium",
+            "Armani My Way", "Versace Bright Crystal",
+            "Dolce Gabbana Light Blue", "Dolce Gabbana The One",
+            "Paco Rabanne Olympea", "Jean Paul Gaultier La Belle",
+            "Givenchy L'Interdit", "Valentino Born in Roma",
+            "Prada Paradoxe", "Burberry Her",
+            "Narciso Rodriguez For Her", "Lancôme La Vie Est Belle",
+        ]
+
         perfume_queries = []
-        for q in list(CATALOG["🌸 Perfumes"]) + PERFUME_BRAND_QUERIES + PERFUME_TREND_QUERIES:
+        for q in (PERFUME_PRIORITY_QUERIES + list(CATALOG["🌸 Perfumes"]) + PERFUME_BRAND_QUERIES + PERFUME_TREND_QUERIES):
             if q not in perfume_queries:
                 perfume_queries.append(q)
 
         rank_base = 1
         if fast:
-            # Antes eram só 8 buscas; isso fazia a categoria nacional/importada
-            # terminar com poucas opções. Agora percorremos 24 marcas/modelos.
+            # Mantemos 40 consultas no modo rápido, mas agora as primeiras
+            # consultas são majoritariamente importadas e masculinas.
             perfume_queries = perfume_queries[:40]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
@@ -4072,21 +4107,17 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     except Exception:
         original = None
 
+    # Loja Oficial NÃO é obrigatória. O campo é apenas informativo.
     official_store_id = _extract_official_store_id(row)
-    if not official_store_id:
-        # Algumas rotas de catálogo não carregam o selo na primeira resposta.
-        # Confirma uma única vez diretamente na publicação real.
+    if original is None:
         try:
             data, status, _ = ml_get(f"/items/{item_id}")
             if status == 200 and isinstance(data, dict):
-                official_store_id = _extract_official_store_id(data)
-                if original is None:
-                    original = data.get("original_price") or data.get("base_price")
+                if not official_store_id:
+                    official_store_id = _extract_official_store_id(data)
+                original = data.get("original_price") or data.get("base_price")
         except Exception as exc:
-            print("[LOJA OFICIAL] falha ao confirmar", item_id, repr(exc))
-    if not official_store_id:
-        print("[LOJA OFICIAL] descartado (sem Loja Oficial):", item_id, title[:80])
-        return None
+            print("[PRECO ORIGINAL] falha ao confirmar", item_id, repr(exc))
 
     shipping = row.get("shipping") or {}
     if not isinstance(shipping, dict):
@@ -4487,24 +4518,20 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # REGRA NOVA: somente LOJAS OFICIAIS + somente produtos com DESCONTO REAL.
-    # O selo de Loja Oficial vem de official_store_id e o desconto precisa ser
-    # comprovado por preço atual menor que o preço original.
-    before_official_filter = len(offers)
-    official_discounted = []
+    # REGRA ATUAL: somente produtos com DESCONTO REAL.
+    # Loja Oficial NÃO é mais exigida. O desconto precisa ser comprovado
+    # por preço atual menor que o preço original.
+    before_discount_filter = len(offers)
+    discounted_offers = []
     for o in offers:
-        official_id = o.get("official_store_id")
-        if not official_id:
-            print("[LOJA OFICIAL] descartado:", str(o.get("item_id") or o.get("product_id") or ""))
-            continue
         if not _discount_is_real(o.get("price"), o.get("original_price")):
             continue
         o["discount"] = discount(o.get("price"), o.get("original_price"))
         if float(o.get("discount") or 0) <= 0:
             continue
-        official_discounted.append(o)
-    offers = official_discounted
-    print(f"[FILTRO OFICIAL + DESCONTO] {before_official_filter} -> {len(offers)} ofertas")
+        discounted_offers.append(o)
+    offers = discounted_offers
+    print(f"[FILTRO DESCONTO REAL] {before_discount_filter} -> {len(offers)} ofertas")
 
     # Perfumes: mostra somente perfumes/fragrâncias individuais,
     # incluindo Body Splash e Body Mist, sem kits/combos.
