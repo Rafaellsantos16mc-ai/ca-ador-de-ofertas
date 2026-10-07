@@ -4312,7 +4312,7 @@ def _parse_affiliate_cookies(raw):
     return out
 
 
-def _affiliate_csrf_and_link(product_url, item_id=None):
+def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller_id=None, expected_price=None):
     """Gera meli.la usando a sessão salva no Railway.
 
     REGRA CRÍTICA:
@@ -4353,6 +4353,163 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
             if iid and re.fullmatch(r"MLB\d+", iid) and permalink and not is_catalog_url(permalink):
                 return permalink
         return ""
+
+    def resolve_by_search():
+        """Último fallback: encontra a publicação REAL via busca de anúncios.
+
+        Alguns produtos de catálogo não expõem buy_box_winner nem
+        /products/{id}/items para o token OAuth usado pelo app. Nesse caso,
+        usamos os dados da própria oferta (título, vendedor e preço) para
+        localizar a publicação real em /sites/MLB/search e confirmamos o ITEM
+        novamente em /items/{id} antes de gerar o afiliado.
+        """
+        title = str(product_title or "").strip()
+        if not title:
+            return ""
+
+        try:
+            wanted_price = float(expected_price) if expected_price is not None else None
+        except Exception:
+            wanted_price = None
+
+        wanted_seller = str(seller_id or "").strip()
+        simplified = re.sub(r"[^\w\sÀ-ÿ]", " ", title, flags=re.UNICODE)
+        simplified = re.sub(r"\s+", " ", simplified).strip()
+        queries = [title]
+        if simplified and simplified.lower() != title.lower():
+            queries.append(simplified)
+
+        best = None
+        best_score = -10**9
+
+        qwords = {
+            w.lower()
+            for w in re.findall(r"[\wÀ-ÿ]{3,}", simplified or title)
+            if w.lower() not in {"para", "com", "sem", "uma", "uns", "dos", "das"}
+        }
+
+        for q in queries:
+            try:
+                data, status, _ = ml_get(
+                    "/sites/MLB/search",
+                    params={"q": q, "limit": 50},
+                )
+            except Exception as exc:
+                print("[AFILIADO BUSCA] erro:", repr(exc))
+                continue
+
+            if status != 200 or not isinstance(data, dict):
+                print("[AFILIADO BUSCA] HTTP", status, "para", q[:100])
+                continue
+
+            results = data.get("results") or []
+            if not isinstance(results, list):
+                continue
+
+            for row in results:
+                if not isinstance(row, dict):
+                    continue
+
+                rid = str(row.get("id") or "").strip().upper()
+                permalink = str(row.get("permalink") or "").strip()
+                if not re.fullmatch(r"MLB\d+", rid):
+                    continue
+                if rid == item_id or not permalink or is_catalog_url(permalink):
+                    continue
+
+                seller = row.get("seller") or {}
+                row_seller_id = (
+                    seller.get("id")
+                    if isinstance(seller, dict)
+                    else row.get("seller_id")
+                )
+                row_seller_id = str(row_seller_id or "").strip()
+
+                try:
+                    row_price = float(row.get("price")) if row.get("price") is not None else None
+                except Exception:
+                    row_price = None
+
+                row_title = str(row.get("title") or "").strip()
+                score = 0.0
+
+                if wanted_seller:
+                    score += 1000 if row_seller_id == wanted_seller else -300
+
+                if wanted_price is not None and row_price is not None:
+                    diff = abs(row_price - wanted_price)
+                    if diff < 0.01:
+                        score += 600
+                    elif diff <= max(2.0, wanted_price * 0.02):
+                        score += 250
+                    else:
+                        score -= min(400, diff * 2)
+
+                if qwords and row_title:
+                    rwords = {
+                        w.lower()
+                        for w in re.findall(r"[\wÀ-ÿ]{3,}", row_title)
+                    }
+                    score += len(qwords & rwords) * 10
+
+                if score > best_score:
+                    best_score = score
+                    best = (rid, permalink, row_seller_id, row_price, row_title)
+
+            if best and wanted_seller and best[2] == wanted_seller:
+                if wanted_price is None or (
+                    best[3] is not None and abs(best[3] - wanted_price) <= 0.01
+                ):
+                    break
+
+        if not best:
+            return ""
+
+        rid, permalink, _, _, _ = best
+
+        try:
+            real_data, real_status, _ = ml_get(f"/items/{rid}")
+        except Exception as exc:
+            print("[AFILIADO BUSCA ITEM] erro:", rid, repr(exc))
+            real_data, real_status = None, 0
+
+        if real_status != 200 or not isinstance(real_data, dict):
+            return ""
+
+        real_permalink = str(real_data.get("permalink") or "").strip()
+        if not real_permalink or is_catalog_url(real_permalink):
+            return ""
+
+        real_seller = real_data.get("seller") or {}
+        real_seller_id = (
+            real_seller.get("id")
+            if isinstance(real_seller, dict)
+            else real_data.get("seller_id")
+        )
+        real_seller_id = str(real_seller_id or "").strip()
+
+        try:
+            real_price = float(real_data.get("price")) if real_data.get("price") is not None else None
+        except Exception:
+            real_price = None
+
+        if wanted_seller and real_seller_id and real_seller_id != wanted_seller:
+            return ""
+
+        if (
+            wanted_price is not None
+            and real_price is not None
+            and abs(real_price - wanted_price) > max(2.0, wanted_price * 0.02)
+        ):
+            return ""
+
+        print(
+            "[AFILIADO BUSCA] publicação real encontrada:",
+            rid,
+            "seller=", real_seller_id,
+            "price=", real_price,
+        )
+        return real_permalink
 
     # 1) Se recebemos um ID MLB, primeiro tratamos como possível ITEM real.
     # Se /items/{id} não existir, tratamos o mesmo ID como possível catálogo.
@@ -4550,12 +4707,17 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
             if real_permalink:
                 product_url = real_permalink
             elif is_catalog_url(product_url):
-                raise RuntimeError(
-                    f"O catálogo {item_id} foi identificado, mas o Mercado Livre "
-                    f"não forneceu uma publicação real para ele "
-                    f"(items HTTP {item_status}, product HTTP {product_status}, "
-                    f"product items HTTP {products_status})."
-                )
+                searched_permalink = resolve_by_search()
+                if searched_permalink:
+                    product_url = searched_permalink
+                else:
+                    raise RuntimeError(
+                        f"O catálogo {item_id} foi identificado, mas o Mercado Livre "
+                        f"não forneceu uma publicação real para ele "
+                        f"(items HTTP {item_status}, product HTTP {product_status}, "
+                        f"product items HTTP {products_status}) e a busca também "
+                        f"não encontrou uma publicação compatível."
+                    )
 
     # 2) Se a URL recebida ainda é /p/MLB..., resolve o catálogo antes do POST.
     if is_catalog_url(product_url):
@@ -4620,10 +4782,14 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
             if real_permalink:
                 product_url = real_permalink
             else:
-                raise RuntimeError(
-                    f"O Mercado Livre retornou uma URL de catálogo ({catalog_id}), "
-                    f"mas não foi encontrada uma publicação real para ela."
-                )
+                searched_permalink = resolve_by_search()
+                if searched_permalink:
+                    product_url = searched_permalink
+                else:
+                    raise RuntimeError(
+                        f"O Mercado Livre retornou uma URL de catálogo ({catalog_id}), "
+                        f"mas não foi encontrada uma publicação real para ela."
+                    )
 
     if not product_url:
         raise RuntimeError("URL do produto vazia")
@@ -4709,6 +4875,9 @@ def api_afiliado_gerar():
     payload = request.get_json(silent=True) or {}
     product_url = str(payload.get("url") or "").strip()
     item_id = str(payload.get("item_id") or "").strip().upper()
+    product_title = str(payload.get("title") or payload.get("product_title") or "").strip()
+    seller_id = str(payload.get("seller_id") or "").strip()
+    expected_price = payload.get("price")
     if not product_url and not re.fullmatch(r"MLB\d+", item_id):
         return jsonify({"ok": False, "erro": "Publicação/ITEM do produto não informado."}), 400
 
@@ -4720,7 +4889,13 @@ def api_afiliado_gerar():
         }), 503
 
     try:
-        link = _affiliate_csrf_and_link(product_url, item_id=item_id)
+        link = _affiliate_csrf_and_link(
+            product_url,
+            item_id=item_id,
+            product_title=product_title,
+            seller_id=seller_id,
+            expected_price=expected_price,
+        )
         return jsonify({"ok": True, "link": link, "modo": "servidor", "item_id": item_id})
     except Exception as exc:
         # Não expõe cookies/token nos logs nem na resposta.
@@ -4948,7 +5123,13 @@ async function iniciarAfiliado(id,o){
    const r=await fetch('/api/afiliado/gerar',{
     method:'POST',
     headers:{'Content-Type':'application/json','Accept':'application/json'},
-    body:JSON.stringify({url:target,item_id:itemId})
+    body:JSON.stringify({
+     url:target,
+     item_id:itemId,
+     title:String(o.title||o.product_title||'').trim(),
+     seller_id:String(o.seller_id||'').trim(),
+     price:o.price
+    })
    });
    const data=await r.json().catch(()=>({}));
    if(data.ok && data.link){
