@@ -3078,7 +3078,7 @@ def _search_category(cat, fast=False):
         seed_queries = seed_queries[:6]
     for q in seed_queries:
         try:
-            rows = search_products_direct(q, limit=15 if fast else 30)
+            rows = search_products_direct(q, limit=30 if fast else 50)
         except Exception as exc:
             print("[BUSCA ESPECIFICA]", cat, q, repr(exc))
             continue
@@ -3098,7 +3098,7 @@ def _search_category(cat, fast=False):
                 "highlight_category_id": category_id,
             }, cat))
         rank_base += 30
-        if len(out) >= 70:
+        if len(out) >= 120:
             break
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
@@ -3696,7 +3696,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     if "🌸 Perfumes" in categories:
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
         seen_perfume_items = set()
-        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        direct_limit = 120 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -3715,7 +3715,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     if "🌙 Perfumes Árabes" in categories:
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         seen_arabic_items = set()
-        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        direct_limit = 120 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -4121,7 +4121,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         arr.sort(key=_display_demand_key)
         # A categoria árabe recebe mais espaço para aparecer com mais frequência:
         # 30 ofertas árabes contra 20 nas demais.
-        limit = 60 if cat == "🌙 Perfumes Árabes" else 20
+        limit = 80 if cat == "🌙 Perfumes Árabes" else 30
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
@@ -4214,9 +4214,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "20 por categoria + perfumes por ITEM real, sem filtro Full/Gold/100 vendas",
+        "modo": "30 por categoria + perfumes árabes por ITEM real, sem filtro Full/Gold/100 vendas",
     }
-    print(f"[RESULTADO TOP 20] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
+    print(f"[RESULTADO OFERTAS] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
 
 def auto_scan(category=None, min_discount=0):
