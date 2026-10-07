@@ -15,6 +15,16 @@ from datetime import datetime
 from urllib.parse import urlencode, quote, urlparse, parse_qs
 
 import requests
+
+# Processamento de imagem para melhorar as fotos antes do WhatsApp.
+# Pillow é opcional: se não estiver instalado, o original continua sendo usado.
+try:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+except Exception:
+    Image = None
+    ImageEnhance = None
+    ImageFilter = None
+    ImageOps = None
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -5173,8 +5183,126 @@ def _save_generated_whatsapp_image(image_bytes, extension="png"):
 
 
 def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
-    """Usa exclusivamente a imagem original do Mercado Livre. Sem OpenAI."""
-    return str(image_url or "").strip()
+    """Prepara a foto original para chegar melhor no grupo do WhatsApp.
+
+    Não cria uma arte, não coloca texto e não altera o produto.
+    Apenas:
+      1) baixa a imagem original;
+      2) corrige orientação EXIF;
+      3) remove transparência problemática;
+      4) amplia imagens pequenas com Lanczos;
+      5) aplica contraste/cor/nitidez de forma leve;
+      6) salva em JPEG de alta qualidade;
+      7) devolve uma URL pública para o WhatsApp Bot.
+
+    Se o processamento falhar, devolve a URL original para não bloquear a oferta.
+    """
+    source = str(image_url or "").strip()
+    if not source:
+        return ""
+
+    if Image is None:
+        print("[IMAGEM MELHORADA] Pillow não instalado; usando original.")
+        return source
+
+    # Evita baixar/processar a mesma imagem várias vezes na mesma instância.
+    cache_key = source
+    cached = _WHATSAPP_IMAGE_ENHANCE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        response = requests.get(
+            source,
+            headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+                              "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+                "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
+            },
+            timeout=20,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        raw = response.content
+        if not raw:
+            return source
+
+        from io import BytesIO
+
+        with Image.open(BytesIO(raw)) as original:
+            # Corrige fotos que chegam giradas por EXIF.
+            img = ImageOps.exif_transpose(original)
+
+            # Trabalha em RGB para o JPEG final.
+            if img.mode in ("RGBA", "LA"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                alpha = img.getchannel("A")
+                background.paste(img.convert("RGB"), mask=alpha)
+                img = background
+            else:
+                img = img.convert("RGB")
+
+            width, height = img.size
+            if width < 300 or height < 300:
+                print(f"[IMAGEM MELHORADA] resolução muito baixa: {width}x{height}")
+
+            # WhatsApp lida melhor com uma imagem suficientemente grande.
+            # Mantemos a proporção e não fazemos crop do produto.
+            max_side = 1600
+            min_target_side = 1200
+
+            longest = max(width, height)
+            if longest < min_target_side:
+                scale = min_target_side / max(1, longest)
+                new_size = (
+                    max(1, int(round(width * scale))),
+                    max(1, int(round(height * scale))),
+                )
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Se a imagem original for gigantesca, reduz para evitar arquivo
+            # pesado e compressão agressiva do WhatsApp.
+            if max(img.size) > max_side:
+                scale = max_side / max(img.size)
+                new_size = (
+                    max(1, int(round(img.width * scale))),
+                    max(1, int(round(img.height * scale))),
+                )
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Melhoria leve: queremos nitidez, não uma imagem artificial.
+            img = ImageEnhance.Contrast(img).enhance(1.04)
+            img = ImageEnhance.Color(img).enhance(1.03)
+            img = ImageEnhance.Sharpness(img).enhance(1.18)
+            img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=105, threshold=3))
+
+            output = BytesIO()
+            img.save(
+                output,
+                format="JPEG",
+                quality=94,
+                optimize=True,
+                progressive=True,
+                subsampling=0,
+            )
+
+            prepared_url = _save_generated_whatsapp_image(
+                output.getvalue(),
+                extension="jpg",
+            )
+
+        _WHATSAPP_IMAGE_ENHANCE_CACHE[cache_key] = prepared_url
+        print(
+            "[IMAGEM MELHORADA] OK:",
+            f"{width}x{height} -> {img.width}x{img.height}",
+            prepared_url,
+        )
+        return prepared_url
+
+    except Exception as exc:
+        print("[IMAGEM MELHORADA] falhou; usando original:", repr(exc))
+        return source
 
 
 def whatsapp_image(filename):
