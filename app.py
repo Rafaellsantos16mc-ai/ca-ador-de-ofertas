@@ -1100,6 +1100,42 @@ def valid_catalog_price(price):
         return False
     return True
 
+def _extract_official_store_id(obj):
+    """Retorna o ID da Loja Oficial quando o Mercado Livre informa esse selo."""
+    if not isinstance(obj, dict):
+        return None
+
+    candidates = [
+        obj.get("official_store_id"),
+        obj.get("official_store"),
+    ]
+    seller = obj.get("seller")
+    if isinstance(seller, dict):
+        candidates.extend([seller.get("official_store_id"), seller.get("official_store")])
+
+    for value in candidates:
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("official_store_id")
+        if value not in (None, "", 0, "0", False):
+            return str(value).strip()
+    return None
+
+
+def _is_official_store(obj):
+    """Somente publicações vinculadas a uma Loja Oficial do Mercado Livre."""
+    return bool(_extract_official_store_id(obj))
+
+
+def _discount_is_real(price, original_price):
+    """Exige preço promocional real: preço atual menor que o preço anterior."""
+    try:
+        price = float(price)
+        original_price = float(original_price)
+    except Exception:
+        return False
+    return price > 0 and original_price > price
+
+
 def normalize_item(x):
     """Normaliza uma publicação real do Mercado Livre.
 
@@ -1127,6 +1163,7 @@ def normalize_item(x):
     return {
         "item_id": str(item_id),
         "seller_id": seller_id,
+        "official_store_id": _extract_official_store_id(x),
         "price": x.get("price") or x.get("sale_price"),
         "original_price": x.get("original_price") or x.get("regular_price"),
         "condition": x.get("condition"),
@@ -2327,6 +2364,9 @@ def search_real_listings(q, limit=50):
             if price is None or price < MIN_PRODUCT_PRICE:
                 continue
 
+            official_store_id = _extract_official_store_id(item) or _extract_official_store_id(product_row)
+            if not official_store_id:
+                continue
             shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
             pictures = item.get("pictures") or product_row.get("pictures") or []
             thumbnail = item.get("thumbnail") or product_row.get("thumbnail") or ""
@@ -2345,6 +2385,7 @@ def search_real_listings(q, limit=50):
                 "price": price,
                 "original_price": item.get("original_price") or item.get("regular_price"),
                 "seller_id": seller_id,
+                "official_store_id": official_store_id,
                 "sold_quantity": item.get("sold_quantity") or 0,
                 "shipping": shipping,
                 "free_shipping": bool(shipping.get("free_shipping") or item.get("free_shipping")),
@@ -3069,6 +3110,20 @@ def _search_arabic_real_listings(q, limit=80):
         if price < MIN_PRODUCT_PRICE or price > 100000:
             return
 
+        official_store_id = _extract_official_store_id(candidate) or _extract_official_store_id(fallback_product)
+        if not official_store_id:
+            try:
+                data, status, _ = ml_get(f"/items/{iid}")
+                if status == 200 and isinstance(data, dict):
+                    official_store_id = _extract_official_store_id(data)
+                    if candidate.get("original_price") is None:
+                        candidate = dict(candidate)
+                        candidate["original_price"] = data.get("original_price") or data.get("base_price")
+            except Exception as exc:
+                print("[LOJA OFICIAL] falha ao confirmar", iid, repr(exc))
+        if not official_store_id:
+            return
+
         shipping = candidate.get("shipping") or {}
         if not isinstance(shipping, dict):
             shipping = {}
@@ -3333,6 +3388,9 @@ def _search_perfume_public_fallback(q, limit=20):
         seller = data.get("seller") or {}
         if not isinstance(seller, dict):
             seller = {}
+        official_store_id = _extract_official_store_id(data)
+        if not official_store_id:
+            continue
         pictures = data.get("pictures") or []
         thumbnail = str(data.get("thumbnail") or "").strip()
         if not thumbnail and pictures and isinstance(pictures[0], dict):
@@ -3353,6 +3411,7 @@ def _search_perfume_public_fallback(q, limit=20):
             "price": price,
             "original_price": data.get("original_price") or data.get("base_price"),
             "seller_id": data.get("seller_id") or seller.get("id"),
+            "official_store_id": official_store_id,
             "sold_quantity": data.get("sold_quantity") or 0,
             "shipping": shipping,
             "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
@@ -3410,6 +3469,7 @@ def _search_arabic_perfumes(fast=False):
                 "price": row.get("price"),
                 "original_price": row.get("original_price") or row.get("regular_price"),
                 "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+                "official_store_id": row.get("official_store_id"),
             }, "🌙 Perfumes Árabes"))
         rank_base += max(40, len(rows))
 
@@ -3506,6 +3566,7 @@ def _search_category(cat, fast=False):
                     "price": row.get("price"),
                     "original_price": row.get("original_price") or row.get("regular_price"),
                     "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+                    "official_store_id": row.get("official_store_id"),
                 }, cat))
             rank_base += max(50, len(rows))
 
@@ -3604,6 +3665,7 @@ def _get_item_quality(item_id):
         result = {
             "item_id": data.get("id") or item_id,
             "seller_id": data.get("seller_id"),
+            "official_store_id": _extract_official_store_id(data),
             "sold_quantity": sold,
             "logistic_type": shipping.get("logistic_type"),
             "shipping_mode": shipping.get("mode"),
@@ -3669,6 +3731,7 @@ def _approve_real_item(item_id, base_item=None):
     approved.update({
         "item_id": real.get("item_id") or item_id,
         "seller_id": real.get("seller_id") or approved.get("seller_id"),
+        "official_store_id": real.get("official_store_id") or approved.get("official_store_id"),
         "sold_quantity": int(real.get("sold_quantity") or 0),
         "logistic_type": real.get("logistic_type"),
         "shipping_mode": real.get("shipping_mode"),
@@ -4008,6 +4071,22 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         original = float(row.get("original_price")) if row.get("original_price") is not None else None
     except Exception:
         original = None
+
+    official_store_id = _extract_official_store_id(row)
+    if not official_store_id:
+        # Algumas rotas de catálogo não carregam o selo na primeira resposta.
+        # Confirma uma única vez diretamente na publicação real.
+        try:
+            data, status, _ = ml_get(f"/items/{item_id}")
+            if status == 200 and isinstance(data, dict):
+                official_store_id = _extract_official_store_id(data)
+                if original is None:
+                    original = data.get("original_price") or data.get("base_price")
+        except Exception as exc:
+            print("[LOJA OFICIAL] falha ao confirmar", item_id, repr(exc))
+    if not official_store_id:
+        print("[LOJA OFICIAL] descartado (sem Loja Oficial):", item_id, title[:80])
+        return None
 
     shipping = row.get("shipping") or {}
     if not isinstance(shipping, dict):
@@ -4364,6 +4443,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "original_price": original,
                 "discount": seller_disc,
                 "seller_id": item.get("seller_id"),
+                "official_store_id": item.get("official_store_id"),
                 "condition": item.get("condition"),
                 "free_shipping": free,
                 "shipping_cost": shipping,
@@ -4406,6 +4486,25 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             })
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
+
+    # REGRA NOVA: somente LOJAS OFICIAIS + somente produtos com DESCONTO REAL.
+    # O selo de Loja Oficial vem de official_store_id e o desconto precisa ser
+    # comprovado por preço atual menor que o preço original.
+    before_official_filter = len(offers)
+    official_discounted = []
+    for o in offers:
+        official_id = o.get("official_store_id")
+        if not official_id:
+            print("[LOJA OFICIAL] descartado:", str(o.get("item_id") or o.get("product_id") or ""))
+            continue
+        if not _discount_is_real(o.get("price"), o.get("original_price")):
+            continue
+        o["discount"] = discount(o.get("price"), o.get("original_price"))
+        if float(o.get("discount") or 0) <= 0:
+            continue
+        official_discounted.append(o)
+    offers = official_discounted
+    print(f"[FILTRO OFICIAL + DESCONTO] {before_official_filter} -> {len(offers)} ofertas")
 
     # Perfumes: mostra somente perfumes/fragrâncias individuais,
     # incluindo Body Splash e Body Mist, sem kits/combos.
@@ -5042,7 +5141,7 @@ def _marketing_phrase(title):
             ["fakhar rose", "fakhar women", "fakhar feminino"],
             "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA",
             "🌸✨",
-            "Com notas florais como tuberosa e jasmim, além de uma base com baunilha, almíscar branco e sândalo.",
+            "",
         ),
         (
             ["fakhar black", "fakhar men", "fakhar masculino"],
