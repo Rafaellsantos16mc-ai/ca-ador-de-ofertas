@@ -2885,7 +2885,15 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "especificacoes": specs(title),
         "image": image,
         "category_name": cat,
-        "permalink": row.get("permalink") or f"https://www.mercadolivre.com.br/p/{item_id}",
+        # Para perfumes, nunca usa URL de catálogo /p/MLB... como fallback.
+        # Se não houver permalink da publicação, monta diretamente a URL do ITEM real.
+        "permalink": (
+            row.get("permalink")
+            if row.get("permalink") and not re.search(
+                r"/p/MLB\\d+(?:[/?#]|$)", str(row.get("permalink")), re.I
+            )
+            else f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
+        ),
         "price": price,
         "original_price": original,
         "discount": disc,
