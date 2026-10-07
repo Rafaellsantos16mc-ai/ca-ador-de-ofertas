@@ -2606,8 +2606,41 @@ def _search_arabic_real_listings(q, limit=80):
         if not isinstance(seller, dict):
             seller = {}
 
+        # A publicação ligada ao catálogo nem sempre devolve "pictures".
+        # Porém o próprio produto de catálogo normalmente já traz thumbnail
+        # e/ou pictures. Como não podemos depender de GET /items/{id}, usamos
+        # também essas imagens do produto pai como fallback.
         pictures = candidate.get("pictures") or []
-        thumbnail = str(candidate.get("thumbnail") or "").strip()
+        thumbnail = str(
+            candidate.get("thumbnail")
+            or candidate.get("secure_thumbnail")
+            or candidate.get("picture_url")
+            or ""
+        ).strip()
+
+        if not thumbnail and pictures and isinstance(pictures[0], dict):
+            thumbnail = str(
+                pictures[0].get("secure_url")
+                or pictures[0].get("url")
+                or pictures[0].get("secure_thumbnail")
+                or pictures[0].get("thumbnail")
+                or ""
+            ).strip()
+
+        fallback = fallback_product if isinstance(fallback_product, dict) else {}
+        if not thumbnail:
+            thumbnail = str(
+                fallback.get("thumbnail")
+                or fallback.get("secure_thumbnail")
+                or fallback.get("picture_url")
+                or ""
+            ).strip()
+
+        if not pictures:
+            fpictures = fallback.get("pictures") or []
+            if isinstance(fpictures, list):
+                pictures = fpictures
+
         if not thumbnail and pictures and isinstance(pictures[0], dict):
             thumbnail = str(
                 pictures[0].get("secure_url")
@@ -2689,6 +2722,27 @@ def _search_arabic_real_listings(q, limit=80):
         except Exception as exc:
             items = []
             print("[ARABES ITEMS]", pid, repr(exc))
+
+        print(
+            "[ARABES ITEMS STATUS]",
+            pid,
+            "qtd=", len(items) if isinstance(items, list) else 0,
+            "produto_img=", bool(
+                product_row.get("thumbnail")
+                or product_row.get("secure_thumbnail")
+                or product_row.get("picture_url")
+                or product_row.get("pictures")
+            ),
+            "detalhe_img=", bool(
+                isinstance(detail, dict)
+                and (
+                    detail.get("thumbnail")
+                    or detail.get("secure_thumbnail")
+                    or detail.get("picture_url")
+                    or detail.get("pictures")
+                )
+            ),
+        )
 
         if isinstance(items, list):
             for item in items[:10]:
@@ -3493,7 +3547,23 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         or ""
     ).strip()
 
-    # Se a busca não trouxer thumbnail, tenta uma única consulta ao item real.
+    # Algumas respostas trazem a imagem somente dentro de pictures.
+    if not image:
+        pictures = row.get("pictures") or []
+        if isinstance(pictures, list):
+            for pic in pictures:
+                if isinstance(pic, dict):
+                    image = str(
+                        pic.get("secure_url")
+                        or pic.get("url")
+                        or pic.get("secure_thumbnail")
+                        or pic.get("thumbnail")
+                        or ""
+                    ).strip()
+                    if image:
+                        break
+
+    # Se a busca não trouxer imagem nenhuma, tenta uma única consulta ao item real.
     if not image:
         data, status, _ = ml_get(f"/items/{item_id}")
         if status == 200 and isinstance(data, dict):
