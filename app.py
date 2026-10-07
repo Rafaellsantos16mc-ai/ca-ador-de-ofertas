@@ -2890,7 +2890,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "permalink": (
             row.get("permalink")
             if row.get("permalink") and not re.search(
-                r"/p/MLB\\d+(?:[/?#]|$)", str(row.get("permalink")), re.I
+                r"/p/MLB\d+(?:[/?#]|$)", str(row.get("permalink")), re.I
             )
             else f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
         ),
@@ -4315,10 +4315,15 @@ def _parse_affiliate_cookies(raw):
 def _affiliate_csrf_and_link(product_url, item_id=None):
     """Gera meli.la usando a sessão salva no Railway.
 
-    Quando recebemos o ITEM (MLB123...), nunca confiamos em uma URL
-    /p/MLB... ou em uma URL montada pelo navegador. Primeiro consultamos
-    /items/{item_id} e usamos a permalink real da publicação. Isso evita que
-    perfumes caiam em páginas de catálogo inexistentes.
+    REGRA CRÍTICA:
+    O endpoint de afiliados do Mercado Livre NÃO aceita URL de catálogo
+    /p/MLB.... Portanto, antes do POST, resolvemos qualquer catálogo para
+    uma PUBLICAÇÃO/ITEM real.
+
+    A resolução tenta nesta ordem:
+      1) /items/{item_id}, quando o ID já é uma publicação real;
+      2) /products/{item_id}/items, quando o ID recebido é um produto/catálogo;
+      3) /products/{catalog_id}/items, quando a própria URL é /p/MLB....
     """
     cookies = _parse_affiliate_cookies(ML_AFFILIATE_COOKIES)
     if not cookies:
@@ -4329,8 +4334,28 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
     product_url = str(product_url or "").strip()
     item_id = str(item_id or "").strip().upper()
 
-    # O ITEM real é a fonte de verdade. Se ele existir, pega a permalink
-    # diretamente da API do Mercado Livre antes de abrir qualquer página.
+    def is_catalog_url(url):
+        return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
+
+    def extract_catalog_id(url):
+        m = re.search(r"/p/(MLB\d+)(?:[/?#]|$)", str(url or ""), re.I)
+        return m.group(1).upper() if m else ""
+
+    def pick_real_permalink(items):
+        if not isinstance(items, list):
+            return ""
+        # Prefere publicação ativa com permalink real.
+        for candidate in items:
+            if not isinstance(candidate, dict):
+                continue
+            iid = str(candidate.get("id") or candidate.get("item_id") or "").strip().upper()
+            permalink = str(candidate.get("permalink") or "").strip()
+            if iid and re.fullmatch(r"MLB\d+", iid) and permalink and not is_catalog_url(permalink):
+                return permalink
+        return ""
+
+    # 1) Se recebemos um ID MLB, primeiro tratamos como possível ITEM real.
+    # Se /items/{id} não existir, tratamos o mesmo ID como possível catálogo.
     if re.fullmatch(r"MLB\d+", item_id):
         try:
             item_data, item_status, _ = ml_get(f"/items/{item_id}")
@@ -4340,15 +4365,64 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
 
         if item_status == 200 and isinstance(item_data, dict):
             real_permalink = str(item_data.get("permalink") or "").strip()
+            if real_permalink and not is_catalog_url(real_permalink):
+                product_url = real_permalink
+            else:
+                product_url = f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
+        else:
+            # Pode ser ID de PRODUTO/CATÁLOGO, não de publicação.
+            try:
+                product_items_data, products_status, _ = ml_get(f"/products/{item_id}/items")
+            except Exception as exc:
+                product_items_data, products_status = None, 0
+                print("[AFILIADO PRODUTO] erro ao consultar", item_id, repr(exc))
+
+            candidates = []
+            if isinstance(product_items_data, list):
+                candidates = product_items_data
+            elif isinstance(product_items_data, dict):
+                candidates = product_items_data.get("results") or []
+
+            real_permalink = pick_real_permalink(candidates)
             if real_permalink:
                 product_url = real_permalink
-            elif not product_url:
-                product_url = f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
-        elif not product_url:
-            raise RuntimeError(f"Não foi possível validar a publicação {item_id} no Mercado Livre (HTTP {item_status}).")
+            elif is_catalog_url(product_url):
+                raise RuntimeError(
+                    f"O ID {item_id} não foi resolvido para uma publicação real "
+                    f"(items HTTP {item_status}, product items HTTP {products_status})."
+                )
+
+    # 2) Se a URL recebida ainda é /p/MLB..., resolve o catálogo antes do POST.
+    if is_catalog_url(product_url):
+        catalog_id = extract_catalog_id(product_url)
+        if catalog_id:
+            try:
+                catalog_items_data, catalog_status, _ = ml_get(f"/products/{catalog_id}/items")
+            except Exception as exc:
+                catalog_items_data, catalog_status = None, 0
+                print("[AFILIADO CATALOGO] erro ao consultar", catalog_id, repr(exc))
+
+            candidates = []
+            if isinstance(catalog_items_data, list):
+                candidates = catalog_items_data
+            elif isinstance(catalog_items_data, dict):
+                candidates = catalog_items_data.get("results") or []
+
+            real_permalink = pick_real_permalink(candidates)
+            if real_permalink:
+                product_url = real_permalink
+            else:
+                raise RuntimeError(
+                    f"O Mercado Livre retornou uma URL de catálogo ({catalog_id}), "
+                    f"mas não foi encontrada uma publicação real para ela."
+                )
 
     if not product_url:
         raise RuntimeError("URL do produto vazia")
+
+    # Segurança final: NUNCA envia /p/MLB... ao endpoint de afiliados.
+    if is_catalog_url(product_url):
+        raise RuntimeError("URL de catálogo /p/MLB... bloqueada antes da geração do afiliado.")
 
     ua = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -4358,8 +4432,7 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
     cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
     csrf = cookies.get("_csrf", "")
 
-    # O provider open-source consultado faz exatamente esta etapa antes
-    # do POST, pois o token da página pode ser mais atual que o cookie.
+    # O token da página pode ser mais atual que o cookie.
     try:
         page = requests.get(
             product_url,
@@ -4374,7 +4447,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
             if m:
                 csrf = m.group(1)
     except Exception:
-        # Se a página não carregar, ainda tentamos com o _csrf do cookie.
         pass
 
     try:
@@ -4382,6 +4454,7 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
         product_host = (parsed_product.netloc or "").lower()
     except Exception:
         product_host = ""
+
     origin = (
         "https://www.mercadolivre.com.br"
         if "mercadolivre.com.br" in product_host and not product_host.startswith("produto.")
@@ -4397,6 +4470,7 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
         "Origin": origin,
         "User-Agent": ua,
     }
+
     r = requests.post(
         ML_AFFILIATE_URL,
         headers=headers,
@@ -4417,6 +4491,7 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
     short_url = str(data.get("short_url") or "").strip()
     if not short_url:
         raise RuntimeError("Mercado Livre não retornou short_url")
+
     return short_url
 
 
