@@ -2792,10 +2792,15 @@ def _search_perfume_public_fallback(q, limit=20):
     return out
 
 def _search_arabic_perfumes(fast=False):
-    """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
+    """Busca perfumes árabes por micro-nicho e sempre prioriza ITEM real.
 
-    A descoberta usa /products/search, mas a publicação é sempre resolvida
-    para um ITEM MLB real antes de entrar no resultado.
+    A rota principal usa a API de produtos/publicações. Como essa API pode
+    retornar catálogo sem uma publicação utilizável, a mesma consulta também
+    passa por uma busca pública HTML que extrai IDs MLB reais. As duas fontes
+    são mescladas e duplicatas são removidas.
+
+    Isso deixa a categoria árabe independente do fluxo de catálogo usado pelas
+    demais categorias e evita que um problema de catálogo produza "0 produtos".
     """
     queries = []
     for q in ARABIC_BESTSELLERS_35 + ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
@@ -2805,39 +2810,98 @@ def _search_arabic_perfumes(fast=False):
     out = []
     seen = set()
     rank_base = 1
+
+    # Na busca "todas as categorias" reduzimos chamadas, mas mantemos todos
+    # os 35 modelos quando o usuário escolhe manualmente Perfumes Árabes.
     if fast:
-        queries = queries[:12]
+        queries = queries[:18]
+
     for q in queries:
+        rows = []
+
+        # Fonte 1: API Mercado Livre -> ITEM real.
         try:
-            rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
+            rows = _search_arabic_real_listings(
+                q,
+                limit=18 if fast else 45
+            ) or []
         except Exception as exc:
-            print("[ARABES BUSCA]", q, repr(exc))
-            continue
+            print("[ARABES API]", q, repr(exc))
+
+        # Fonte 2: busca pública -> IDs MLB reais.
+        # É executada mesmo quando a API trouxe resultados, porque os
+        # primeiros podem ser catálogo/vendedores diferentes e o filtro final
+        # pode rejeitá-los.
+        try:
+            public_rows = _search_perfume_public_fallback(
+                q,
+                limit=8 if fast else 14
+            ) or []
+        except Exception as exc:
+            print("[ARABES PUBLICA]", q, repr(exc))
+            public_rows = []
+
+        known = {
+            str(x.get("id") or x.get("item_id") or "").strip().upper()
+            for x in rows if isinstance(x, dict)
+        }
+        for row in public_rows:
+            if not isinstance(row, dict):
+                continue
+            iid = str(row.get("id") or row.get("item_id") or "").strip().upper()
+            if iid and iid not in known:
+                rows.append(row)
+                known.add(iid)
+
         for j, row in enumerate(rows, start=1):
             if not isinstance(row, dict):
                 continue
-            item_id = str(row.get("id") or "").strip()
-            title = str(row.get("title") or "").strip()
-            if not item_id or item_id in seen or not title:
+
+            item_id = str(row.get("id") or row.get("item_id") or "").strip().upper()
+            title = str(row.get("title") or row.get("name") or "").strip()
+
+            # A rota árabe só deixa passar publicação real.
+            permalink = str(row.get("permalink") or "").strip()
+            if not re.fullmatch(r"MLB\d+", item_id):
                 continue
+            if not title:
+                continue
+            if permalink and _is_catalog_permalink(permalink):
+                continue
+            if item_id in seen:
+                continue
+
+            # Validação antecipada reduz bastante lixo antes do restante do
+            # scanner, mas não depende da palavra "perfume".
+            if not _is_arabic_perfume_for_query(title, q):
+                continue
+
             seen.add(item_id)
             out.append(({
                 "id": item_id,
+                "item_id": item_id,
                 "name": title,
                 "title": title,
                 "source_type": "ITEM",
                 "highlight_position": rank_base + j,
-                "highlight_category_id": BEST_SELLER_CATEGORY_IDS.get("🌸 Perfumes"),
-                "permalink": row.get("permalink"),
+                "highlight_category_id": BEST_SELLER_CATEGORY_IDS.get("🌙 Perfumes Árabes"),
+                "permalink": permalink,
                 "thumbnail": row.get("thumbnail"),
                 "pictures": row.get("pictures") or [],
                 "price": row.get("price"),
                 "original_price": row.get("original_price") or row.get("regular_price"),
-                "seller_id": row.get("seller", {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+                "seller_id": (
+                    row.get("seller", {}).get("id")
+                    if isinstance(row.get("seller"), dict)
+                    else row.get("seller_id")
+                ),
+                "sold_quantity": row.get("sold_quantity") or 0,
+                "shipping": row.get("shipping") or {},
             }, "🌙 Perfumes Árabes"))
-        rank_base += max(40, len(rows))
 
-    print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios candidatos")
+        rank_base += max(30, len(rows))
+
+    print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios ITEM reais candidatos")
     return out
 
 def _search_category(cat, fast=False):
@@ -2873,13 +2937,31 @@ def _search_category(cat, fast=False):
                 rows = _search_arabic_real_listings(
                     search_q, limit=20 if fast else 40
                 )
-                # Se o catálogo não expuser nenhuma publicação real para o
-                # termo, usa a busca pública como fallback somente para
-                # descobrir ITEMs. O restante da validação continua igual.
-                if not rows:
-                    rows = _search_perfume_public_fallback(
-                        search_q, limit=12 if fast else 20
-                    )
+
+                # IMPORTANTE: para perfumes normais, não podemos usar a busca
+                # pública somente quando `rows` vier vazia. O catálogo pode
+                # devolver alguns ITEMs válidos, mas eles podem ser títulos que
+                # o filtro final rejeita (ex.: marca/modelo sem a palavra
+                # "perfume"). Nesse caso a busca pública ainda precisa ser
+                # consultada para trazer outras publicações reais.
+                #
+                # Mesclamos as duas fontes e deixamos a etapa final decidir
+                # quais anúncios realmente entram. Isso não altera as outras
+                # categorias nem o fluxo de afiliado/WhatsApp.
+                public_rows = _search_perfume_public_fallback(
+                    search_q, limit=8 if fast else 16
+                )
+                if public_rows:
+                    known_ids = {
+                        str(x.get("id") or x.get("item_id") or "").strip()
+                        for x in rows
+                        if isinstance(x, dict)
+                    }
+                    rows = list(rows) + [
+                        x for x in public_rows
+                        if str(x.get("id") or x.get("item_id") or "").strip()
+                        not in known_ids
+                    ]
             except Exception as exc:
                 print("[PERFUMES BUSCA ITEM]", q, repr(exc))
                 try:
@@ -3333,25 +3415,58 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
 
 
 def _is_arabic_perfume_for_query(title, query=""):
-    """Valida perfume árabe pela marca OU pelo modelo pesquisado.
+    """Valida um perfume árabe sem exigir a palavra 'perfume' no título.
 
-    Algumas publicações do Mercado Livre trazem somente o nome do modelo
-    no título (ex.: "Asad Eau de Parfum"), sem repetir "Lattafa". Por isso
-    não podemos exigir todas as palavras da consulta original.
+    O Mercado Livre possui muitos anúncios como:
+      - "Lattafa Asad 100ml"
+      - "Asad Eau de Parfum"
+      - "Khamrah 100ml"
+      - "Afnan 9PM"
+    Alguns deles não repetem a palavra "perfume" e alguns nem repetem a
+    marca. A validação antiga chamava _is_real_perfume() primeiro e, por isso,
+    esses anúncios eram descartados antes de chegar ao resultado.
+
+    Regra nova:
+      1) nunca aceita kit/decant/amostra/atacado etc.;
+      2) consulta específica de modelo: modelo no título já pode validar;
+      3) consulta de marca: exige marca + sinal de fragrância;
+      4) se o próprio título tiver sinal de fragrância, marca/modelo também
+         pode validar.
     """
-    if not _is_real_perfume(title):
-        return False
-
     title_norm = norm(title)
     query_norm = norm(query)
-    brand_match = any(norm(term) in title_norm for term in ARABIC_PERFUME_TERMS)
+
+    if not title_norm:
+        return False
+
+    # Exclusões duras para não publicar produto errado.
+    excluded = set(PERFUME_EXCLUDED_TERMS) | {
+        "decant", "decants", "amostra", "miniatura", "refil",
+        "contratipo", "contratipos", "atacado", "atacadista",
+        "revenda", "revendedor", "lote", "caixa fechada",
+        "distribuidor", "kit", "combo", "duo", "trio",
+        "conjunto", "pack",
+    }
+    if any(norm(term) in title_norm for term in excluded):
+        return False
+
+    # Não aceita múltiplas fragrâncias/unidades.
+    if re.search(r"\b\d+\s*[x×]\s*\d+", title_norm):
+        return False
+    if re.search(r"\b(?:2|3|4|5|6|10|12)\s*(?:unidades?|frascos?|perfumes?|un)\b", title_norm):
+        return False
+    if " + " in str(title or ""):
+        return False
 
     generic = {
         "perfume", "perfumes", "arabe", "arabes", "árabe", "árabes",
-        "eau", "parfum", "mais", "vendido", "vendidos", "vendida",
-        "vendidas", "procurado", "procurados", "procurada", "procuradas",
-        "alta", "importado", "nacional",
+        "eau", "de", "parfum", "parfums", "edp", "edt", "ml",
+        "mais", "vendido", "vendidos", "vendida", "vendidas",
+        "procurado", "procurados", "procurada", "procuradas",
+        "alta", "importado", "nacional", "masculino", "feminino",
+        "unissex", "original", "100ml", "50ml",
     }
+
     brand_words = set()
     for brand in ARABIC_PERFUME_TERMS:
         brand_words.update(norm(brand).split())
@@ -3361,11 +3476,26 @@ def _is_arabic_perfume_for_query(title, query=""):
         if len(x) >= 3 and x not in generic and x not in brand_words
     ]
 
-    # Para uma consulta específica (Lattafa Asad, Afnan 9PM, Khamrah etc.),
-    # basta o modelo aparecer no título. Para consulta genérica de marca, a
-    # própria marca já é suficiente.
+    brand_match = any(norm(term) in title_norm for term in ARABIC_PERFUME_TERMS)
     model_match = bool(query_terms) and any(x in title_norm for x in query_terms)
-    return bool(brand_match or model_match)
+
+    # Sinal de que o anúncio é realmente uma fragrância.
+    fragrance_signal = (
+        any(norm(term) in title_norm for term in PERFUME_POSITIVE_TERMS)
+        or bool(re.search(r"\b(?:edp|edt|edc)\b", title_norm))
+    )
+
+    # Consultas específicas de modelo são as mais seguras.
+    # Ex.: "Lattafa Asad" -> basta "Asad" aparecer.
+    if model_match and (brand_match or fragrance_signal or len(query_terms) >= 1):
+        return True
+
+    # Consultas de marca, como "Lattafa perfume", precisam de sinal de
+    # fragrância para não trazer cosméticos/acessórios da mesma marca.
+    if brand_match and fragrance_signal:
+        return True
+
+    return False
 
 
 def _direct_perfume_offer_from_listing(row, cat, position, query):
