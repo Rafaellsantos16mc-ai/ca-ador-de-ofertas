@@ -5438,9 +5438,6 @@ def ad_text(o, affiliate=""):
         marketing["emojis"],
     ]
 
-    if marketing.get("detail"):
-        lines.append(f"_{marketing['detail']}_")
-
     lines += [
         "",
         f"*{title}*",
@@ -5502,30 +5499,28 @@ def _save_generated_whatsapp_image(image_bytes, extension="png"):
 
 
 def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
-    """Prepara a foto original para chegar melhor no grupo do WhatsApp.
+    """Prepara a foto para o WhatsApp sem cortar nem deformar o produto.
 
-    Não cria uma arte, não coloca texto e não altera o produto.
-    Apenas:
+    V24: preserva 100% da imagem original do Mercado Livre.
       1) baixa a imagem original;
-      2) corrige orientação EXIF;
-      3) remove transparência problemática;
-      4) amplia imagens pequenas com Lanczos;
-      5) aplica contraste/cor/nitidez de forma leve;
-      6) salva em JPEG de alta qualidade;
-      7) devolve uma URL pública para o WhatsApp Bot.
+      2) corrige a orientação EXIF;
+      3) mantém a proporção original;
+      4) aumenta a resolução somente quando necessário;
+      5) aplica melhoria leve de qualidade/nitidez;
+      6) salva em JPEG de alta qualidade.
 
-    Se o processamento falhar, devolve a URL original para não bloquear a oferta.
+    NÃO faz crop, NÃO estica e NÃO cria uma arte por cima da foto.
+    Assim o produto inteiro continua visível quando a imagem chegar ao grupo.
     """
     source = str(image_url or "").strip()
     if not source:
         return ""
 
     if Image is None:
-        print("[IMAGEM MELHORADA] Pillow não instalado; usando original.")
+        print("[IMAGEM INTEIRA] Pillow não instalado; usando original.")
         return source
 
-    # Evita baixar/processar a mesma imagem várias vezes na mesma instância.
-    cache_key = source
+    cache_key = "v24-original-ratio:" + source
     cached = _WHATSAPP_IMAGE_ENHANCE_CACHE.get(cache_key)
     if cached:
         return cached
@@ -5550,10 +5545,8 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
         from io import BytesIO
 
         with Image.open(BytesIO(raw)) as original:
-            # Corrige fotos que chegam giradas por EXIF.
             img = ImageOps.exif_transpose(original)
 
-            # Trabalha em RGB para o JPEG final.
             if img.mode in ("RGBA", "LA"):
                 background = Image.new("RGB", img.size, (255, 255, 255))
                 alpha = img.getchannel("A")
@@ -5562,45 +5555,37 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
             else:
                 img = img.convert("RGB")
 
-            width, height = img.size
-            if width < 300 or height < 300:
-                print(f"[IMAGEM MELHORADA] resolução muito baixa: {width}x{height}")
+            original_width, original_height = img.size
 
-            # WhatsApp lida melhor com uma imagem suficientemente grande.
-            # Mantemos a proporção e não fazemos crop do produto.
-            max_side = 1600
-            min_target_side = 1200
+            # SEM CROP: a proporção original da foto é preservada.
+            # Só aumentamos/reduzimos a resolução para uma dimensão adequada
+            # ao WhatsApp, sem cortar nenhuma parte do produto.
+            MAX_LONGEST = 1800
+            MIN_LONGEST = 1400
+            longest = max(img.width, img.height)
 
-            longest = max(width, height)
-            if longest < min_target_side:
-                scale = min_target_side / max(1, longest)
-                new_size = (
-                    max(1, int(round(width * scale))),
-                    max(1, int(round(height * scale))),
-                )
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            if longest < MIN_LONGEST:
+                scale = MIN_LONGEST / max(1, longest)
+                new_w = max(1, int(round(img.width * scale)))
+                new_h = max(1, int(round(img.height * scale)))
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            elif longest > MAX_LONGEST:
+                scale = MAX_LONGEST / max(1, longest)
+                new_w = max(1, int(round(img.width * scale)))
+                new_h = max(1, int(round(img.height * scale)))
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            # Se a imagem original for gigantesca, reduz para evitar arquivo
-            # pesado e compressão agressiva do WhatsApp.
-            if max(img.size) > max_side:
-                scale = max_side / max(img.size)
-                new_size = (
-                    max(1, int(round(img.width * scale))),
-                    max(1, int(round(img.height * scale))),
-                )
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-            # Melhoria leve: queremos nitidez, não uma imagem artificial.
-            img = ImageEnhance.Contrast(img).enhance(1.04)
-            img = ImageEnhance.Color(img).enhance(1.03)
-            img = ImageEnhance.Sharpness(img).enhance(1.18)
-            img = img.filter(ImageFilter.UnsharpMask(radius=1.1, percent=105, threshold=3))
+            # Melhoria leve: mais definição sem deixar a foto artificial.
+            img = ImageEnhance.Contrast(img).enhance(1.03)
+            img = ImageEnhance.Color(img).enhance(1.02)
+            img = ImageEnhance.Sharpness(img).enhance(1.12)
+            img = img.filter(ImageFilter.UnsharpMask(radius=0.8, percent=85, threshold=2))
 
             output = BytesIO()
             img.save(
                 output,
                 format="JPEG",
-                quality=94,
+                quality=98,
                 optimize=True,
                 progressive=True,
                 subsampling=0,
@@ -5613,14 +5598,14 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
 
         _WHATSAPP_IMAGE_ENHANCE_CACHE[cache_key] = prepared_url
         print(
-            "[IMAGEM MELHORADA] OK:",
-            f"{width}x{height} -> {img.width}x{img.height}",
+            "[IMAGEM INTEIRA] OK:",
+            f"{original_width}x{original_height} -> {img.width}x{img.height} (sem crop)",
             prepared_url,
         )
         return prepared_url
 
     except Exception as exc:
-        print("[IMAGEM MELHORADA] falhou; usando original:", repr(exc))
+        print("[IMAGEM INTEIRA] falhou; usando original:", repr(exc))
         return source
 
 
