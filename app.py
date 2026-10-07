@@ -4008,6 +4008,7 @@ def ad_text(o, affiliate=""):
         f"*{marketing.upper()}*",
         "",
         f"*{title}*",
+        "",
     ]
 
     if o.get("original_price"):
@@ -4024,7 +4025,7 @@ def ad_text(o, affiliate=""):
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    lines += ["", "*PEGAR PROMOÇÃO*", "", link]
+    lines += ["*🔥 PEGAR PROMOÇÃO*", "", link]
 
     return "\n".join(lines)
 
