@@ -2539,49 +2539,64 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_real_listings(q, limit=80):
-    """Busca perfumes árabes priorizando PUBLICAÇÕES ITEM reais.
+    """Descobre publicações reais de perfumes árabes sem depender do catálogo.
 
-    Ordem da descoberta:
-      1) Highlights da categoria de perfumes: quando o Mercado Livre
-         devolver TYPE=ITEM, já temos uma publicação real e ela é usada
-         diretamente.
-      2) /products/search para localizar produtos de catálogo do modelo.
-      3) /products/{id}/items e buy_box_winner para converter catálogo em
-         publicação ITEM real.
+    O problema da versão anterior era estrutural: /products/search devolvia
+    30 candidatos, mas depois cada candidato precisava de /products/{id},
+    /products/{id}/items ou buy_box. Para perfumes isso frequentemente não
+    entregava ITEM real e ainda multiplicava as chamadas até provocar HTTP 429.
 
-    Nunca devolve /p/MLB... como item. O objetivo é deixar perfume com o
-    mesmo tipo de publicação que as demais categorias usam no gerador.
+    Nova ordem:
+      1) busca pública do Mercado Livre -> extrai MLB reais;
+      2) confirma cada MLB em /items/{id};
+      3) somente se a busca pública não trouxer nada, usa /products/search
+         como fallback.
+
+    Nunca retorna /p/MLB... e nunca passa catálogo para o gerador de afiliado.
     """
     query = str(q or "").strip()
-    limit = min(max(int(limit or 80), 1), 80)
+    limit = min(max(int(limit or 30), 1), 30)
+    if not query:
+        return []
+
+    # Primeiro caminho: página pública. Ela já representa anúncios reais e
+    # evita o funil catálogo -> buy box -> items que estava zerando os árabes.
+    try:
+        public_rows = _search_perfume_public_fallback(query, limit=limit)
+    except Exception as exc:
+        public_rows = []
+        print("[ARABES PUBLICO]", query, repr(exc))
+
+    if public_rows:
+        print(f"[ARABES ITEM REAL] {query} -> {len(public_rows)} anúncios (busca pública)")
+        return public_rows[:limit]
+
+    # Segundo caminho: fallback de catálogo. É deliberadamente limitado para
+    # não transformar uma única pesquisa em dezenas de chamadas HTTP.
     listings = []
     seen_items = set()
 
-    def add_real_item(item_id, fallback_title="", fallback_product=None, position=99):
+    def add_real_item(item_id, fallback_title="", fallback_product=None):
         iid = str(item_id or "").strip().upper()
         if not re.fullmatch(r"MLB\d+", iid) or iid in seen_items:
             return
-
-        data, status, _ = ml_get(f"/items/{iid}")
+        try:
+            data, status, _ = ml_get(f"/items/{iid}")
+        except Exception as exc:
+            print("[ARABES ITEM]", iid, repr(exc))
+            return
         if status != 200 or not isinstance(data, dict):
             return
 
         title = str(data.get("title") or fallback_title or "").strip()
-        if not title:
-            return
-
-        price = data.get("price")
-        if price is None:
-            price = data.get("sale_price")
-        try:
-            price = float(price) if price is not None else None
-        except Exception:
-            price = None
-        if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
-            return
-
         permalink = str(data.get("permalink") or "").strip()
-        if not permalink or _is_catalog_permalink(permalink):
+        if not title or not permalink or _is_catalog_permalink(permalink):
+            return
+        try:
+            price = float(data.get("price") or data.get("sale_price") or 0)
+        except Exception:
+            price = 0
+        if price < MIN_PRODUCT_PRICE or price > 100000:
             return
 
         shipping = data.get("shipping") or {}
@@ -2590,16 +2605,12 @@ def _search_arabic_real_listings(q, limit=80):
         seller = data.get("seller") or {}
         if not isinstance(seller, dict):
             seller = {}
-
         pictures = data.get("pictures") or []
         thumbnail = str(data.get("thumbnail") or "").strip()
         if not thumbnail and pictures and isinstance(pictures[0], dict):
             thumbnail = str(
-                pictures[0].get("secure_url")
-                or pictures[0].get("url")
-                or pictures[0].get("secure_thumbnail")
-                or pictures[0].get("thumbnail")
-                or ""
+                pictures[0].get("secure_url") or pictures[0].get("url") or
+                pictures[0].get("secure_thumbnail") or pictures[0].get("thumbnail") or ""
             ).strip()
 
         listings.append({
@@ -2618,144 +2629,138 @@ def _search_arabic_real_listings(q, limit=80):
             "shipping": shipping,
             "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
             "logistic_type": shipping.get("logistic_type") or data.get("logistic_type"),
-            "condition": data.get("condition") or data.get("item_condition") or "new",
-            "highlight_position": position,
+            "condition": data.get("condition") or "new",
+            "highlight_position": len(listings) + 1,
         })
         seen_items.add(iid)
 
-    # ------------------------------------------------------------
-    # 1) MAIS VENDIDOS DE PERFUMES -> ITEM REAL
-    # ------------------------------------------------------------
-    perfume_category_id = BEST_SELLER_CATEGORY_IDS.get("🌸 Perfumes")
-    if perfume_category_id:
-        try:
-            ranking = highlights(perfume_category_id) or []
-        except Exception as exc:
-            ranking = []
-            print("[ARABES HIGHLIGHTS]", repr(exc))
-
-        for position, row in enumerate(ranking, start=1):
-            if not isinstance(row, dict):
-                continue
-            rid = str(row.get("id") or "").strip().upper()
-            rtype = str(row.get("type") or "").upper().strip()
-            if not rid:
-                continue
-
-            # O próprio Mercado Livre documenta que highlights pode devolver
-            # ITEM (publicação), PRODUCT (catálogo) ou USER_PRODUCT.
-            if rtype == "ITEM" and re.fullmatch(r"MLB\d+", rid):
-                add_real_item(rid, position=position)
-                if len(listings) >= limit:
-                    break
-
-    # ------------------------------------------------------------
-    # 2) BUSCA POR MODELO -> PRODUTO DE CATÁLOGO -> ITEM REAL
-    # ------------------------------------------------------------
-    if len(listings) < limit:
-        products = search_products_direct(query, limit=min(30, limit))
-    else:
+    try:
+        products = search_products_direct(query, limit=min(10, limit))
+    except Exception as exc:
+        print("[ARABES CATALOGO]", query, repr(exc))
         products = []
 
     for product_row in products:
+        if len(listings) >= limit:
+            break
         if not isinstance(product_row, dict):
             continue
         pid = str(product_row.get("id") or product_row.get("product_id") or "").strip()
         if not pid:
             continue
 
-        # Se a própria busca já trouxer buy box, aproveita.
+        # Buy box presente no resultado.
         bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
-        bb_candidates = [bb] if isinstance(bb, dict) else []
-
-        # Detalhe do produto pode trazer o buy_box_winner com ITEM real.
-        if not bb_candidates:
-            try:
-                detail = product(pid)
-            except Exception as exc:
-                detail = None
-                print("[ARABES PRODUTO DETALHE]", pid, repr(exc))
-            if isinstance(detail, dict):
-                dbb = detail.get("buy_box_winner") or detail.get("buy_box")
-                if isinstance(dbb, dict):
-                    bb_candidates.append(dbb)
-
-        for candidate in bb_candidates:
-            if not isinstance(candidate, dict):
-                continue
-            iid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
+        if isinstance(bb, dict):
+            iid = str(bb.get("item_id") or bb.get("id") or "").strip().upper()
             if re.fullmatch(r"MLB\d+", iid) and iid != pid:
-                add_real_item(iid, fallback_title=product_row.get("title") or product_row.get("name") or "", fallback_product=product_row)
-                if len(listings) >= limit:
-                    break
+                add_real_item(iid, product_row.get("title") or product_row.get("name") or "", product_row)
 
         if len(listings) >= limit:
             break
 
-        # Publicações vinculadas ao produto.
+        # Detalhe do catálogo, somente se necessário.
+        try:
+            detail = product(pid)
+        except Exception as exc:
+            detail = None
+            print("[ARABES PRODUTO DETALHE]", pid, repr(exc))
+        if isinstance(detail, dict):
+            dbb = detail.get("buy_box_winner") or detail.get("buy_box")
+            if isinstance(dbb, dict):
+                iid = str(dbb.get("item_id") or dbb.get("id") or "").strip().upper()
+                if re.fullmatch(r"MLB\d+", iid) and iid != pid:
+                    add_real_item(iid, product_row.get("title") or product_row.get("name") or "", product_row)
+
+        if len(listings) >= limit:
+            break
+
+        # Publicações associadas ao catálogo.
         try:
             items = product_items(pid) or []
         except Exception as exc:
             items = []
             print("[ARABES ITEMS]", pid, repr(exc))
-
         for item in items:
+            if len(listings) >= limit:
+                break
             if not isinstance(item, dict):
                 continue
             iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
             if re.fullmatch(r"MLB\d+", iid):
-                add_real_item(
-                    iid,
-                    fallback_title=item.get("title") or product_row.get("title") or product_row.get("name") or "",
-                    fallback_product=product_row,
-                )
-            if len(listings) >= limit:
-                break
+                add_real_item(iid, item.get("title") or product_row.get("title") or "", product_row)
 
-        if len(listings) >= limit:
-            break
+    print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios (fallback catálogo)")
+    return listings[:limit]
 
-    print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios")
-    return listings
+_PUBLIC_PERFUME_CACHE = {}
+_PUBLIC_PERFUME_CACHE_LOCK = threading.Lock()
 
 
 def _search_perfume_public_fallback(q, limit=20):
-    """Fallback de descoberta de perfumes usando a página pública de busca.
+    """Descobre ITEMs reais pela página pública do Mercado Livre.
 
-    O catálogo /products/search pode localizar o produto, mas nem sempre
-    expõe uma publicação ITEM para perfumes. Quando isso acontecer, usamos
-    somente a página pública do Mercado Livre para descobrir IDs MLB reais e
-    depois confirmamos cada ID pelo endpoint /items/{id}. Nenhuma URL de
-    catálogo /p/MLB... entra no resultado.
+    Tem cache curto em memória e tratamento de 429 para evitar que 35 nichos
+    consecutivos derrubem a busca inteira. A função só devolve IDs MLB reais.
     """
     query = str(q or "").strip()
     if not query:
         return []
 
+    cache_key = norm(query)
+    with _PUBLIC_PERFUME_CACHE_LOCK:
+        cached = _PUBLIC_PERFUME_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)[:int(limit or 20)]
+
     url = "https://lista.mercadolivre.com.br/" + quote(query.replace(" ", "-"))
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9",
+        "Cache-Control": "no-cache",
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        if r.status_code != 200:
-            print("[PERFUMES FALLBACK PUBLICO] HTTP", r.status_code, query)
-            return []
-        page = r.text or ""
-    except Exception as exc:
-        print("[PERFUMES FALLBACK PUBLICO] erro", query, repr(exc))
+
+    page = ""
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=headers, timeout=18, allow_redirects=True)
+            if r.status_code == 429:
+                wait = min(3, max(0.5, float(r.headers.get("Retry-After") or 1)))
+                print(f"[PERFUMES FALLBACK PUBLICO] HTTP 429 {query} - aguardando {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            if r.status_code != 200:
+                print("[PERFUMES FALLBACK PUBLICO] HTTP", r.status_code, query)
+                break
+            page = r.text or ""
+            break
+        except Exception as exc:
+            print("[PERFUMES FALLBACK PUBLICO] erro", query, repr(exc))
+            if attempt < 2:
+                time.sleep(0.6)
+
+    if not page:
+        with _PUBLIC_PERFUME_CACHE_LOCK:
+            _PUBLIC_PERFUME_CACHE[cache_key] = []
         return []
 
     ids = []
     seen = set()
-    # A página pública pode trazer MLB123..., MLB-123... ou URLs completas.
-    for match in re.finditer(r"(?:MLB[-_]?)(\d{6,})", page, re.I):
-        iid = "MLB" + match.group(1)
-        if iid not in seen:
-            seen.add(iid)
-            ids.append(iid)
-        if len(ids) >= max(30, int(limit or 20) * 3):
+    patterns = (
+        r"(?:MLB[-_]?)(\d{6,})",
+        r"(?:wid|item_id|itemId|item-id)[\"'=:\s]+(?:MLB[-_]?)(\d{6,})",
+        r"/MLB[-_]?(\d{6,})(?:[/?#\"'])",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, page, re.I):
+            iid = "MLB" + match.group(1)
+            if iid not in seen:
+                seen.add(iid)
+                ids.append(iid)
+            if len(ids) >= max(40, int(limit or 20) * 3):
+                break
+        if len(ids) >= max(40, int(limit or 20) * 3):
             break
 
     out = []
@@ -2769,32 +2774,34 @@ def _search_perfume_public_fallback(q, limit=20):
             continue
         if status != 200 or not isinstance(data, dict):
             continue
+
         permalink = str(data.get("permalink") or "").strip()
         if not permalink or _is_catalog_permalink(permalink):
             continue
         title = str(data.get("title") or "").strip()
         if not title:
             continue
-        price = data.get("price")
         try:
-            price = float(price) if price is not None else None
+            price = float(data.get("price") or data.get("sale_price") or 0)
         except Exception:
-            price = None
-        if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+            price = 0
+        if price < MIN_PRODUCT_PRICE or price > 100000:
             continue
+
         shipping = data.get("shipping") or {}
         if not isinstance(shipping, dict):
             shipping = {}
+        seller = data.get("seller") or {}
+        if not isinstance(seller, dict):
+            seller = {}
         pictures = data.get("pictures") or []
         thumbnail = str(data.get("thumbnail") or "").strip()
         if not thumbnail and pictures and isinstance(pictures[0], dict):
             thumbnail = str(
-                pictures[0].get("secure_url")
-                or pictures[0].get("url")
-                or pictures[0].get("secure_thumbnail")
-                or pictures[0].get("thumbnail")
-                or ""
+                pictures[0].get("secure_url") or pictures[0].get("url") or
+                pictures[0].get("secure_thumbnail") or pictures[0].get("thumbnail") or ""
             ).strip()
+
         out.append({
             "id": iid,
             "item_id": iid,
@@ -2806,15 +2813,18 @@ def _search_perfume_public_fallback(q, limit=20):
             "pictures": pictures,
             "price": price,
             "original_price": data.get("original_price") or data.get("base_price"),
-            "seller_id": data.get("seller_id") or ((data.get("seller") or {}).get("id") if isinstance(data.get("seller"), dict) else None),
+            "seller_id": data.get("seller_id") or seller.get("id"),
             "sold_quantity": data.get("sold_quantity") or 0,
             "shipping": shipping,
             "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
             "condition": data.get("condition") or "new",
             "highlight_position": pos,
         })
+
+    with _PUBLIC_PERFUME_CACHE_LOCK:
+        _PUBLIC_PERFUME_CACHE[cache_key] = list(out)
     print(f"[PERFUMES FALLBACK PUBLICO] {query} -> {len(out)} ITEMs reais")
-    return out
+    return out[:int(limit or 20)]
 
 def _search_arabic_perfumes(fast=False):
     """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
