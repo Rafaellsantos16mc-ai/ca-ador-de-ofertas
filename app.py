@@ -87,6 +87,32 @@ COUPON_SOURCE_URLS = [
     "https://www.mercadolivre.com.br/l/descontaco-cupons",
     "https://www.mercadolivre.com.br/ofertas/cupons",
 ]
+
+# Fontes públicas de parceiros/curadores que divulgam cupons amplos
+# usados em anúncios como "Cupom: MELIBAIXOU". Servem para descobrir
+# códigos de campanha; a aplicação continua condicionada às regras.
+AFFILIATE_COUPON_SOURCE_URLS = [
+    "https://www.descontosml.com/cupons",
+    "https://baixoubonito.com.br/cupons/mercado-livre",
+    "https://www.meliuz.com.br/desconto/cupom-desconto-mercado-livre",
+]
+
+# Principais termos das páginas de exclusão informadas pelo Mercado Livre
+# para cupons divulgados por afiliados.
+AFFILIATE_COUPON_BLOCKLIST_TERMS = (
+    "puma", "pandora", "mizuno", "dream fitness", "nike", "natura",
+    "decathlon", "casas bahia", "olympikus", "under armour", "wct fitness",
+    "converse", "pampers", "hp", "max titanium", "probiotica", "epay",
+    "anker", "assai", "sony", "nespresso", "principia", "rockstar games",
+    "stanley", "dewalt", "black & decker", "growth", "web continental",
+    "krw bikes", "ogm bikes", "south bikes", "menegotti", "deca", "esab",
+    "vonder", "razr", "tork tools", "nintendo", "playstation", "xbox",
+    "steam", "spotify", "uber", "roblox", "level up", "fragrances",
+    "fragrance",
+)
+
+AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
+AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
 MIN_PRODUCT_PRICE = 69.90
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
@@ -1434,7 +1460,7 @@ def get_public_coupon_cards_cached(ttl=600):
     return list(cards or [])
 
 
-def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=None, allow_fallback=True):
+def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=None, allow_fallback=True, preferred_code=None):
     """Escolhe somente cupons com associação pública ao produto.
 
     IMPORTANTE: não aplicamos mais um cupom genérico só porque o preço
@@ -1449,7 +1475,26 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
     if not public_cards:
         return None
 
-    matched = match_public_coupon(title, price, public_cards, item_id, permalink=permalink, allow_fallback=allow_fallback)
+    candidates = match_public_coupons(title, price, public_cards)
+    matched = None
+    preferred = str(preferred_code or "").strip().upper()
+    if preferred:
+        for candidate in candidates:
+            code = str(candidate.get("code") or candidate.get("label") or "").strip().upper()
+            if code == preferred:
+                matched = candidate
+                break
+    if matched is None and candidates:
+        matched = max(candidates, key=lambda x: (
+            float(x.get("desconto_estimado") or 0),
+            float(x.get("match_score") or 0),
+        ))
+
+    # Se os cards públicos não trouxeram o produto, mantém o fallback já
+    # existente, mas somente para esse produto específico. Nunca transforma
+    # o fallback em cupom universal.
+    if matched is None and allow_fallback:
+        matched = match_public_coupon(title, price, public_cards, item_id, permalink=permalink, allow_fallback=True)
     if not matched:
         return None
 
@@ -1725,6 +1770,133 @@ PUBLIC_PRODUCT_COUPON_CACHE = {}
 PUBLIC_PRODUCT_COUPON_LOCK = threading.Lock()
 
 
+def _looks_like_affiliate_coupon_code(code):
+    """Aceita códigos como MELIBAIXOU, inclusive códigos só com letras."""
+    code = re.sub(r"[^A-Z0-9_-]", "", str(code or "").upper())
+    if not re.fullmatch(r"[A-Z][A-Z0-9_-]{5,29}", code):
+        return False
+    bad = {
+        "MERCADOLIVRE", "MERCADOLIVREBR", "CUPOMVALIDO", "DESCONTO",
+        "COPIAR", "VERCUPOM", "CUPOMMERCADOLIVRE", "NOVOCUPOM",
+        "CUPOMATIVO", "ATIVAR", "APROVEITE", "OFERTADODIA",
+    }
+    return code not in bad
+
+
+def _extract_affiliate_coupon_catalog_from_text(text, source_url):
+    """Extrai códigos de cupom de parceiros e as regras próximas ao código."""
+    clean = normalize_coupon_html(text or "")
+    flat = re.sub(r"\s+", " ", html_lib.unescape(clean)).strip()
+    found = {}
+    patterns = [
+        r"(?:cupom|c[oó]digo(?:\s+promocional)?|use(?:\s+o)?|utilize(?:\s+o)?)\s*[:\-]?\s*[`\[]?([A-Z][A-Z0-9_-]{5,29})",
+        r"[\[`]([A-Z][A-Z0-9_-]{7,29})[\]`](?=\s*(?:copiar|ver|usar|ir))",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, flat, re.I):
+            code = str(m.group(1) or "").strip().upper()
+            if not _looks_like_affiliate_coupon_code(code):
+                continue
+            context = flat[max(0, m.start()-700):min(len(flat), m.end()+900)]
+            if not re.search(r"%\s*(?:OFF|de desconto)|R\$\s*[\d\.]+(?:,[\d]{2})?\s*(?:OFF|de desconto)|desconto", context, re.I):
+                continue
+            parsed = parse_coupon_block(code, context, source_url)
+            if not (parsed.get("discount_percent") or parsed.get("fixed_discount")):
+                continue
+            parsed["source_type"] = "parceiro_afiliado"
+            parsed["source_verified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            parsed["discovery_context"] = context[:2200]
+            old = found.get(code)
+            if old is None:
+                found[code] = parsed
+            else:
+                old_score = sum(1 for k in ("discount_percent", "fixed_discount", "min_purchase", "max_discount", "usage_limit") if old.get(k))
+                new_score = sum(1 for k in ("discount_percent", "fixed_discount", "min_purchase", "max_discount", "usage_limit") if parsed.get(k))
+                if new_score > old_score or len(parsed.get("conditions", "")) > len(old.get("conditions", "")):
+                    found[code] = parsed
+    return list(found.values())
+
+
+def get_affiliate_coupon_catalog_cached(ttl=900):
+    """Busca códigos de parceiros a cada 15 minutos."""
+    now = time.time()
+    with AFFILIATE_COUPON_CACHE_LOCK:
+        if now - float(AFFILIATE_COUPON_CACHE.get("at") or 0) < ttl:
+            return list(AFFILIATE_COUPON_CACHE.get("coupons") or [])
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    by_code = {}
+    for url in AFFILIATE_COUPON_SOURCE_URLS:
+        try:
+            r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            if r.status_code != 200:
+                print("[CUPONS AFILIADOS]", url, "HTTP", r.status_code)
+                continue
+            found = _extract_affiliate_coupon_catalog_from_text(r.text, r.url or url)
+            print("[CUPONS AFILIADOS]", url, "codes=", len(found))
+            for c in found:
+                code = str(c.get("code") or "").strip().upper()
+                if not code:
+                    continue
+                if code not in by_code:
+                    c["source_count"] = 1
+                    by_code[code] = c
+                else:
+                    by_code[code]["source_count"] = int(by_code[code].get("source_count") or 1) + 1
+                    old = by_code[code]
+                    old_score = (float(old.get("discount_percent") or 0), float(old.get("max_discount") or 0), -float(old.get("min_purchase") or 0))
+                    new_score = (float(c.get("discount_percent") or 0), float(c.get("max_discount") or 0), -float(c.get("min_purchase") or 0))
+                    if new_score > old_score:
+                        c["source_count"] = old["source_count"]
+                        by_code[code] = c
+        except Exception as exc:
+            print("[CUPONS AFILIADOS] ERRO", url, repr(exc))
+    out = list(by_code.values())
+    out.sort(key=lambda x: (-int(x.get("source_count") or 0), -float(x.get("discount_percent") or 0), -float(x.get("max_discount") or 0), float(x.get("min_purchase") or 0)))
+    with AFFILIATE_COUPON_CACHE_LOCK:
+        AFFILIATE_COUPON_CACHE["at"] = time.time()
+        AFFILIATE_COUPON_CACHE["coupons"] = list(out)
+    print("[CUPONS AFILIADOS] TOTAL CÓDIGOS:", len(out))
+    for c in out[:20]:
+        print(f"[CUPOM AFILIADO] {c.get('code')} | {c.get('discount_percent') or 0}% | mín R$ {float(c.get('min_purchase') or 0):.2f} | máx R$ {float(c.get('max_discount') or 0):.2f} | fontes={c.get('source_count') or 1}")
+    return out
+
+
+def _affiliate_coupon_allowed_for_offer(coupon, offer):
+    """Valida preço e exclusões conhecidas antes de sugerir cupom amplo."""
+    title = norm(offer.get("title") or "")
+    category = norm(offer.get("category_name") or "")
+    # A página oficial informa exclusão de fragrâncias para cupons divulgados
+    # por afiliados; portanto não forçamos esses cupons em perfumes.
+    if "perfume" in category or "fragrance" in category or any(x in title for x in ("perfume", "parfum", "eau de parfum", "eau de toilette", "body splash", "body mist")):
+        return False
+    if any(term in title for term in AFFILIATE_COUPON_BLOCKLIST_TERMS):
+        return False
+    return coupon_discount(coupon, float(offer.get("price") or 0)) > 0
+
+
+def choose_broad_affiliate_coupon_for_offer(offer, catalog):
+    candidates = []
+    for coupon in catalog or []:
+        if not _affiliate_coupon_allowed_for_offer(coupon, offer):
+            continue
+        d = coupon_discount(coupon, float(offer.get("price") or 0))
+        if d <= 0:
+            continue
+        x = dict(coupon)
+        x["desconto_estimado"] = round(d, 2)
+        x["preco_base_produto"] = round(float(offer.get("price") or 0), 2)
+        x["preco_final_estimado"] = round(float(offer.get("price") or 0) - d, 2)
+        x["percentual_efetivo"] = round((d / float(offer.get("price") or 1)) * 100, 2)
+        x["match_type"] = "cupom_afiliado_amplo"
+        candidates.append(x)
+    return max(candidates, key=lambda x: (int(x.get("source_count") or 0), float(x.get("desconto_estimado") or 0), float(x.get("discount_percent") or 0), -float(x.get("min_purchase") or 0)), default=None)
+
+
+
 def _search_public_listing_for_coupon(title, price, item_id=None, permalink=None):
     """Fallback por busca/anúncio público do Mercado Livre.
 
@@ -1868,6 +2040,94 @@ def title_similarity(a, b):
 
 
 STOP_WORDS = {"de","da","do","das","dos","com","para","por","e","em","no","na","um","uma","original","novo","oficial"}
+
+
+def match_public_coupons(title, price, cards):
+    """Retorna TODOS os cupons publicamente associados ao produto.
+
+    Diferente de match_public_coupon(), esta função não para no primeiro/
+    melhor cupom. Ela é usada para descobrir qual código possui a maior
+    cobertura real entre as ofertas da rodada, sem transformar um cupom
+    genérico em cupom universal.
+    """
+    try:
+        target_price = float(price)
+    except Exception:
+        target_price = 0.0
+    if target_price <= 0:
+        return []
+
+    generic = {
+        "perfume", "parfum", "eau", "de", "toilette", "fragrance",
+        "original", "novo", "oficial", "kit", "com", "para", "masculino",
+        "feminino", "unissex", "produto", "promocao", "oferta", "ml",
+        "un", "unidade", "cor", "tamanho", "modelo", "premium"
+    }
+
+    target_tokens = [x for x in norm(title).split()
+                     if len(x) >= 3 and x not in generic and x not in STOP_WORDS]
+    target_set = set(target_tokens)
+    by_code = {}
+
+    for card in cards or []:
+        try:
+            card_price = float(card.get("price") or 0)
+        except Exception:
+            continue
+        if card_price <= 0:
+            continue
+
+        card_title = str(card.get("title") or "")
+        card_tokens = {x for x in norm(card_title).split()
+                       if len(x) >= 3 and x not in generic and x not in STOP_WORDS}
+        common = target_set & card_tokens
+        sim = float(title_similarity(title, card_title))
+        price_diff_pct = abs(target_price - card_price) / max(target_price, 1.0)
+
+        if not common:
+            continue
+        if len(target_set) <= 2 and len(common) < 2 and sim < 0.80:
+            continue
+        if price_diff_pct <= 0.08:
+            price_bonus = 0.25
+        elif price_diff_pct <= 0.18:
+            price_bonus = 0.16
+        elif price_diff_pct <= 0.30:
+            price_bonus = 0.08
+        else:
+            continue
+
+        score = sim + min(0.20, len(common) * 0.04) + price_bonus
+        if sim < 0.72 or price_diff_pct > 0.30:
+            continue
+
+        coupon = dict(card.get("coupon") or {})
+        code = str(coupon.get("code") or coupon.get("label") or "").strip().upper()
+        if not code:
+            continue
+        d = calculate_public_coupon(coupon, target_price)
+        if d <= 0:
+            continue
+
+        candidate = dict(coupon)
+        candidate["desconto_estimado"] = d
+        candidate["preco_base_produto"] = round(target_price, 2)
+        candidate["preco_final_estimado"] = round(target_price - d, 2)
+        candidate["percentual_efetivo"] = round((d / target_price) * 100, 2)
+        candidate["match_type"] = "produto_publico"
+        candidate["match_score"] = round(score, 3)
+        candidate["public_title"] = card_title
+        candidate["public_price"] = card_price
+        candidate["source_url"] = card.get("source_url") or coupon.get("source_url")
+
+        old = by_code.get(code)
+        if old is None or (candidate["match_score"], candidate["desconto_estimado"]) > (old["match_score"], old["desconto_estimado"]):
+            by_code[code] = candidate
+
+    return sorted(by_code.values(), key=lambda x: (
+        -float(x.get("match_score") or 0),
+        -float(x.get("desconto_estimado") or 0),
+    ))
 
 
 def match_public_coupon(title, price, cards, item_id=None, permalink=None, allow_fallback=True):
@@ -4340,41 +4600,143 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     if apply_coupons and flat:
         public_cards = get_public_coupon_cards_cached()
+        affiliate_coupon_catalog = get_affiliate_coupon_catalog_cached()
         coupon_count = 0
         coupon_limit_count = 0
         best_coupon_discount = 0.0
         best_coupon_price = None
+        coupon_coverage = {}
+        offer_coupon_candidates = {}
 
-        def _coupon_for_offer(o):
-            return o, choose_best_coupon(
+        # PRIMEIRO PASSO: descobre todos os cupons realmente associados a cada
+        # oferta. Assim conseguimos escolher um código que tenha boa cobertura
+        # entre os produtos da rodada, em vez de escolher um código diferente
+        # para cada produto.
+        for o in flat:
+            candidates_for_offer = match_public_coupons(
                 o.get("title") or "",
                 o.get("price") or 0,
-                public_cards=public_cards,
-                item_id=o.get("item_id"),
-                permalink=o.get("permalink"),
-                allow_fallback=True,
+                public_cards,
             )
+            offer_key = str(o.get("item_id") or o.get("product_id") or id(o))
+            offer_coupon_candidates[offer_key] = candidates_for_offer
+            for cup in candidates_for_offer:
+                code = str(cup.get("code") or cup.get("label") or "").strip().upper()
+                if not code:
+                    continue
+                coupon_coverage.setdefault(code, {
+                    "count": 0,
+                    "coupon": cup,
+                    "products": [],
+                })
+                coupon_coverage[code]["count"] += 1
+                coupon_coverage[code]["products"].append(offer_key)
 
-        coupon_results = []
-        try:
-            with _ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(_coupon_for_offer, o) for o in flat]
-                for future in as_completed(futures):
-                    try:
-                        coupon_results.append(future.result())
-                    except Exception as exc:
-                        print("[CUPOM PRODUTO] erro no fallback:", repr(exc))
-        except Exception:
-            coupon_results = [_coupon_for_offer(o) for o in flat]
+        # SEGUNDO CAMINHO: cupons amplos divulgados por parceiros de Afiliados.
+        broad_coupon_coverage = {}
+        broad_coupon_for_offer = {}
+        for o in flat:
+            offer_key = str(o.get("item_id") or o.get("product_id") or id(o))
+            broad = choose_broad_affiliate_coupon_for_offer(o, affiliate_coupon_catalog)
+            if not broad:
+                continue
+            broad_coupon_for_offer[offer_key] = broad
+            code = str(broad.get("code") or "").strip().upper()
+            if not code:
+                continue
+            broad_coupon_coverage.setdefault(code, {"count": 0, "coupon": broad, "products": []})
+            broad_coupon_coverage[code]["count"] += 1
+            broad_coupon_coverage[code]["products"].append(offer_key)
 
-        for o, cup in coupon_results:
+        # O cupom principal é escolhido por COBERTURA real entre as ofertas.
+        dominant_code = None
+        dominant_info = None
+        dominant_type = None
+        combined_coverage = {}
+        for code, info in coupon_coverage.items():
+            combined_coverage[code] = dict(info)
+            combined_coverage[code]["kind"] = "produto_publico"
+        for code, info in broad_coupon_coverage.items():
+            current = combined_coverage.get(code)
+            if current is None or int(info.get("count") or 0) > int(current.get("count") or 0):
+                combined_coverage[code] = dict(info)
+                combined_coverage[code]["kind"] = "cupom_afiliado_amplo"
+
+        if combined_coverage:
+            dominant_code, dominant_info = max(
+                combined_coverage.items(),
+                key=lambda kv: (
+                    int(kv[1].get("count") or 0),
+                    1 if kv[1].get("kind") == "cupom_afiliado_amplo" else 0,
+                    int(kv[1].get("coupon", {}).get("source_count") or 0),
+                    float(kv[1].get("coupon", {}).get("desconto_estimado") or 0),
+                ),
+            )
+            if int(dominant_info.get("count") or 0) < 3:
+                dominant_code = None
+                dominant_info = None
+            else:
+                dominant_type = dominant_info.get("kind")
+
+        if dominant_code:
+            print(
+                f"[CUPOM COBERTURA] principal={dominant_code} "
+                f"-> {dominant_info['count']}/{len(flat)} ofertas elegíveis"
+            )
+        else:
+            print("[CUPOM COBERTURA] Nenhum código atingiu cobertura mínima de 3 ofertas; mantendo cupons individuais.")
+
+        # SEGUNDO PASSO: se o cupom principal é elegível para aquele produto,
+        # ele ganha prioridade. Caso contrário, usamos o melhor cupom daquele
+        # produto. Nunca aplicamos o principal onde não existe associação.
+        for o in flat:
+            offer_key = str(o.get("item_id") or o.get("product_id") or id(o))
+            candidates_for_offer = offer_coupon_candidates.get(offer_key) or []
+            cup = None
+
+            if dominant_code:
+                if dominant_type == "cupom_afiliado_amplo":
+                    broad_candidate = broad_coupon_for_offer.get(offer_key)
+                    broad_code = str((broad_candidate or {}).get("code") or "").strip().upper()
+                    if broad_code == dominant_code:
+                        cup = broad_candidate
+                else:
+                    for candidate in candidates_for_offer:
+                        code = str(candidate.get("code") or candidate.get("label") or "").strip().upper()
+                        if code == dominant_code:
+                            cup = candidate
+                            break
+
+            if cup is None:
+                cup = max(
+                    candidates_for_offer,
+                    key=lambda x: (
+                        float(x.get("desconto_estimado") or 0),
+                        float(x.get("match_score") or 0),
+                    ),
+                    default=None,
+                )
+
+            # Se a associação global não encontrou nada, preserva o fallback
+            # específico que já existia para tentar localizar cupom na página
+            # pública do próprio anúncio.
+            if cup is None:
+                cup = choose_best_coupon(
+                    o.get("title") or "",
+                    o.get("price") or 0,
+                    public_cards=public_cards,
+                    item_id=o.get("item_id"),
+                    permalink=o.get("permalink"),
+                    allow_fallback=True,
+                )
+
             if not cup:
                 continue
+
             d = float(cup.get("desconto_estimado") or 0)
             base_price = float(o.get("price") or 0)
             if d <= 0 or base_price <= 0:
                 continue
-            # O desconto nunca pode ultrapassar o preço do próprio produto.
             d = min(d, base_price)
             o["cupom"] = cup
             o["desconto_cupom"] = round(d, 2)
@@ -4389,11 +4751,29 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             if best_coupon_price is None or o["preco_com_cupom"] < best_coupon_price:
                 best_coupon_price = o["preco_com_cupom"]
 
-        print(f"[CUPONS AUTO] cards={len(public_cards)} produtos_com_cupom={coupon_count}")
+        coupon_coverage_count = int((dominant_info or {}).get("count") or 0)
+        coupon_primary_code = dominant_code or ""
+        print(
+            f"[CUPONS AUTO] cards={len(public_cards)} "
+            f"cupons_afiliados={len(affiliate_coupon_catalog)} "
+            f"produtos_com_cupom={coupon_count} "
+            f"cupom_principal={coupon_primary_code or 'nenhum'} "
+            f"tipo={dominant_type or 'nenhum'} "
+            f"cobertura={coupon_coverage_count}/{len(flat)}"
+        )
     else:
         coupon_count = coupon_limit_count = 0
         best_coupon_discount = 0.0
         best_coupon_price = None
+        coupon_primary_code = ""
+        coupon_coverage_count = 0
+
+    if coupon_primary_code and coupon_coverage_count:
+        for o in flat:
+            cup = o.get("cupom") or {}
+            code = str(cup.get("code") or cup.get("label") or "").strip().upper()
+            if code == coupon_primary_code:
+                cup["cobertura_rodada"] = coupon_coverage_count
 
     models = []
     for o in flat:
@@ -4425,10 +4805,19 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
+        "cupom principal": coupon_primary_code or "—",
+        "tipo do cupom principal": dominant_type or "—",
+        "ofertas elegíveis para cupom principal": coupon_coverage_count,
         "modo": "30 por categoria + até 50 perfumes por categoria, por ITEM real, sem filtro Full/Gold/100 vendas",
     }
     print(f"[RESULTADO OFERTAS] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
-    return {"stats": stats, "modelos": models, "ofertas": flat}
+    return {
+        "stats": stats,
+        "modelos": models,
+        "ofertas": flat,
+        "cupom_principal": coupon_primary_code or None,
+        "cupom_principal_cobertura": coupon_coverage_count,
+    }
 
 def auto_scan(category=None, min_discount=0):
     # A seleção passa pelo nome da categoria; não depende de uma função
