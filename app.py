@@ -4368,28 +4368,120 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
             if real_permalink and not is_catalog_url(real_permalink):
                 product_url = real_permalink
             else:
-                product_url = f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
+                # Mesmo que /items responda, nunca aceitamos uma URL /p/.
+                real_item_id = str(
+                    item_data.get("item_id")
+                    or item_data.get("id")
+                    or ""
+                ).strip().upper()
+                if re.fullmatch(r"MLB\d+", real_item_id) and real_item_id != item_id:
+                    try:
+                        real_data, real_status, _ = ml_get(f"/items/{real_item_id}")
+                    except Exception:
+                        real_data, real_status = None, 0
+                    real_permalink = (
+                        str(real_data.get("permalink") or "").strip()
+                        if real_status == 200 and isinstance(real_data, dict)
+                        else ""
+                    )
+                    if real_permalink and not is_catalog_url(real_permalink):
+                        product_url = real_permalink
         else:
-            # Pode ser ID de PRODUTO/CATÁLOGO, não de publicação.
+            # O ID pode ser um PRODUTO/CATÁLOGO. Primeiro tentamos o detalhe
+            # do produto, porque o buy_box_winner costuma trazer o ITEM real
+            # mesmo quando /products/{id}/items não está disponível para o token.
+            real_item_id = ""
+            real_permalink = ""
+
             try:
-                product_items_data, products_status, _ = ml_get(f"/products/{item_id}/items")
+                product_data, product_status, _ = ml_get(f"/products/{item_id}")
             except Exception as exc:
-                product_items_data, products_status = None, 0
-                print("[AFILIADO PRODUTO] erro ao consultar", item_id, repr(exc))
+                product_data, product_status = None, 0
+                print("[AFILIADO PRODUTO DETALHE] erro ao consultar", item_id, repr(exc))
 
-            candidates = []
-            if isinstance(product_items_data, list):
-                candidates = product_items_data
-            elif isinstance(product_items_data, dict):
-                candidates = product_items_data.get("results") or []
+            if product_status == 200 and isinstance(product_data, dict):
+                bb = product_data.get("buy_box_winner") or product_data.get("buy_box")
+                candidates_bb = []
+                if isinstance(bb, dict):
+                    candidates_bb.append(bb)
+                    if isinstance(bb.get("item"), dict):
+                        candidates_bb.append(bb.get("item"))
+                    if isinstance(bb.get("winner"), dict):
+                        candidates_bb.append(bb.get("winner"))
 
-            real_permalink = pick_real_permalink(candidates)
+                for candidate in candidates_bb:
+                    if not isinstance(candidate, dict):
+                        continue
+                    cid = str(
+                        candidate.get("item_id")
+                        or candidate.get("id")
+                        or ""
+                    ).strip().upper()
+                    cp = str(candidate.get("permalink") or "").strip()
+                    if re.fullmatch(r"MLB\d+", cid) and cid != item_id:
+                        real_item_id = cid
+                        if cp and not is_catalog_url(cp):
+                            real_permalink = cp
+                            break
+
+                if real_item_id and not real_permalink:
+                    try:
+                        real_data, real_status, _ = ml_get(f"/items/{real_item_id}")
+                    except Exception as exc:
+                        real_data, real_status = None, 0
+                        print("[AFILIADO ITEM REAL] erro ao consultar", real_item_id, repr(exc))
+                    if real_status == 200 and isinstance(real_data, dict):
+                        rp = str(real_data.get("permalink") or "").strip()
+                        if rp and not is_catalog_url(rp):
+                            real_permalink = rp
+
+            # Segunda tentativa: publicações associadas ao catálogo.
+            products_status = 0
+            if not real_permalink:
+                try:
+                    product_items_data, products_status, _ = ml_get(f"/products/{item_id}/items")
+                except Exception as exc:
+                    product_items_data, products_status = None, 0
+                    print("[AFILIADO PRODUTO] erro ao consultar", item_id, repr(exc))
+
+                candidates = []
+                if isinstance(product_items_data, list):
+                    candidates = product_items_data
+                elif isinstance(product_items_data, dict):
+                    candidates = product_items_data.get("results") or []
+
+                real_permalink = pick_real_permalink(candidates)
+
+                # Se encontrou o ITEM mas não o permalink, consulta /items/{id}.
+                if not real_permalink:
+                    for candidate in candidates:
+                        if not isinstance(candidate, dict):
+                            continue
+                        cid = str(
+                            candidate.get("item_id")
+                            or candidate.get("id")
+                            or ""
+                        ).strip().upper()
+                        if not re.fullmatch(r"MLB\d+", cid) or cid == item_id:
+                            continue
+                        try:
+                            real_data, real_status, _ = ml_get(f"/items/{cid}")
+                        except Exception:
+                            real_data, real_status = None, 0
+                        if real_status == 200 and isinstance(real_data, dict):
+                            rp = str(real_data.get("permalink") or "").strip()
+                            if rp and not is_catalog_url(rp):
+                                real_permalink = rp
+                                break
+
             if real_permalink:
                 product_url = real_permalink
             elif is_catalog_url(product_url):
                 raise RuntimeError(
-                    f"O ID {item_id} não foi resolvido para uma publicação real "
-                    f"(items HTTP {item_status}, product items HTTP {products_status})."
+                    f"O catálogo {item_id} foi identificado, mas o Mercado Livre "
+                    f"não forneceu uma publicação real para ele "
+                    f"(items HTTP {item_status}, product HTTP {product_status}, "
+                    f"product items HTTP {products_status})."
                 )
 
     # 2) Se a URL recebida ainda é /p/MLB..., resolve o catálogo antes do POST.
@@ -4409,6 +4501,49 @@ def _affiliate_csrf_and_link(product_url, item_id=None):
                 candidates = catalog_items_data.get("results") or []
 
             real_permalink = pick_real_permalink(candidates)
+
+            # Alguns catálogos não expõem /products/{id}/items para o token,
+            # mas o detalhe /products/{id} ainda informa o buy_box_winner.
+            if not real_permalink:
+                try:
+                    catalog_product, catalog_product_status, _ = ml_get(f"/products/{catalog_id}")
+                except Exception as exc:
+                    catalog_product, catalog_product_status = None, 0
+                    print("[AFILIADO CATALOGO DETALHE] erro ao consultar", catalog_id, repr(exc))
+
+                if catalog_product_status == 200 and isinstance(catalog_product, dict):
+                    bb = catalog_product.get("buy_box_winner") or catalog_product.get("buy_box")
+                    bb_candidates = []
+                    if isinstance(bb, dict):
+                        bb_candidates.append(bb)
+                        if isinstance(bb.get("item"), dict):
+                            bb_candidates.append(bb.get("item"))
+                        if isinstance(bb.get("winner"), dict):
+                            bb_candidates.append(bb.get("winner"))
+
+                    for candidate in bb_candidates:
+                        if not isinstance(candidate, dict):
+                            continue
+                        cid = str(
+                            candidate.get("item_id")
+                            or candidate.get("id")
+                            or ""
+                        ).strip().upper()
+                        cp = str(candidate.get("permalink") or "").strip()
+                        if re.fullmatch(r"MLB\d+", cid) and cid != catalog_id:
+                            if cp and not is_catalog_url(cp):
+                                real_permalink = cp
+                                break
+                            try:
+                                real_data, real_status, _ = ml_get(f"/items/{cid}")
+                            except Exception:
+                                real_data, real_status = None, 0
+                            if real_status == 200 and isinstance(real_data, dict):
+                                rp = str(real_data.get("permalink") or "").strip()
+                                if rp and not is_catalog_url(rp):
+                                    real_permalink = rp
+                                    break
+
             if real_permalink:
                 product_url = real_permalink
             else:
