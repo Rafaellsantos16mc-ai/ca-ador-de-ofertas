@@ -169,6 +169,67 @@ CATALOG = {
         "câmera de ré",
         "som automotivo",
     ],
+    "🛠️ Ferramentas e Construção": [
+        "furadeira",
+        "parafusadeira",
+        "furadeira parafusadeira",
+        "esmerilhadeira",
+        "serra circular",
+        "serra tico tico",
+        "kit ferramentas",
+        "maleta de ferramentas",
+        "lavadora de alta pressão",
+        "compressor de ar",
+    ],
+    "👶 Bebê, Crianças e Família": [
+        "carrinho de bebê",
+        "bebê conforto",
+        "cadeirinha para carro",
+        "cadeira de alimentação",
+        "berço",
+        "brinquedos",
+        "bicicleta infantil",
+        "roupas infantis",
+        "calçados infantis",
+        "acessórios para bebê",
+    ],
+    "🌙 Perfumes Árabes": [
+        "Lattafa Asad",
+        "Lattafa Yara",
+        "Lattafa Khamrah",
+        "Lattafa Khamrah Qahwa",
+        "Afnan 9PM",
+        "Armaf Club de Nuit Intense Man",
+        "Rasasi Hawas",
+        "Lattafa Oud for Glory",
+        "Lattafa Bade'e Al Oud Amethyst",
+        "Lattafa Fakhar Black",
+        "Lattafa Fakhar Rose",
+        "Lattafa Raghba",
+        "Lattafa Ana Abiyedh",
+        "Lattafa Ana Abiyedh Rouge",
+        "Lattafa Qaed Al Fursan",
+        "Lattafa Najdia",
+        "Lattafa Haya",
+        "Lattafa Hayaati",
+        "Lattafa Maahir Legacy",
+        "Afnan 9PM Rebel",
+        "Afnan Supremacy Not Only Intense",
+        "Afnan Turathi Blue",
+        "Al Haramain L'Aventure",
+        "Maison Alhambra Detour Noir",
+        "Maison Alhambra Kismet Angel",
+        "Maison Alhambra Porto Neroli",
+        "Maison Alhambra Bright Peach",
+        "Maison Alhambra Tobacco Touch",
+        "Maison Alhambra Amber & Leather",
+        "Maison Alhambra Lovely Cherie",
+        "Maison Alhambra Delilah",
+        "Maison Alhambra Perseus",
+        "Maison Alhambra The Tux",
+        "Maison Alhambra Barakkat Rouge 540",
+        "Lattafa Emeer",
+    ],
 }
 
 # ============================================================
@@ -395,6 +456,21 @@ def is_requested_product(title, query, category=None):
              "limpeza automotiva"],
             []
         ),
+        "🛠️ Ferramentas e Construção": (
+            ["furadeira", "parafusadeira", "esmerilhadeira", "serra circular",
+             "serra tico tico", "ferramenta", "maleta de ferramentas",
+             "lavadora de alta pressão", "compressor de ar"],
+            ["refil", "broca avulsa", "disco de corte avulso", "peça de reposição"]
+        ),
+        "👶 Bebê, Crianças e Família": (
+            ["bebê", "bebe", "carrinho", "bebê conforto", "cadeirinha", "cadeira de alimentação",
+             "berço", "brinquedo", "bicicleta infantil", "roupa infantil", "calçado infantil"],
+            ["arquivo digital", "brinde"]
+        ),
+        "🌙 Perfumes Árabes": (
+            list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
+            list(PERFUME_EXCLUDED_TERMS) + ["kit", "combo", "duo", "trio", "conjunto", "pack"]
+        ),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -465,6 +541,19 @@ def profile_for(q):
         "treino", "esportivo", "bicicleta"
     ]):
         return "academia"
+    if any(x in t for x in [
+        "furadeira", "parafusadeira", "esmerilhadeira", "serra circular",
+        "serra tico tico", "ferramenta", "maleta de ferramentas",
+        "lavadora de alta pressão", "compressor de ar"
+    ]):
+        return "ferramentas"
+    if any(x in t for x in [
+        "carrinho de bebê", "bebê conforto", "cadeirinha", "cadeira de alimentação",
+        "berço", "brinquedo", "bicicleta infantil", "roupa infantil", "calçado infantil"
+    ]):
+        return "bebe_familia"
+    if any(norm(x) in t for x in ARABIC_PERFUME_TERMS) and _is_real_perfume(q):
+        return "perfumes_arabes"
     if any(x in t for x in [
         "automotivo", "carro", "multimidia", "multimídia", "veicular",
         "tapete automotivo", "camera de re", "câmera de ré", "som automotivo"
@@ -1865,6 +1954,20 @@ DEMAND_ANCHORS = {
         "capa banco", "tapete automotivo", "ferramenta automotiva", "limpeza automotiva",
         "câmera de ré", "som automotivo"
     ],
+    "🛠️ Ferramentas e Construção": [
+        "furadeira", "parafusadeira", "esmerilhadeira", "serra circular", "serra tico tico",
+        "kit ferramentas", "maleta de ferramentas", "lavadora de alta pressão", "compressor de ar"
+    ],
+    "👶 Bebê, Crianças e Família": [
+        "carrinho de bebê", "bebê conforto", "cadeirinha para carro", "cadeira de alimentação",
+        "berço", "brinquedos", "bicicleta infantil", "roupas infantis", "calçados infantis",
+        "acessórios para bebê"
+    ],
+    "🌙 Perfumes Árabes": [
+        "perfume árabe", "Lattafa", "Afnan", "Armaf", "Rasasi", "Al Wataniah",
+        "Maison Alhambra", "Al Haramain", "French Avenue", "Fragrance World",
+        "Paris Corner", "Rayhaan", "Khadlaj", "Zimaya", "Ajmal", "Swiss Arabian"
+    ],
 }
 
 _PRODUCT_CACHE = {}
@@ -2202,6 +2305,48 @@ ARABIC_TREND_QUERIES = [
     "perfume árabe mais vendido", "perfume árabe mais procurado",
 ]
 
+# 35 fragrâncias árabes de alta procura para direcionar a busca.
+# A lista combina nomes recorrentes em rankings/lojas brasileiras e não
+# representa um ranking oficial nacional único, já que não existe uma base
+# pública consolidada de vendas do Mercado Livre para todos os vendedores.
+ARABIC_BESTSELLERS_35 = [
+    "Lattafa Asad",
+    "Lattafa Yara",
+    "Lattafa Khamrah",
+    "Lattafa Khamrah Qahwa",
+    "Afnan 9PM",
+    "Armaf Club de Nuit Intense Man",
+    "Rasasi Hawas",
+    "Lattafa Oud for Glory",
+    "Lattafa Bade'e Al Oud Amethyst",
+    "Lattafa Fakhar Black",
+    "Lattafa Fakhar Rose",
+    "Lattafa Raghba",
+    "Lattafa Ana Abiyedh",
+    "Lattafa Ana Abiyedh Rouge",
+    "Lattafa Qaed Al Fursan",
+    "Lattafa Najdia",
+    "Lattafa Haya",
+    "Lattafa Hayaati",
+    "Lattafa Maahir Legacy",
+    "Afnan 9PM Rebel",
+    "Afnan Supremacy Not Only Intense",
+    "Afnan Turathi Blue",
+    "Al Haramain L'Aventure",
+    "Maison Alhambra Detour Noir",
+    "Maison Alhambra Kismet Angel",
+    "Maison Alhambra Porto Neroli",
+    "Maison Alhambra Bright Peach",
+    "Maison Alhambra Tobacco Touch",
+    "Maison Alhambra Amber & Leather",
+    "Maison Alhambra Lovely Cherie",
+    "Maison Alhambra Delilah",
+    "Maison Alhambra Perseus",
+    "Maison Alhambra The Tux",
+    "Maison Alhambra Barakkat Rouge 540",
+    "Al Wataniah Sabah Al Ward",
+]
+
 def _is_real_perfume(title):
     text = norm(title or "")
     if not text:
@@ -2213,7 +2358,11 @@ def _is_real_perfume(title):
     # Ex.: "Asad 100ml + Asad Zanzibar 100ml".
     if re.search(r"\b\d+\s*[x×]\s*\d+", text):
         return False
-    if re.search(r"\b(?:2|3|4|5)\s*(?:unidades?|frascos?|perfumes?)\b", text):
+    if re.search(r"\b(?:2|3|4|5|6|10|12)\s*(?:unidades?|frascos?|perfumes?)\b", text):
+        return False
+    if re.search(r"\b(?:duas|dois|tres|três|quatro|cinco)\s*(?:unidades?|frascos?|perfumes?)\b", text):
+        return False
+    if re.search(r"(?:perfume|parfum|edp|edt)[^+]{0,60}\+[^+]{0,60}(?:perfume|parfum|edp|edt)", text):
         return False
     if " + " in str(title or ""):
         return False
@@ -2290,7 +2439,7 @@ def _search_arabic_perfumes():
     tendências quando disponíveis.
     """
     queries = []
-    for q in ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
+    for q in ARABIC_BESTSELLERS_35 + ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
         if q not in queries:
             queries.append(q)
 
