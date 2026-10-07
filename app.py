@@ -160,42 +160,9 @@ CATALOG = {
         "bicicletas",
         "acessórios esportivos",
     ],
-    "🚗 Automotivo": [
-        "multimídia automotiva",
-        "acessórios para carro",
-        "lâmpadas automotivas",
-        "carregador veicular",
-        "capas para banco",
-        "tapetes automotivos",
-        "ferramentas automotivas",
-        "produtos limpeza automotiva",
-        "câmera de ré",
-        "som automotivo",
-    ],
-    "🛠️ Ferramentas e Construção": [
-        "furadeira",
-        "parafusadeira",
-        "furadeira parafusadeira",
-        "esmerilhadeira",
-        "serra circular",
-        "serra tico tico",
-        "kit ferramentas",
-        "maleta de ferramentas",
-        "lavadora de alta pressão",
-        "compressor de ar",
-    ],
-    "👶 Bebê, Crianças e Família": [
-        "carrinho de bebê",
-        "bebê conforto",
-        "cadeirinha para carro",
-        "cadeira de alimentação",
-        "berço",
-        "brinquedos",
-        "bicicleta infantil",
-        "roupas infantis",
-        "calçados infantis",
-        "acessórios para bebê",
-    ],
+
+
+
     "🌸 Perfumes": [
         "perfumes",
         "perfume masculino",
@@ -465,23 +432,6 @@ def is_requested_product(title, query, category=None):
             ["creatina", "whey", "halter", "academia", "fitness", "corrida",
              "tenis esportivo", "bicicleta", "treino", "esportivo"],
             []
-        ),
-        "🚗 Automotivo": (
-            ["automotivo", "carro", "multimidia", "multimídia", "veicular",
-             "tapete automotivo", "camera de re", "câmera de ré", "som automotivo",
-             "limpeza automotiva"],
-            []
-        ),
-        "🛠️ Ferramentas e Construção": (
-            ["furadeira", "parafusadeira", "esmerilhadeira", "serra circular",
-             "serra tico tico", "ferramenta", "maleta de ferramentas",
-             "lavadora de alta pressão", "compressor de ar"],
-            ["refil", "broca avulsa", "disco de corte avulso", "peça de reposição"]
-        ),
-        "👶 Bebê, Crianças e Família": (
-            ["bebê", "bebe", "carrinho", "bebê conforto", "cadeirinha", "cadeira de alimentação",
-             "berço", "brinquedo", "bicicleta infantil", "roupa infantil", "calçado infantil"],
-            ["arquivo digital", "brinde"]
         ),
         "🌙 Perfumes Árabes": (
             list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
@@ -2031,20 +1981,6 @@ DEMAND_ANCHORS = {
         "creatina", "whey", "halter", "equipamento de academia", "roupa fitness",
         "tênis esportivo", "tênis corrida", "bicicleta", "acessório esportivo"
     ],
-    "🚗 Automotivo": [
-        "multimídia", "acessório para carro", "lâmpada automotiva", "carregador veicular",
-        "capa banco", "tapete automotivo", "ferramenta automotiva", "limpeza automotiva",
-        "câmera de ré", "som automotivo"
-    ],
-    "🛠️ Ferramentas e Construção": [
-        "furadeira", "parafusadeira", "esmerilhadeira", "serra circular", "serra tico tico",
-        "kit ferramentas", "maleta de ferramentas", "lavadora de alta pressão", "compressor de ar"
-    ],
-    "👶 Bebê, Crianças e Família": [
-        "carrinho de bebê", "bebê conforto", "cadeirinha para carro", "cadeira de alimentação",
-        "berço", "brinquedos", "bicicleta infantil", "roupas infantis", "calçados infantis",
-        "acessórios para bebê"
-    ],
     "🌙 Perfumes Árabes": [
         "perfume árabe", "Lattafa", "Afnan", "Armaf", "Rasasi", "Al Wataniah",
         "Maison Alhambra", "Al Haramain", "French Avenue", "Fragrance World",
@@ -2310,7 +2246,6 @@ BEST_SELLER_CATEGORY_IDS = {
     "🎧 Eletrônicos": "MLB135384",
     "🏠 Casa": "MLB1645",
     "🍳 Cozinha": "MLB120373",
-    "🚗 Automotivo": "MLB60608",
     "👕 Moda": "MLB1398",
 }
 
