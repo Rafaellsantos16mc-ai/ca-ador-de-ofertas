@@ -4234,14 +4234,59 @@ def run_caca_job(job_id, category=None):
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
 
 # ============================================================
+# RESOLUÇÃO DA BUSCA MANUAL POR CATEGORIA
+# ============================================================
+
+def _manual_queries_for_category(q):
+    """Se o usuário digitar uma categoria, pesquisa cada nicho dela individualmente."""
+    nq = norm(q)
+
+    # Correspondência exata é a prioridade.
+    for category, seeds in CATALOG.items():
+        if nq == norm(category):
+            return category, list(seeds)
+
+    # Também aceita digitar somente o nome sem emoji.
+    for category, seeds in CATALOG.items():
+        plain = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+", "", category).strip()
+        if nq == norm(plain):
+            return category, list(seeds)
+
+    return None, None
+
+
+# ============================================================
 # API
 # ============================================================
 
 @app.route("/api/buscar")
 def api_buscar():
-    q=request.args.get("q","").strip()
-    if not q: return jsonify({"erro":"Informe uma busca."}),400
-    return jsonify(json_safe(scan_queries([q], request.args.get("desconto",0), apply_coupons=True)))
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"erro": "Informe uma busca."}), 400
+
+    # Quando a busca manual recebe uma categoria, NÃO pesquisa a palavra
+    # "Eletrônicos"/"Casa e Cozinha"/etc. como uma consulta genérica.
+    # Pesquisa cada nicho cadastrado naquela categoria separadamente.
+    category, category_queries = _manual_queries_for_category(q)
+
+    if category and category_queries:
+        print(f"[BUSCA MANUAL CATEGORIA] {category}: {len(category_queries)} nichos")
+        queries = category_queries
+    else:
+        # Busca livre continua funcionando normalmente.
+        queries = [q]
+
+    resultado = scan_queries(
+        queries,
+        request.args.get("desconto", 0),
+        apply_coupons=True
+    )
+
+    resultado["stats"]["busca_manual"] = category or q
+    resultado["stats"]["nichos_pesquisados"] = len(queries)
+
+    return jsonify(json_safe(resultado))
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -5512,7 +5557,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria ou procure <b>todas de uma vez</b>. O sistema carrega a busca completa dos <b>20 mais vendidos</b> e só mostra o resultado quando a consulta terminar.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão acima para buscar todas.</p></div>
-<div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Ex: celular, perfume, furadeira..."><button onclick="buscar()">Procurar</button></div>
+<div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Digite uma categoria ou produto: Eletrônicos, Casa e Cozinha, Perfumes Árabes..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
@@ -5526,12 +5571,27 @@ def index():
 
 @app.route("/buscar")
 def buscar_page():
-    q=request.args.get("q","").strip()
+    q = request.args.get("q", "").strip()
     if not q:
         return redirect("/")
-    resultado=scan_queries([q], request.args.get("desconto",0), apply_coupons=True)
-    t=tokens()
-    return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()), resultado=resultado)
+
+    category, category_queries = _manual_queries_for_category(q)
+    queries = category_queries if category and category_queries else [q]
+
+    resultado = scan_queries(
+        queries,
+        request.args.get("desconto", 0),
+        apply_coupons=True
+    )
+
+    t = tokens()
+    return render_template_string(
+        HTML,
+        conectado=bool(access_token()),
+        nickname=t.get("nickname") if t else None,
+        categorias=list(CATALOG.keys()),
+        resultado=resultado
+    )
 
 @app.route("/cupons")
 def coupons_page():
