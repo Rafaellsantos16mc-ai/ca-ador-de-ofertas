@@ -4001,10 +4001,13 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title)
 
+    # Grafia/organização inspiradas no anúncio de referência:
+    # abertura em CAIXA ALTA e destaque, produto destacado, preço limpo
+    # e chamada final para a promoção. Sem emojis.
     lines = [
-        marketing,
+        f"*{marketing.upper()}*",
         "",
-        title,
+        f"*{title}*",
     ]
 
     if o.get("original_price"):
@@ -4015,13 +4018,13 @@ def ad_text(o, affiliate=""):
         label = c.get("code") or c.get("label") or "Cupom disponível"
         lines.append(f"Cupom: {label}")
 
-    lines.append(f"Por {brl(o['price'])}")
+    lines.append(f"Por *{brl(o['price'])}*")
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    lines += ["", "Pegar promoção", "", link]
+    lines += ["", "*PEGAR PROMOÇÃO*", "", link]
 
     return "\n".join(lines)
 
@@ -4032,16 +4035,16 @@ def _marketing_phrase(title):
     n = norm(t)
 
     if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
-        return "Uma opção estilosa e versátil para renovar o visual sem pesar no bolso."
+        return "Uma opção estilosa para renovar o visual sem pesar no bolso."
     if any(x in n for x in ["perfume", "parfum", "eau de"]):
-        return "Uma fragrância que chama atenção e pode ser uma ótima escolha para o dia a dia."
+        return "UMA FRAGRÂNCIA QUE VALE A PENA CONFERIR."
     if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
-        return "Uma ótima oportunidade para quem quer um produto moderno por um preço mais interessante."
+        return "UMA BOA OPORTUNIDADE PARA APROVEITAR O PREÇO."
     if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
-        return "Uma boa oportunidade para facilitar a rotina e aproveitar um preço especial."
+        return "UMA BOA OPÇÃO PARA FACILITAR A ROTINA."
     if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
-        return "Uma opção prática para quem procura uma boa ferramenta por um preço melhor."
-    return "Uma oportunidade que vale a pena conferir enquanto o preço está especial."
+        return "UMA OPÇÃO PRÁTICA PARA APROVEITAR O PREÇO."
+    return "PRA NÃO DEIXAR ESSA OPORTUNIDADE PASSAR."
 
 # ============================================================
 # IMAGEM NATURAL PARA WHATSAPP
