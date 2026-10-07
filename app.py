@@ -803,40 +803,106 @@ def product_items(pid):
     return data.get("results", []) if isinstance(data, dict) else []
 
 
-def _hydrate_real_item_permalink(item):
-    """Garante que o anúncio use a URL da PUBLICAÇÃO, não a URL do catálogo.
+def _is_catalog_permalink(url):
+    """Retorna True somente para URLs de catálogo /p/MLB..., nunca para publicação."""
+    return bool(re.search(r"/p/MLB\\d+(?:[/?#]|$)", str(url or ""), re.I))
 
-    O catálogo pode devolver /p/MLB... mesmo quando o item real é MLB...
-    Para o gerador interno de afiliados isso pode resultar em ``URL not allowed``.
-    Quando temos o item_id, consultamos /items/{item_id} e preferimos a
-    permalink da publicação real. Se a consulta falhar, preservamos a URL original.
+
+def _is_real_publication_item(item):
+    """Garante que o registro representa uma publicação real, não catálogo."""
+    if not isinstance(item, dict):
+        return False
+    iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
+    permalink = str(item.get("permalink") or "").strip()
+    return bool(re.fullmatch(r"MLB\\d+", iid) and permalink and not _is_catalog_permalink(permalink))
+
+
+def _hydrate_real_item_permalink(item):
+    """Converte catálogo em publicação real ou deixa o item sem validade.
+
+    O erro mostrado no Safari acontecia porque o catálogo podia sobreviver
+    até a tela final com /p/MLB... e depois era enviado ao gerador de afiliado.
+    Aqui só aceitamos um ITEM com permalink de publicação.
     """
     if not isinstance(item, dict):
         return item
-    item_id = str(item.get("item_id") or "").strip()
+
+    item_id = str(item.get("item_id") or "").strip().upper()
     if not item_id:
         return item
+
     permalink = str(item.get("permalink") or "").strip()
-    # Se já parece uma URL de publicação específica, não precisa consultar.
-    # URLs de catálogo /p/MLB... são justamente as que queremos substituir.
-    needs_real = (not permalink) or bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", permalink, re.I))
-    if not needs_real:
+    if _is_real_publication_item(item):
         return item
+
+    # Primeiro tenta as publicações vinculadas diretamente ao produto/catálogo.
     try:
-        data, status, _ = ml_get(f"/items/{item_id}")
-        if status == 200 and isinstance(data, dict):
-            real = data.get("permalink")
-            if real:
-                item["permalink"] = real
-            # Mantém os dados já calculados, mas aproveita campos reais quando disponíveis.
-            if not item.get("seller_id"):
-                seller = data.get("seller")
-                if isinstance(seller, dict):
-                    item["seller_id"] = seller.get("id")
-            if not item.get("sold_quantity"):
-                item["sold_quantity"] = data.get("sold_quantity") or 0
+        candidates = product_items(item_id) or []
     except Exception as exc:
-        print("[PERMALINK ITEM]", item_id, repr(exc))
+        print("[PERMALINK CATALOGO] product_items", item_id, repr(exc))
+        candidates = []
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
+        cp = str(candidate.get("permalink") or "").strip()
+        if not re.fullmatch(r"MLB\\d+", cid):
+            continue
+        if cid == item_id and _is_catalog_permalink(cp):
+            continue
+        if cp and not _is_catalog_permalink(cp):
+            normalized = normalize_item(candidate)
+            if normalized:
+                normalized.update({
+                    "permalink": cp,
+                    "item_id": cid,
+                })
+                return normalized
+
+    # Depois consulta o detalhe do catálogo e procura o buy box real.
+    try:
+        pdata = product(item_id)
+    except Exception as exc:
+        print("[PERMALINK CATALOGO] product", item_id, repr(exc))
+        pdata = None
+
+    if isinstance(pdata, dict):
+        bb = pdata.get("buy_box_winner") or pdata.get("buy_box")
+        candidates = []
+        if isinstance(bb, dict):
+            candidates.append(bb)
+            if isinstance(bb.get("item"), dict):
+                candidates.append(bb["item"])
+            if isinstance(bb.get("winner"), dict):
+                candidates.append(bb["winner"])
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
+            cp = str(candidate.get("permalink") or "").strip()
+            if not re.fullmatch(r"MLB\\d+", cid) or cid == item_id:
+                continue
+            if cp and not _is_catalog_permalink(cp):
+                normalized = normalize_item(candidate)
+                if normalized:
+                    normalized.update({"item_id": cid, "permalink": cp})
+                    return normalized
+            if re.fullmatch(r"MLB\\d+", cid):
+                try:
+                    real_data, real_status, _ = ml_get(f"/items/{cid}")
+                except Exception:
+                    real_data, real_status = None, 0
+                if real_status == 200 and isinstance(real_data, dict):
+                    rp = str(real_data.get("permalink") or "").strip()
+                    if rp and not _is_catalog_permalink(rp):
+                        normalized = normalize_item(real_data)
+                        if normalized:
+                            normalized["permalink"] = rp
+                            return normalized
+
+    # Por segurança, nunca transforma um catálogo em uma URL inventada.
     return item
 
 PRICE_CACHE = {}
@@ -2619,7 +2685,11 @@ def _get_item_quality(item_id):
             sold = int(float(sold or 0))
         except Exception:
             sold = 0
-        result = {
+        permalink = str(data.get("permalink") or "").strip()
+        if not permalink or _is_catalog_permalink(permalink):
+            result = None
+        else:
+            result = {
             "item_id": data.get("id") or item_id,
             "seller_id": data.get("seller_id"),
             "sold_quantity": sold,
@@ -2630,8 +2700,8 @@ def _get_item_quality(item_id):
             "original_price": data.get("original_price"),
             "permalink": data.get("permalink"),
             "condition": data.get("condition"),
-            "listing_type_id": data.get("listing_type_id"),
-        }
+                "listing_type_id": data.get("listing_type_id"),
+            }
 
     with _ITEM_QUALITY_CACHE_LOCK:
         _ITEM_QUALITY_CACHE[item_id] = result
@@ -2772,13 +2842,17 @@ def _fetch_product_fast(pid, raw=None, base=None):
         if status == 200 and isinstance(item_data, dict):
             item = normalize_item(item_data)
             if item is not None:
+                item = _hydrate_real_item_permalink(item)
+                if not _is_real_publication_item(item):
+                    print("[PUBLICACAO REAL] descartado ITEM sem permalink real:", pid)
+                    return None
                 p = dict(raw or {})
                 p.update({
                     "id": pid,
                     "name": item_data.get("title") or p.get("name") or pid,
                     "title": item_data.get("title") or p.get("title") or pid,
                     "pictures": item_data.get("pictures") or [],
-                    "permalink": item_data.get("permalink"),
+                    "permalink": item.get("permalink"),
                 })
                 result = (pid, p, item, base)
                 with _PRODUCT_CACHE_LOCK:
@@ -2791,12 +2865,13 @@ def _fetch_product_fast(pid, raw=None, base=None):
         item = _build_item_from_buy_box(bb)
         if item is not None:
             item = _hydrate_real_item_permalink(item)
-            p = dict(raw)
-            p.setdefault("name", raw.get("title") or pid)
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+            if _is_real_publication_item(item):
+                p = dict(raw)
+                p.setdefault("name", raw.get("title") or pid)
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
 
     # 2) detalhe do catálogo.
     p = product(pid)
@@ -2805,10 +2880,11 @@ def _fetch_product_fast(pid, raw=None, base=None):
         item = _build_item_from_buy_box(bb)
         if item is not None:
             item = _hydrate_real_item_permalink(item)
-            result = (pid, p, item, base)
-            with _PRODUCT_CACHE_LOCK:
-                _PRODUCT_CACHE[cache_key] = result
-            return result
+            if _is_real_publication_item(item):
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
 
     # 3) tenta publicações associadas ao produto.
     with _ITEMS_CACHE_LOCK:
@@ -2824,34 +2900,14 @@ def _fetch_product_fast(pid, raw=None, base=None):
         if not item:
             continue
         item = _hydrate_real_item_permalink(item)
+        if not _is_real_publication_item(item):
+            continue
         item["sold_quantity"] = candidate.get("sold_quantity") or 0
         if best is None or (item.get("free_shipping") and not best.get("free_shipping")):
             best = item
 
-    # 4) Mesmo sem buy box, se a própria busca trouxer preço/permalink,
-    # aproveita. Isso impede que um produto válido desapareça só porque o
-    # catálogo não expôs um vencedor para o token atual.
-    if best is None and isinstance(raw, dict):
-        raw_price = raw.get("price") or raw.get("sale_price")
-        try:
-            raw_price = float(raw_price) if raw_price is not None else None
-        except Exception:
-            raw_price = None
-        if valid_catalog_price(raw_price):
-            best = {
-                "item_id": raw.get("item_id"),
-                "seller_id": raw.get("seller_id"),
-                "price": raw_price,
-                "original_price": raw.get("original_price") or raw.get("regular_price"),
-                "condition": raw.get("condition"),
-                "free_shipping": bool(raw.get("free_shipping")),
-                "shipping_cost": raw.get("shipping_cost"),
-                "logistic_type": raw.get("logistic_type"),
-                "shipping_mode": raw.get("shipping_mode"),
-                "permalink": raw.get("permalink"),
-                "sold_quantity": raw.get("sold_quantity") or 0,
-            }
-
+    # 4) NÃO usamos mais preço/permalink bruto do catálogo como fallback.
+    # Esse era o ponto que permitia MLB de catálogo chegar à tela de anúncio.
     if best is None:
         return None
     if p is None:
@@ -3254,6 +3310,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             total_price = total(price, shipping) if known else price
             free = bool(item.get("free_shipping"))
 
+            permalink = str(item.get("permalink") or "").strip()
+            if not permalink or _is_catalog_permalink(permalink):
+                print("[PUBLICACAO REAL] oferta descartada sem URL de publicação:", pid, title[:80])
+                continue
+
             image = _resolve_offer_image(p, item, base, item.get("item_id"))
             if not image:
                 print("[IMAGEM] oferta descartada sem imagem:", pid, title[:80])
@@ -3267,7 +3328,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 "especificacoes": specs(title),
                 "image": image,
                 "category_name": cat,
-                "permalink": item.get("permalink") or p.get("permalink") or f"https://www.mercadolivre.com.br/p/{pid}",
+                "permalink": permalink,
                 "price": price,
                 "original_price": original,
                 "discount": seller_disc,
@@ -4945,8 +5006,8 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
                     product_url = searched_permalink
                 else:
                     raise RuntimeError(
-                        f"O Mercado Livre retornou uma URL de catálogo ({catalog_id}), "
-                        f"mas não foi encontrada uma publicação real para ela."
+                        f"O Mercado Livre retornou o catálogo {catalog_id}, "
+                        f"mas não existe uma publicação real compatível disponível para gerar o afiliado."
                     )
 
     if not product_url:
