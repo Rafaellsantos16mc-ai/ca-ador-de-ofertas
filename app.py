@@ -87,6 +87,9 @@ COUPON_SOURCE_URLS = [
 ]
 MIN_PRODUCT_PRICE = 69.90
 
+# Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
+FAST_ALL_CATEGORIES = True
+
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
 # ============================================================
@@ -2689,7 +2692,7 @@ def _search_arabic_real_listings(q, limit=80):
     print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios")
     return listings
 
-def _search_arabic_perfumes():
+def _search_arabic_perfumes(fast=False):
     """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
 
     A descoberta usa /products/search, mas a publicação é sempre resolvida
@@ -2703,9 +2706,11 @@ def _search_arabic_perfumes():
     out = []
     seen = set()
     rank_base = 1
+    if fast:
+        queries = queries[:12]
     for q in queries:
         try:
-            rows = _search_arabic_real_listings(q, limit=80)
+            rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -2736,10 +2741,10 @@ def _search_arabic_perfumes():
     print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios candidatos")
     return out
 
-def _search_category(cat):
+def _search_category(cat, fast=False):
     """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
     if cat == "🌙 Perfumes Árabes":
-        return _search_arabic_perfumes()
+        return _search_arabic_perfumes(fast=fast)
 
     # Perfumes precisam de uma rota própria: o ranking Highlights de MLB178938
     # pode trazer poucos/nenhum candidato útil para os filtros finais.
@@ -2754,13 +2759,15 @@ def _search_category(cat):
                 perfume_queries.append(q)
 
         rank_base = 1
+        if fast:
+            perfume_queries = perfume_queries[:8]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
             search_q = q
             print("[BUSCA PUBLICA EQUIVALENTE]", public_search_url(q))
             try:
-                rows = search_real_listings(search_q, limit=40)
+                rows = search_real_listings(search_q, limit=20 if fast else 40)
             except Exception as exc:
                 print("[PERFUMES BUSCA]", q, repr(exc))
                 continue
@@ -2824,11 +2831,15 @@ def _search_category(cat):
                 "highlight_category_id": category_id,
             }, cat))
 
-    # Complementa com todas as consultas específicas positivas da categoria.
+    # Complementa com consultas específicas. Na busca de todas as categorias
+    # usamos somente as 6 sementes mais representativas; busca manual usa todas.
     rank_base = 100
-    for q in CATALOG.get(cat, []):
+    seed_queries = CATALOG.get(cat, [])
+    if fast:
+        seed_queries = seed_queries[:6]
+    for q in seed_queries:
         try:
-            rows = search_products_direct(q, limit=30)
+            rows = search_products_direct(q, limit=15 if fast else 30)
         except Exception as exc:
             print("[BUSCA ESPECIFICA]", cat, q, repr(exc))
             continue
@@ -3410,7 +3421,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     raw_by_cat = {}
     with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
-        fmap = {ex.submit(_search_category, cat): cat for cat in categories}
+        fmap = {ex.submit(_search_category, cat, FAST_ALL_CATEGORIES and len(categories) > 1): cat for cat in categories}
         for fut in as_completed(fmap):
             cat = fmap[fut]
             try:
@@ -3428,7 +3439,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     if "🌙 Perfumes Árabes" in categories:
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         seen_arabic_items = set()
-        for pos, (raw, source_query) in enumerate(arabic_raw[:300], start=1):
+        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
                 if not item_id or item_id in seen_arabic_items:
@@ -3449,7 +3461,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         # Perfumes Árabes já foram convertidos diretamente de ITEM real.
         if cat == "🌙 Perfumes Árabes":
             continue
-        for raw, source_query in raw_by_cat.get(cat, [])[:70]:
+        candidate_limit = 35 if FAST_ALL_CATEGORIES and len(categories) > 1 else 70
+        for raw, source_query in raw_by_cat.get(cat, [])[:candidate_limit]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -3500,7 +3513,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
     fetched = []
-    with _ThreadPoolExecutor(max_workers=12) as ex:
+    enrichment_workers = 8 if FAST_ALL_CATEGORIES and len(categories) > 1 else 12
+    with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
                 "category_name": cat,
