@@ -109,89 +109,65 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    # As duas categorias de perfumes ficam temporariamente fora do catálogo.
-    # Elas serão reativadas depois, separadamente.
-    "🧴 Saúde, Beleza e Cuidado Pessoal": [
-        "creatina monohidratada",
-        "whey protein",
-        "protetor solar",
-        "séruns faciais",
-        "cremes para cabelo",
-        "skincare",
+    "📱 Eletrônicos": [
+        "iphone",
+        "celular smartphone",
+        "fones bluetooth",
+        "smartwatch",
+        "tablet",
+        "notebook",
+        "carregador turbo",
+        "power bank",
+        "caixa de som bluetooth",
+        "acessórios para celular",
     ],
-    "🏡 Achadinhos de Casa e Cozinha": [
-        "organizadores acrílicos",
+    "🏠 Casa e Cozinha": [
+        "air fryer",
+        "aspirador de pó",
+        "cafeteira",
+        "liquidificador",
+        "organizadores para casa",
         "potes herméticos",
-        "mini processadores USB",
+        "utensílios de cozinha",
         "lâmpadas inteligentes",
         "fitas LED",
-        "organizadores de cozinha",
+        "eletrodomésticos",
     ],
-    "📲 Acessórios para Celulares e Eletrônicos": [
-        "carregadores Turbo",
-        "power banks",
-        "fones Bluetooth",
-        "smartwatches",
-        "capinhas",
-        "películas",
+    "👕 Moda e Beleza": [
+        "tênis",
+        "roupas masculinas",
+        "roupas femininas",
+        "bolsas",
+        "relógios",
+        "perfumes",
+        "maquiagem",
+        "skincare",
+        "barbeadores",
+        "acessórios de moda",
     ],
-    "👚 Moda Básica e Kits de Vestuário": [
-        "kits de camisetas lisas 3 peças",
-        "kits de camisetas lisas 5 peças",
-        "cuecas boxer",
-        "meias",
+    "🏋️ Academia e Esportes": [
+        "creatina",
+        "whey protein",
+        "acessórios de treino",
+        "halteres",
+        "equipamentos de academia",
         "roupas fitness",
+        "tênis esportivo",
+        "tênis corrida",
+        "bicicletas",
+        "acessórios esportivos",
     ],
-    "👟 Tênis — Casual, Grifes, Academia e Corrida": [
-        # Casual / streetwear
-        "tênis casual Nike",
-        "tênis casual Adidas",
-        "tênis casual Puma",
-        "tênis casual Vans",
-        "tênis casual Converse",
-        "tênis casual New Balance",
-        "tênis casual Fila",
-        "tênis casual Reebok",
-        "tênis casual Lacoste",
-        "tênis casual Tommy Hilfiger",
-        "tênis casual Calvin Klein",
-        "tênis casual Reserva",
-        # Grifes / luxo
-        "tênis Gucci original",
-        "tênis Prada original",
-        "tênis Balenciaga original",
-        "tênis Louis Vuitton original",
-        "tênis Dior original",
-        "tênis Valentino original",
-        "tênis Versace original",
-        "tênis Dolce Gabbana original",
-        "tênis Burberry original",
-        "tênis Armani original",
-        "tênis Hugo Boss original",
-        "tênis Alexander McQueen original",
-        # Academia / corrida
-        "tênis academia Nike",
-        "tênis corrida Adidas",
-        "tênis corrida Asics",
-        "tênis corrida Mizuno",
-        "tênis corrida Olympikus",
-        "tênis treino New Balance",
-        "tênis custo benefício",
-        "tênis social masculino",
-    ],
-    "👕 Camisas e Camisetas de Marcas": [
-        "camiseta Nike original",
-        "camiseta Adidas original",
-        "camiseta Puma original",
-        "camiseta Lacoste original",
-        "camiseta Tommy Hilfiger original",
-        "camiseta Calvin Klein original",
-        "camiseta Levi's original",
-        "camiseta Fila original",
-        "camiseta Under Armour original",
-        "camiseta New Balance original",
-        "camiseta Hering original",
-        "camiseta Reserva original",
+    "🚗 Automotivo": [
+        "multimídia automotiva",
+        "acessórios para carro",
+        "lâmpadas automotivas",
+        "carregador veicular",
+        "capas para banco",
+        "tapetes automotivos",
+        "ferramentas automotivas",
+        "produtos limpeza automotiva",
+        "câmera de ré",
+        "som automotivo",
     ],
 }
 
@@ -392,36 +368,33 @@ def is_requested_product(title, query, category=None):
     ]
 
     category_rules = {
-        "📱 Celulares": (["carregador", "cabo", "power bank", "fone", "tws", "capinha", "pelicula"], []),
-        "🌸 Perfumes": (["perfume", "parfum", "fragrance", "body splash", "body mist"], ["atacado", "revenda", "atacadista", "lote", "caixa fechada", "distribuidor"]),
-        "🌙 Perfumes Árabes": (["lattafa", "yara", "asad", "maison alhambra", "afnan"], ["atacado", "revenda"]),
-        "🏋️ Academia": (["creatina", "whey", "garrafa", "shaker", "band", "short", "top", "dry fit"], []),
-        "🔧 Ferramentas": (["parafusadeira", "furadeira", "chave", "maleta", "laser", "multimetro"], []),
-        "🎧 Eletrônicos": (["smartwatch", "smartband", "caixa de som", "roku", "fire tv", "camera"], []),
-        "🏠 Casa": (["lampada", "fita led", "luminaria", "organizador", "cabide", "pote", "cortina", "tapete"], []),
-        "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
-        "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
-        "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], ["cueca geriatrica", "cueca geriátrica", "geriatrica", "geriátrica", "escapes de urina", "escape de urina", "incontinencia", "incontinência"]),
-        "👟 Tênis — Casual, Grifes, Academia e Corrida": ([
-            "tenis", "sneaker", "sapatenis", "nike", "adidas", "puma", "vans",
-            "converse", "new balance", "fila", "reebok", "lacoste", "tommy hilfiger",
-            "calvin klein", "reserva", "gucci", "prada", "balenciaga", "louis vuitton",
-            "dior", "valentino", "versace", "dolce gabbana", "burberry", "armani",
-            "hugo boss", "alexander mcqueen", "asics", "mizuno", "olympikus"
-        ], [
-            "camiseta", "camisa", "bolsa", "mochila", "perfume", "relogio", "relógio",
-            "bone", "boné", "meia", "chinelo", "sandalia", "sandália", "falsificado",
-            "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
-            "inspirado", "inspirada", "similar", "1:1"
-        ]),
-        "👕 Camisas e Camisetas de Marcas": ([
-            "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
-            "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
-            "new balance", "hering", "reserva"
-        ], [
-            "falsa", "falsificada", "réplica", "replica", "pirata", "segunda linha",
-            "inspirada", "similar"
-        ]),
+        "📱 Eletrônicos": (
+            ["iphone", "celular", "smartphone", "fone", "smartwatch", "tablet",
+             "notebook", "carregador", "power bank", "caixa de som"],
+            []
+        ),
+        "🏠 Casa e Cozinha": (
+            ["air fryer", "aspirador", "cafeteira", "liquidificador", "organizador",
+             "pote", "utensilio", "lâmpada", "fita led", "eletrodomestico"],
+            []
+        ),
+        "👕 Moda e Beleza": (
+            ["tenis", "camiseta", "roupa", "bolsa", "relogio", "perfume",
+             "maquiagem", "skincare", "barbeador", "acessorio"],
+            ["falsificado", "falsa", "falsificada", "replica", "réplica",
+             "pirata", "segunda linha"]
+        ),
+        "🏋️ Academia e Esportes": (
+            ["creatina", "whey", "halter", "academia", "fitness", "corrida",
+             "tenis esportivo", "bicicleta", "treino", "esportivo"],
+            []
+        ),
+        "🚗 Automotivo": (
+            ["automotivo", "carro", "multimidia", "multimídia", "veicular",
+             "tapete automotivo", "camera de re", "câmera de ré", "som automotivo",
+             "limpeza automotiva"],
+            []
+        ),
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
@@ -472,27 +445,31 @@ def query_category(q):
 
 def profile_for(q):
     t = norm(q)
-    if any(x in t for x in ["iphone","samsung","galaxy","motorola","xiaomi","redmi","poco","smartphone","celular"]):
-        return "celular"
-    if "perfume" in t:
-        return "perfume"
     if any(x in t for x in [
-        "academia", "roupa academia", "camiseta academia",
-        "short academia", "legging academia",
-        "tenis academia", "tenis corrida", "tenis treino",
-        "whey", "creatina", "pre treino", "suplemento"
+        "iphone", "celular", "smartphone", "fone", "smartwatch", "tablet",
+        "notebook", "carregador", "power bank", "caixa de som"
+    ]):
+        return "eletronicos"
+    if any(x in t for x in [
+        "air fryer", "aspirador", "cafeteira", "liquidificador", "organizador",
+        "pote", "utensilio", "lampada", "fita led", "eletrodomestico"
+    ]):
+        return "casa"
+    if any(x in t for x in [
+        "tenis", "roupa", "camiseta", "bolsa", "relogio", "perfume",
+        "maquiagem", "skincare", "barbeador", "moda"
+    ]):
+        return "moda"
+    if any(x in t for x in [
+        "creatina", "whey", "halter", "academia", "fitness", "corrida",
+        "treino", "esportivo", "bicicleta"
     ]):
         return "academia"
     if any(x in t for x in [
-        "camiseta nike", "camiseta adidas", "camiseta puma",
-        "camiseta lacoste", "camiseta tommy hilfiger", "camiseta calvin klein",
-        "camiseta levi", "camiseta fila", "camiseta under armour",
-        "camiseta new balance", "camiseta hering", "camiseta reserva",
-        "camisa nike", "camisa adidas", "camisa lacoste", "camisa puma"
+        "automotivo", "carro", "multimidia", "multimídia", "veicular",
+        "tapete automotivo", "camera de re", "câmera de ré", "som automotivo"
     ]):
-        return "marcas"
-    if any(x in t for x in ["furadeira","parafusadeira","ferramenta","esmerilhadeira","serra"]):
-        return "ferramenta"
+        return "automotivo"
     return None
 
 def relevance(title, q):
@@ -1867,19 +1844,26 @@ _DEMAND_LOCK = threading.Lock()
 CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 
 DEMAND_ANCHORS = {
-    "🌸 Perfumes": ["perfume", "parfum", "eau de parfum", "eau de toilette", "body splash", "body mist"],
-    "🌙 Perfumes Árabes": ["lattafa", "yara", "asad", "maison alhambra", "afnan"],
-    "🧴 Saúde, Beleza e Cuidado Pessoal": ["creatina", "whey", "protetor solar", "sérum", "creme para cabelo", "skincare"],
-    "🏡 Achadinhos de Casa e Cozinha": ["organizador", "pote hermético", "processador", "lâmpada inteligente", "fita led", "organizador de cozinha"],
-    "📲 Acessórios para Celulares e Eletrônicos": ["carregador", "power bank", "fone bluetooth", "smartwatch", "capinha", "película"],
-    "👚 Moda Básica e Kits de Vestuário": ["camiseta", "cueca boxer", "meias", "roupa fitness"],
-    "👟 Tênis — Casual, Grifes, Academia e Corrida": [
-        "tenis", "sneaker", "sapatenis", "nike", "adidas", "puma", "vans",
-        "converse", "new balance", "fila", "reebok", "lacoste", "tommy hilfiger",
-        "calvin klein", "reserva", "gucci", "prada", "balenciaga",
-        "louis vuitton", "dior", "valentino", "versace", "dolce gabbana",
-        "burberry", "armani", "hugo boss", "alexander mcqueen", "asics",
-        "mizuno", "olympikus", "tenis social"
+    "📱 Eletrônicos": [
+        "iphone", "celular", "smartphone", "fones bluetooth", "smartwatch",
+        "tablet", "notebook", "carregador turbo", "power bank", "caixa de som"
+    ],
+    "🏠 Casa e Cozinha": [
+        "air fryer", "aspirador", "cafeteira", "liquidificador", "organizador",
+        "pote hermético", "utensílios", "lâmpada inteligente", "fita led"
+    ],
+    "👕 Moda e Beleza": [
+        "tênis", "roupa", "camiseta", "bolsa", "relógio", "perfume", "maquiagem",
+        "skincare", "barbeador", "acessório de moda"
+    ],
+    "🏋️ Academia e Esportes": [
+        "creatina", "whey", "halter", "equipamento de academia", "roupa fitness",
+        "tênis esportivo", "tênis corrida", "bicicleta", "acessório esportivo"
+    ],
+    "🚗 Automotivo": [
+        "multimídia", "acessório para carro", "lâmpada automotiva", "carregador veicular",
+        "capa banco", "tapete automotivo", "ferramenta automotiva", "limpeza automotiva",
+        "câmera de ré", "som automotivo"
     ],
 }
 
