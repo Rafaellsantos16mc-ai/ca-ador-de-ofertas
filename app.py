@@ -109,27 +109,8 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    # Perfumes mantidos + 5 categorias novas solicitadas.
-    # Consultas somente com conceitos positivos; filtros operacionais
-    # continuam sendo aplicados nas rotinas específicas.
-    "🌸 Perfumes": [
-        "perfumes masculinos",
-        "perfumes femininos",
-        "perfume importado",
-        "Eau de Parfum",
-        "Eau de Toilette",
-        "Body Splash",
-        "Body Mist",
-    ],
-    "🌙 Perfumes Árabes": [
-        "Perfume Lattafa", "Perfume Maison Alhambra", "Perfume Afnan",
-        "Perfume Al Wataniah", "Perfume Armaf", "Perfume Rasasi",
-        "Perfume Al Haramain", "Perfume French Avenue", "Perfume Fragrance World",
-        "Perfume Paris Corner", "Perfume Rayhaan", "Perfume Khadlaj",
-        "Perfume Zimaya", "Perfume Ajmal", "Perfume Swiss Arabian",
-        "Perfume Ard Al Zaafaran", "Perfume Ahmed Al Maghribi",
-        "Perfume Orientica", "Perfume Al Rehab", "Perfume Emir",
-    ],
+    # As duas categorias de perfumes ficam temporariamente fora do catálogo.
+    # Elas serão reativadas depois, separadamente.
     "🧴 Saúde, Beleza e Cuidado Pessoal": [
         "creatina monohidratada",
         "whey protein",
@@ -161,15 +142,40 @@ CATALOG = {
         "meias",
         "roupas fitness",
     ],
-    "👟 Tênis — Academia, Corrida e Social": [
-        "tênis academia treino",
-        "tênis corrida",
-        "Nike",
-        "Adidas",
-        "Asics",
-        "Mizuno",
-        "Olympikus",
-        "New Balance",
+    "👟 Tênis — Casual, Grifes, Academia e Corrida": [
+        # Casual / streetwear
+        "tênis casual Nike",
+        "tênis casual Adidas",
+        "tênis casual Puma",
+        "tênis casual Vans",
+        "tênis casual Converse",
+        "tênis casual New Balance",
+        "tênis casual Fila",
+        "tênis casual Reebok",
+        "tênis casual Lacoste",
+        "tênis casual Tommy Hilfiger",
+        "tênis casual Calvin Klein",
+        "tênis casual Reserva",
+        # Grifes / luxo
+        "tênis Gucci original",
+        "tênis Prada original",
+        "tênis Balenciaga original",
+        "tênis Louis Vuitton original",
+        "tênis Dior original",
+        "tênis Valentino original",
+        "tênis Versace original",
+        "tênis Dolce Gabbana original",
+        "tênis Burberry original",
+        "tênis Armani original",
+        "tênis Hugo Boss original",
+        "tênis Alexander McQueen original",
+        # Academia / corrida
+        "tênis academia Nike",
+        "tênis corrida Adidas",
+        "tênis corrida Asics",
+        "tênis corrida Mizuno",
+        "tênis corrida Olympikus",
+        "tênis treino New Balance",
         "tênis custo benefício",
         "tênis social masculino",
     ],
@@ -396,6 +402,18 @@ def is_requested_product(title, query, category=None):
         "🍳 Cozinha": (["air fryer", "chaleira", "processador", "silicone", "balanca", "pratos", "temperos"], []),
         "🚗 Automotivo": (["cera", "revitalizador", "pretinho", "microfibra", "multimidia", "suporte celular", "carregador turbo", "super led", "camera de re"], []),
         "👕 Moda": (["camiseta", "cueca", "meia sapatilha", "short", "vestido", "tenis", "chinelo"], ["cueca geriatrica", "cueca geriátrica", "geriatrica", "geriátrica", "escapes de urina", "escape de urina", "incontinencia", "incontinência"]),
+        "👟 Tênis — Casual, Grifes, Academia e Corrida": ([
+            "tenis", "sneaker", "sapatenis", "nike", "adidas", "puma", "vans",
+            "converse", "new balance", "fila", "reebok", "lacoste", "tommy hilfiger",
+            "calvin klein", "reserva", "gucci", "prada", "balenciaga", "louis vuitton",
+            "dior", "valentino", "versace", "dolce gabbana", "burberry", "armani",
+            "hugo boss", "alexander mcqueen", "asics", "mizuno", "olympikus"
+        ], [
+            "camiseta", "camisa", "bolsa", "mochila", "perfume", "relogio", "relógio",
+            "bone", "boné", "meia", "chinelo", "sandalia", "sandália", "falsificado",
+            "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
+            "inspirado", "inspirada", "similar", "1:1"
+        ]),
         "👕 Camisas e Camisetas de Marcas": ([
             "camiseta", "camisa", "nike", "adidas", "puma", "lacoste",
             "tommy hilfiger", "calvin klein", "levi", "fila", "under armour",
@@ -1855,7 +1873,14 @@ DEMAND_ANCHORS = {
     "🏡 Achadinhos de Casa e Cozinha": ["organizador", "pote hermético", "processador", "lâmpada inteligente", "fita led", "organizador de cozinha"],
     "📲 Acessórios para Celulares e Eletrônicos": ["carregador", "power bank", "fone bluetooth", "smartwatch", "capinha", "película"],
     "👚 Moda Básica e Kits de Vestuário": ["camiseta", "cueca boxer", "meias", "roupa fitness"],
-    "👟 Tênis — Academia, Corrida e Social": ["tênis academia", "tênis treino", "tênis corrida", "nike", "adidas", "asics", "mizuno", "olympikus", "new balance", "tênis social"],
+    "👟 Tênis — Casual, Grifes, Academia e Corrida": [
+        "tenis", "sneaker", "sapatenis", "nike", "adidas", "puma", "vans",
+        "converse", "new balance", "fila", "reebok", "lacoste", "tommy hilfiger",
+        "calvin klein", "reserva", "gucci", "prada", "balenciaga",
+        "louis vuitton", "dior", "valentino", "versace", "dolce gabbana",
+        "burberry", "armani", "hugo boss", "alexander mcqueen", "asics",
+        "mizuno", "olympikus", "tenis social"
+    ],
 }
 
 _PRODUCT_CACHE = {}
