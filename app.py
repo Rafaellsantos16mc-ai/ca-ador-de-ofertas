@@ -4957,23 +4957,22 @@ def _extract_item_id_from_affiliate_url(link):
 
 
 def ad_text(o, affiliate=""):
-    """Monta o anúncio no formato curto definido para o WhatsApp.
+    """Monta o anúncio no formato visual pedido para o WhatsApp.
 
-    Ordem:
-    1) frase curta de marketing/resenha leve
-    2) nome do produto, sem emoji
-    3) preço original, quando disponível
-    4) cupom, somente quando existir
-    5) preço atual
-    6) chamada para promoção
-    7) link de afiliado
+    Formato:
+    - frase de destaque
+    - nome do produto
+    - preço antigo riscado com ~ ~
+    - cupom, quando existir
+    - preço atual em destaque
+    - uma linha em branco antes da chamada
+    - PEGAR PROMOÇÃO + link na MESMA linha
+
+    O ~texto~ é o recurso nativo de tachado do WhatsApp.
     """
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title)
 
-    # Grafia/organização inspiradas no anúncio de referência:
-    # abertura em CAIXA ALTA e destaque, produto destacado, preço limpo
-    # e chamada final para a promoção. Sem emojis.
     lines = [
         f"*{marketing.upper()}*",
         "",
@@ -4981,13 +4980,152 @@ def ad_text(o, affiliate=""):
         "",
     ]
 
-    if o.get("original_price"):
-        lines.append(f"De {brl(o['original_price'])}")
+    # Preço antigo no estilo do anúncio de referência: ~De R$222,83~
+    # Só mostramos o valor riscado quando ele realmente existe.
+    original = o.get("original_price")
+    try:
+        original_value = float(original) if original not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        original_value = 0.0
+
+    if original_value > 0:
+        lines.append(f"~De {brl(original_value)}~")
 
     if o.get("cupom"):
         c = o["cupom"] or {}
         label = c.get("code") or c.get("label") or "Cupom disponível"
-        lines.append(f"Cupom: {label}")
+        lines.append(f"🎟️ Cupom: *{label}*")
+
+    # Preço atual separado do preço antigo para ficar visualmente limpo.
+    lines.append(f"Por *{brl(o['price'])}*")
+
+    link = str(affiliate or "").strip()
+    if not valid_affiliate_link(link):
+        raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
+
+    # Link fica na frente, continuando a mesma linha de PEGAR PROMOÇÃO.
+    lines.append(f"*PEGAR PROMOÇÃO 🔥:* {link}")
+
+    return "\n".join(lines)
+
+
+def _marketing_phrase(title):
+    """Cria uma descrição curta e relacionada ao produto, no estilo dos anúncios de referência."""
+    t = str(title or "Produto").strip()
+    n = norm(t)
+
+    # Perfumes/modelos conhecidos: usa uma descrição específica em vez de
+    # repetir sempre a mesma frase genérica.
+    perfume_profiles = [
+        (["fakhar black"], "FRESCO, MASCULINO E FÁCIL DEMAIS DE AGRADAR", "🧊🔥", "Inspirado no YSL Y EDP"),
+        (["asad"], "INTENSO, MARCANTE E CHEIO DE PRESENÇA", "🔥🖤", "Inspirado no Sauvage Elixir"),
+        (["khamrah"], "DOCE, ENVOLVENTE E MARCANTE NA MEDIDA CERTA", "🍂🔥", "Inspirado no Angel's Share"),
+        (["oud for glory"], "INTENSO, ELEGANTE E PARA QUEM GOSTA DE PRESENÇA", "🖤🔥", None),
+        (["club de nuit intense"], "MARCANTE, ELEGANTE E FÁCIL DE DESTACAR", "🔥🖤", "Inspirado no Creed Aventus"),
+        (["9pm"], "DOCE, SEDUTOR E PERFEITO PARA QUEM GOSTA DE PRESENÇA", "🌙🔥", None),
+        (["qaed al fursan"], "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE", "🍍🔥", None),
+        (["yara"], "DOCE, DELICADO E COM UMA PRESENÇA SUPER AGRADÁVEL", "🎀✨", None),
+        (["delilah"], "DELICADO, FEMININO E ELEGANTE", "🌸✨", "Inspirado no Delina"),
+        (["khair pistachio"], "DOCE, CREMOSO E IRRESISTÍVEL PARA QUEM AMA PERFUMES GOURMAND", "💚✨", None),
+    ]
+
+    for terms, headline, emojis, inspiration in perfume_profiles:
+        if any(term in n for term in terms):
+            return {"headline": headline, "emojis": emojis, "detail": inspiration}
+
+    if any(x in n for x in [
+        "perfume", "parfum", "eau de", "fragrance", "colonia", "colônia",
+        "body splash", "body mist"
+    ]):
+        if "masculino" in n:
+            return {
+                "headline": "UMA FRAGRÂNCIA MASCULINA QUE VALE A PENA CONFERIR",
+                "emojis": "🔥",
+                "detail": None,
+            }
+        if "feminino" in n:
+            return {
+                "headline": "UMA FRAGRÂNCIA FEMININA QUE VALE A PENA CONFERIR",
+                "emojis": "🌸✨",
+                "detail": None,
+            }
+        if "body splash" in n or "body mist" in n:
+            return {
+                "headline": "UMA FRAGRÂNCIA LEVE E FÁCIL DE USAR NO DIA A DIA",
+                "emojis": "✨🌸",
+                "detail": None,
+            }
+        return {
+            "headline": "UMA FRAGRÂNCIA QUE VALE A PENA CONFERIR",
+            "emojis": "🔥",
+            "detail": None,
+        }
+
+    if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
+        return {"headline": "ESTILOSO, VERSÁTIL E ÓTIMO PARA O DIA A DIA", "emojis": "👟🔥", "detail": None}
+
+    if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
+        return {
+            "headline": "UMA ÓTIMA OPORTUNIDADE PARA QUEM ESTÁ DE OLHO EM TECNOLOGIA",
+            "emojis": "📱🔥",
+            "detail": None,
+        }
+
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
+        return {
+            "headline": "PRÁTICO PARA A ROTINA E VALE A PENA CONFERIR O PREÇO",
+            "emojis": "🏠🔥",
+            "detail": None,
+        }
+
+    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
+        return {
+            "headline": "UMA OPÇÃO PRÁTICA PARA QUEM PRECISA DE FERRAMENTA",
+            "emojis": "🛠️🔥",
+            "detail": None,
+        }
+
+    if any(x in n for x in ["cueca", "camiseta", "calca", "calça", "bermuda", "moletom"]):
+        return {
+            "headline": "UMA BOA OPÇÃO PARA RENOVAR O GUARDA-ROUPA",
+            "emojis": "👕🔥",
+            "detail": None,
+        }
+
+    return {
+        "headline": "UMA OPORTUNIDADE QUE VALE A PENA CONFERIR",
+        "emojis": "🔥",
+        "detail": None,
+    }
+
+
+def ad_text(o, affiliate=""):
+    """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
+    title = str(o.get("title") or "Produto").strip()
+    marketing = _marketing_phrase(title)
+
+    lines = [
+        f"*{marketing['headline']}*",
+        marketing["emojis"],
+    ]
+
+    if marketing.get("detail"):
+        lines.append(f"_{marketing['detail']}_")
+
+    lines += [
+        "",
+        f"*{title}*",
+        "",
+    ]
+
+    if o.get("original_price"):
+        # Tachado real do WhatsApp.
+        lines.append(f"~De {brl(o['original_price'])}~")
+
+    if o.get("cupom"):
+        c = o["cupom"] or {}
+        label = c.get("code") or c.get("label") or "Cupom disponível"
+        lines.append(f"🎟️ Cupom: *{label}*")
 
     lines.append(f"Por *{brl(o['price'])}*")
 
@@ -4995,27 +5133,10 @@ def ad_text(o, affiliate=""):
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    lines += ["*🔥 PEGAR PROMOÇÃO*", "", link]
+    # A chama fica DEPOIS de PROMOÇÃO.
+    lines += ["", "*PEGAR PROMOÇÃO 🔥:* " + link]
 
     return "\n".join(lines)
-
-
-def _marketing_phrase(title):
-    """Gera uma abertura curta de marketing, sem emojis e sem inventar atributos."""
-    t = str(title or "Produto").strip()
-    n = norm(t)
-
-    if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
-        return "Uma opção estilosa para renovar o visual sem pesar no bolso."
-    if any(x in n for x in ["perfume", "parfum", "eau de"]):
-        return "UMA FRAGRÂNCIA QUE VALE A PENA CONFERIR."
-    if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
-        return "UMA BOA OPORTUNIDADE PARA APROVEITAR O PREÇO."
-    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
-        return "UMA BOA OPÇÃO PARA FACILITAR A ROTINA."
-    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
-        return "UMA OPÇÃO PRÁTICA PARA APROVEITAR O PREÇO."
-    return "PRA NÃO DEIXAR ESSA OPORTUNIDADE PASSAR."
 
 # ============================================================
 # IMAGEM NATURAL PARA WHATSAPP
