@@ -4312,8 +4312,14 @@ def _parse_affiliate_cookies(raw):
     return out
 
 
-def _affiliate_csrf_and_link(product_url):
-    """Gera meli.la usando a sessão salva no Railway."""
+def _affiliate_csrf_and_link(product_url, item_id=None):
+    """Gera meli.la usando a sessão salva no Railway.
+
+    Quando recebemos o ITEM (MLB123...), nunca confiamos em uma URL
+    /p/MLB... ou em uma URL montada pelo navegador. Primeiro consultamos
+    /items/{item_id} e usamos a permalink real da publicação. Isso evita que
+    perfumes caiam em páginas de catálogo inexistentes.
+    """
     cookies = _parse_affiliate_cookies(ML_AFFILIATE_COOKIES)
     if not cookies:
         raise RuntimeError("ML_AFFILIATE_COOKIES não configurado")
@@ -4321,6 +4327,26 @@ def _affiliate_csrf_and_link(product_url):
         raise RuntimeError("ML_AFFILIATE_TAG não configurado")
 
     product_url = str(product_url or "").strip()
+    item_id = str(item_id or "").strip().upper()
+
+    # O ITEM real é a fonte de verdade. Se ele existir, pega a permalink
+    # diretamente da API do Mercado Livre antes de abrir qualquer página.
+    if re.fullmatch(r"MLB\d+", item_id):
+        try:
+            item_data, item_status, _ = ml_get(f"/items/{item_id}")
+        except Exception as exc:
+            item_data, item_status = None, 0
+            print("[AFILIADO ITEM] erro ao consultar", item_id, repr(exc))
+
+        if item_status == 200 and isinstance(item_data, dict):
+            real_permalink = str(item_data.get("permalink") or "").strip()
+            if real_permalink:
+                product_url = real_permalink
+            elif not product_url:
+                product_url = f"https://produto.mercadolivre.com.br/{item_id.replace('MLB', 'MLB-', 1)}"
+        elif not product_url:
+            raise RuntimeError(f"Não foi possível validar a publicação {item_id} no Mercado Livre (HTTP {item_status}).")
+
     if not product_url:
         raise RuntimeError("URL do produto vazia")
 
@@ -4351,13 +4377,24 @@ def _affiliate_csrf_and_link(product_url):
         # Se a página não carregar, ainda tentamos com o _csrf do cookie.
         pass
 
+    try:
+        parsed_product = urlparse(product_url)
+        product_host = (parsed_product.netloc or "").lower()
+    except Exception:
+        product_host = ""
+    origin = (
+        "https://www.mercadolivre.com.br"
+        if "mercadolivre.com.br" in product_host and not product_host.startswith("produto.")
+        else "https://produto.mercadolivre.com.br"
+    )
+
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "X-CSRF-Token": csrf,
         "Cookie": cookie_header,
         "Referer": product_url,
-        "Origin": "https://produto.mercadolivre.com.br",
+        "Origin": origin,
         "User-Agent": ua,
     }
     r = requests.post(
@@ -4388,8 +4425,9 @@ def api_afiliado_gerar():
     """Gera o link afiliado no servidor; sem cookies, retorna 503 para o fallback Safari."""
     payload = request.get_json(silent=True) or {}
     product_url = str(payload.get("url") or "").strip()
-    if not product_url:
-        return jsonify({"ok": False, "erro": "URL do produto não informada."}), 400
+    item_id = str(payload.get("item_id") or "").strip().upper()
+    if not product_url and not re.fullmatch(r"MLB\d+", item_id):
+        return jsonify({"ok": False, "erro": "Publicação/ITEM do produto não informado."}), 400
 
     if not ML_AFFILIATE_COOKIES:
         return jsonify({
@@ -4399,8 +4437,8 @@ def api_afiliado_gerar():
         }), 503
 
     try:
-        link = _affiliate_csrf_and_link(product_url)
-        return jsonify({"ok": True, "link": link, "modo": "servidor"})
+        link = _affiliate_csrf_and_link(product_url, item_id=item_id)
+        return jsonify({"ok": True, "link": link, "modo": "servidor", "item_id": item_id})
     except Exception as exc:
         # Não expõe cookies/token nos logs nem na resposta.
         return jsonify({
@@ -4627,7 +4665,7 @@ async function iniciarAfiliado(id,o){
    const r=await fetch('/api/afiliado/gerar',{
     method:'POST',
     headers:{'Content-Type':'application/json','Accept':'application/json'},
-    body:JSON.stringify({url:target})
+    body:JSON.stringify({url:target,item_id:itemId})
    });
    const data=await r.json().catch(()=>({}));
    if(data.ok && data.link){
@@ -4636,16 +4674,22 @@ async function iniciarAfiliado(id,o){
     await anuncio(id,JSON.stringify(o));
     return;
    }
-   // Se o servidor ainda não estiver configurado, preserva exatamente
-   // o fluxo Safari que já foi testado e funcionou.
-   if(data.configurado && data.erro){
-    console.warn('Gerador automático:',data.erro);
+   // Se o servidor está configurado mas recusou esta publicação, NÃO
+   // abrimos uma URL de fallback no Safari. Isso era exatamente o que
+   // fazia o iPhone cair na página “Parece que esta página não existe”.
+   if(data.configurado){
+    throw new Error(data.erro || 'O Mercado Livre não aceitou esta publicação para gerar o link afiliado.');
    }
   }catch(e){
-   console.warn('Falha no gerador automático; usando fallback Safari:',e);
+   // Só usa o Safari quando o gerador do servidor realmente não está
+   // configurado. Com cookies configurados, mostramos o erro real.
+   if(String(e && e.message || '').trim()){
+    alert('❌ Não foi possível gerar o link afiliado no servidor. '+e.message);
+    return;
+   }
   }
 
-  // FALLBACK: fluxo Safari já existente e funcional.
+  // FALLBACK: fluxo Safari somente quando o servidor não estiver configurado.
   const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
   const u=new URL(target);
