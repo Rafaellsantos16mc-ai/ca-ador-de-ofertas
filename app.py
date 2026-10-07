@@ -3011,12 +3011,30 @@ def _resolve_offer_image(product_data, item_data, base_data=None, item_id=None):
     return ""
 
 
-def _direct_perfume_offer_from_listing(row, cat, position, query):
-    """Transforma diretamente o anúncio /sites/MLB/search em oferta.
+def _is_arabic_perfume_for_query(title, query=""):
+    """Valida perfume árabe pela marca OU pelo modelo pesquisado."""
+    if not _is_real_perfume(title):
+        return False
+    title_norm = norm(title)
+    query_norm = norm(query)
+    brand_match = any(norm(term) in title_norm for term in ARABIC_PERFUME_TERMS)
+    query_terms = [
+        x for x in query_norm.split()
+        if len(x) >= 4 and x not in {"perfume", "arabe", "arabes", "eau", "parfum"}
+    ]
+    model_match = bool(query_terms) and all(x in title_norm for x in query_terms)
+    return bool(brand_match or model_match)
 
-    Nesta etapa de teste não passa por catálogo, Buy Box, Full, Gold/Platinum
-    ou mínimo de vendas. O objetivo é comprovar somente que os micro-nichos
-    encontram anúncios reais. Mantemos apenas preço >= R$69,90 e imagem.
+
+def _direct_perfume_offer_from_listing(row, cat, position, query):
+    """Transforma diretamente uma publicação ITEM real em oferta.
+
+    Esta rota é usada especialmente para Perfumes Árabes. Ela NÃO passa pelo
+    fluxo catálogo -> Buy Box -> /items associado, porque esse caminho pode
+    devolver catálogo /p/MLB... e depois bloquear a geração do afiliado.
+    Aqui já recebemos um anúncio ITEM real com item_id=MLB..., então a oferta
+    nasce pronta para o fluxo de afiliado. Mantemos apenas preço >= R$69,90,
+    perfume válido, sem kit/decant e com imagem.
     """
     if not isinstance(row, dict):
         return None
@@ -3030,7 +3048,10 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         if not _is_real_perfume(title):
             return None
     else:
-        if not _is_arabic_perfume(title):
+        # Não dependa somente do nome da marca. Algumas publicações do ML
+        # trazem apenas o nome do modelo (ex.: Khamrah, Asad, 9PM). Como a
+        # busca já foi feita por micro-nicho, a consulta também valida o título.
+        if not _is_arabic_perfume_for_query(title, query):
             return None
 
     # Bloqueio explícito de decant/amostra/miniatura.
@@ -3185,10 +3206,37 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
 
+    # PERFUMES ÁRABES: rota direta de publicação real.
+    # O catálogo pode devolver /p/MLB... e isso é justamente o que queremos
+    # evitar no gerador de afiliado. A busca já trouxe ITEMs reais; portanto
+    # transformamos esses ITEMs diretamente em ofertas e pulamos o
+    # enriquecimento normal para essa categoria.
+    direct_arabic_offers = []
+    if "🌙 Perfumes Árabes" in categories:
+        arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
+        seen_arabic_items = set()
+        for pos, (raw, source_query) in enumerate(arabic_raw[:180], start=1):
+            try:
+                item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+                if not item_id or item_id in seen_arabic_items:
+                    continue
+                seen_arabic_items.add(item_id)
+                direct = _direct_perfume_offer_from_listing(
+                    raw, "🌙 Perfumes Árabes", pos, source_query
+                )
+                if direct:
+                    direct_arabic_offers.append(direct)
+            except Exception as exc:
+                print("[ARABES ROTA DIRETA]", repr(exc))
+        print(f"[ARABES ROTA DIRETA] {len(direct_arabic_offers)} ofertas ITEM reais")
+
     candidates = []
     seen = set()
     for cat in categories:
-        for raw, source_query in raw_by_cat.get(cat, [])[:140 if cat == "🌙 Perfumes Árabes" else 70]:
+        # Perfumes Árabes já foram convertidos diretamente de ITEM real.
+        if cat == "🌙 Perfumes Árabes":
+            continue
+        for raw, source_query in raw_by_cat.get(cat, [])[:70]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
                 continue
@@ -3263,7 +3311,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         int(x[2].get("best_seller_position") or 99),
     ))
 
-    offers = []
+    # Começa com os perfumes árabes já convertidos diretamente de anúncios
+    # ITEM reais. As demais categorias seguem o fluxo normal.
+    offers = list(direct_arabic_offers)
     for result, cat, ds, source_query in fetched:
         try:
             pid, p, item, base = result
@@ -3387,13 +3437,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             or (_is_real_perfume(o.get("title")) and not _is_arabic_perfume(o.get("title")))
         ]
 
-    # Perfumes Árabes: além do ranking por marca, confirma o título para não
-    # deixar derivados passarem.
+    # Perfumes Árabes: a rota direta já entregou ITEM real; aqui só mantém a
+    # confirmação final do título para impedir derivados.
     if "🌙 Perfumes Árabes" in categories:
         offers = [
             o for o in offers
             if o.get("category_name") != "🌙 Perfumes Árabes"
-            or _is_arabic_perfume(o.get("title"))
+            or _is_arabic_perfume_for_query(o.get("title"), o.get("micro_nicho") or "")
         ]
 
     # Moda: cueca geriátrica nunca entra. Combos de cuecas normais só entram
@@ -3654,7 +3704,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "20 por categoria + 30 perfumes árabes, sem filtro Full/Gold/100 vendas",
+        "modo": "20 por categoria + perfumes árabes por ITEM real, sem filtro Full/Gold/100 vendas",
     }
     print(f"[RESULTADO TOP 20] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
