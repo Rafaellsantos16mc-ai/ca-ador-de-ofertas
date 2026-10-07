@@ -2431,6 +2431,21 @@ def _is_normal_perfume_for_query(title, query=""):
 
     brand_match = any(brand in title_text for brand in perfume_brands)
 
+    # Marcas e modelos conhecidos também podem aparecer sem a palavra
+    # "perfume" no título. Ex.: "Malbec Gold 100ml", "212 VIP 100ml".
+    known_model_terms = [
+        "malbec", "212 vip", "212 men", "212 heroes", "212 sexy",
+        "egeo", "lily", "quasar", "coffee woman", "coffee man",
+        "essencial", "kaiak", "biografia", "una", "humor", "homem",
+        "homem essence", "her code", "la vie est belle", "good girl",
+        "carolina herrera", "sauvage", "bleu de chanel", "chance",
+        "coco mademoiselle", "coco chanel", "allure", "light blue",
+        "eros", "bright crystal", "libre", "black opium", "acqua di gio",
+        "1 million", "one million", "phantom", "invictus", "olympea",
+        "212", "boss bottled", "the scent", "wanted", "gentleman",
+    ]
+    model_brand_match = any(term in title_text for term in known_model_terms)
+
     query_words = [
         w for w in query_text.split()
         if len(w) >= 3 and w not in {
@@ -2456,6 +2471,7 @@ def _is_normal_perfume_for_query(title, query=""):
     )
     return bool(
         (brand_match and (volume_match or fragrance_signal))
+        or (model_brand_match and (volume_match or fragrance_signal))
         or (query_match and (volume_match or fragrance_signal))
     )
 
@@ -2677,6 +2693,104 @@ def _search_arabic_real_listings(q, limit=80):
     print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios")
     return listings
 
+
+def _search_perfume_public_fallback(q, limit=20):
+    """Fallback de descoberta de perfumes usando a página pública de busca.
+
+    O catálogo /products/search pode localizar o produto, mas nem sempre
+    expõe uma publicação ITEM para perfumes. Quando isso acontecer, usamos
+    somente a página pública do Mercado Livre para descobrir IDs MLB reais e
+    depois confirmamos cada ID pelo endpoint /items/{id}. Nenhuma URL de
+    catálogo /p/MLB... entra no resultado.
+    """
+    query = str(q or "").strip()
+    if not query:
+        return []
+
+    url = "https://lista.mercadolivre.com.br/" + quote(query.replace(" ", "-"))
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            print("[PERFUMES FALLBACK PUBLICO] HTTP", r.status_code, query)
+            return []
+        page = r.text or ""
+    except Exception as exc:
+        print("[PERFUMES FALLBACK PUBLICO] erro", query, repr(exc))
+        return []
+
+    ids = []
+    seen = set()
+    # A página pública pode trazer MLB123..., MLB-123... ou URLs completas.
+    for match in re.finditer(r"(?:MLB[-_]?)(\d{6,})", page, re.I):
+        iid = "MLB" + match.group(1)
+        if iid not in seen:
+            seen.add(iid)
+            ids.append(iid)
+        if len(ids) >= max(30, int(limit or 20) * 3):
+            break
+
+    out = []
+    for pos, iid in enumerate(ids, start=1):
+        if len(out) >= int(limit or 20):
+            break
+        try:
+            data, status, _ = ml_get(f"/items/{iid}")
+        except Exception as exc:
+            print("[PERFUMES FALLBACK ITEM]", iid, repr(exc))
+            continue
+        if status != 200 or not isinstance(data, dict):
+            continue
+        permalink = str(data.get("permalink") or "").strip()
+        if not permalink or _is_catalog_permalink(permalink):
+            continue
+        title = str(data.get("title") or "").strip()
+        if not title:
+            continue
+        price = data.get("price")
+        try:
+            price = float(price) if price is not None else None
+        except Exception:
+            price = None
+        if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+            continue
+        shipping = data.get("shipping") or {}
+        if not isinstance(shipping, dict):
+            shipping = {}
+        pictures = data.get("pictures") or []
+        thumbnail = str(data.get("thumbnail") or "").strip()
+        if not thumbnail and pictures and isinstance(pictures[0], dict):
+            thumbnail = str(
+                pictures[0].get("secure_url")
+                or pictures[0].get("url")
+                or pictures[0].get("secure_thumbnail")
+                or pictures[0].get("thumbnail")
+                or ""
+            ).strip()
+        out.append({
+            "id": iid,
+            "item_id": iid,
+            "product_id": str(data.get("catalog_product_id") or "").strip(),
+            "title": title,
+            "name": title,
+            "permalink": permalink,
+            "thumbnail": thumbnail,
+            "pictures": pictures,
+            "price": price,
+            "original_price": data.get("original_price") or data.get("base_price"),
+            "seller_id": data.get("seller_id") or ((data.get("seller") or {}).get("id") if isinstance(data.get("seller"), dict) else None),
+            "sold_quantity": data.get("sold_quantity") or 0,
+            "shipping": shipping,
+            "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
+            "condition": data.get("condition") or "new",
+            "highlight_position": pos,
+        })
+    print(f"[PERFUMES FALLBACK PUBLICO] {query} -> {len(out)} ITEMs reais")
+    return out
+
 def _search_arabic_perfumes(fast=False):
     """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
 
@@ -2759,9 +2873,22 @@ def _search_category(cat, fast=False):
                 rows = _search_arabic_real_listings(
                     search_q, limit=20 if fast else 40
                 )
+                # Se o catálogo não expuser nenhuma publicação real para o
+                # termo, usa a busca pública como fallback somente para
+                # descobrir ITEMs. O restante da validação continua igual.
+                if not rows:
+                    rows = _search_perfume_public_fallback(
+                        search_q, limit=12 if fast else 20
+                    )
             except Exception as exc:
                 print("[PERFUMES BUSCA ITEM]", q, repr(exc))
-                continue
+                try:
+                    rows = _search_perfume_public_fallback(
+                        search_q, limit=12 if fast else 20
+                    )
+                except Exception as fallback_exc:
+                    print("[PERFUMES FALLBACK]", q, repr(fallback_exc))
+                    rows = []
 
             for j, row in enumerate(rows, start=1):
                 if not isinstance(row, dict):
