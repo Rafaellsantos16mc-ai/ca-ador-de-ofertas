@@ -2410,6 +2410,56 @@ def _is_arabic_perfume(title):
     text = norm(title or "")
     return _is_real_perfume(title) and any(norm(term) in text for term in ARABIC_PERFUME_TERMS)
 
+def _is_normal_perfume_for_query(title, query=""):
+    """Aceita perfumes cujo título traz marca/modelo, mas não a palavra perfume."""
+    title_text = norm(title or "")
+    query_text = norm(query or "")
+    if not title_text:
+        return False
+    if any(norm(term) in title_text for term in PERFUME_EXCLUDED_TERMS):
+        return False
+    if any(norm(term) in title_text for term in ARABIC_PERFUME_TERMS):
+        return False
+    if _is_real_perfume(title):
+        return True
+
+    perfume_brands = []
+    for brand_query in PERFUME_BRAND_QUERIES:
+        brand = re.sub(r"\s+perfume$", "", norm(brand_query)).strip()
+        if brand and brand not in perfume_brands:
+            perfume_brands.append(brand)
+
+    brand_match = any(brand in title_text for brand in perfume_brands)
+
+    query_words = [
+        w for w in query_text.split()
+        if len(w) >= 3 and w not in {
+            "perfume", "perfumes", "masculino", "feminino", "importado",
+            "nacional", "mais", "vendido", "vendidos", "alta",
+            "procurado", "procurados",
+        }
+    ]
+    query_match = bool(query_words) and any(w in title_text for w in query_words)
+
+    volume_match = bool(re.search(
+        r"\b(?:20|25|30|35|40|50|60|75|80|90|100|105|110|120|125|150|200|250)\s*ml\b",
+        title_text,
+        re.I,
+    ))
+    fragrance_signal = any(
+        term in title_text
+        for term in (
+            "parfum", "eau de parfum", "eau de toilette", "eau de cologne",
+            "edp", "edt", "fragrance", "body splash", "body mist",
+            "colonia", "colonia corporal", "deo colonia", "spray perfumado",
+        )
+    )
+    return bool(
+        (brand_match and (volume_match or fragrance_signal))
+        or (query_match and (volume_match or fragrance_signal))
+    )
+
+
 _ARABIC_BRAND_CACHE = {"at": 0.0, "ids": []}
 _ARABIC_BRAND_CACHE_LOCK = threading.Lock()
 
@@ -2702,9 +2752,15 @@ def _search_category(cat, fast=False):
             search_q = q
             print("[BUSCA PUBLICA EQUIVALENTE]", public_search_url(q))
             try:
-                rows = search_real_listings(search_q, limit=20 if fast else 40)
+                # Usa a mesma rota de ITEM real que já funciona para os
+                # perfumes árabes. Isso evita depender somente do catálogo
+                # /products/search, que pode retornar produto sem publicação
+                # utilizável para o perfume normal.
+                rows = _search_arabic_real_listings(
+                    search_q, limit=20 if fast else 40
+                )
             except Exception as exc:
-                print("[PERFUMES BUSCA]", q, repr(exc))
+                print("[PERFUMES BUSCA ITEM]", q, repr(exc))
                 continue
 
             for j, row in enumerate(rows, start=1):
@@ -3188,7 +3244,7 @@ def _is_arabic_perfume_for_query(title, query=""):
 def _direct_perfume_offer_from_listing(row, cat, position, query):
     """Transforma diretamente uma publicação ITEM real em oferta.
 
-    Esta rota é usada especialmente para Perfumes Árabes. Ela NÃO passa pelo
+    Esta rota é usada para Perfumes e Perfumes Árabes. Ela NÃO passa pelo
     fluxo catálogo -> Buy Box -> /items associado, porque esse caminho pode
     devolver catálogo /p/MLB... e depois bloquear a geração do afiliado.
     Aqui já recebemos um anúncio ITEM real com item_id=MLB..., então a oferta
@@ -3204,7 +3260,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         return None
 
     if cat == "🌸 Perfumes":
-        if not _is_real_perfume(title):
+        if not _is_normal_perfume_for_query(title, query):
             return None
     else:
         # Não dependa somente do nome da marca. Algumas publicações do ML
@@ -3278,6 +3334,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
         "especificacoes": specs(title),
         "image": image,
         "category_name": cat,
+        "micro_nicho": query,
         # Para perfumes, nunca usa URL de catálogo /p/MLB... como fallback.
         # Se não houver permalink da publicação, monta diretamente a URL do ITEM real.
         "permalink": (
@@ -3365,12 +3422,32 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
 
-    # PERFUMES ÁRABES: rota direta de publicação real.
-    # O catálogo pode devolver /p/MLB... e isso é justamente o que queremos
-    # evitar no gerador de afiliado. A busca já trouxe ITEMs reais; portanto
-    # transformamos esses ITEMs diretamente em ofertas e pulamos o
-    # enriquecimento normal para essa categoria.
+    # PERFUMES: rota direta de publicação real.
+    # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
+    # Isso evita que o fluxo de enriquecimento transforme a publicação em
+    # catálogo /p/MLB..., o que depois pode impedir o link de afiliado.
+    direct_perfume_offers = []
     direct_arabic_offers = []
+
+    if "🌸 Perfumes" in categories:
+        perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
+        seen_perfume_items = set()
+        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 300
+        for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
+            try:
+                item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+                if not item_id or item_id in seen_perfume_items:
+                    continue
+                seen_perfume_items.add(item_id)
+                direct = _direct_perfume_offer_from_listing(
+                    raw, "🌸 Perfumes", pos, source_query
+                )
+                if direct:
+                    direct_perfume_offers.append(direct)
+            except Exception as exc:
+                print("[PERFUMES ROTA DIRETA]", repr(exc))
+        print(f"[PERFUMES ROTA DIRETA] {len(direct_perfume_offers)} ofertas ITEM reais")
+
     if "🌙 Perfumes Árabes" in categories:
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         seen_arabic_items = set()
@@ -3393,8 +3470,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates = []
     seen = set()
     for cat in categories:
-        # Perfumes Árabes já foram convertidos diretamente de ITEM real.
-        if cat == "🌙 Perfumes Árabes":
+        # As duas categorias de perfumes já foram convertidas diretamente
+        # de ITEM real e não passam pelo enriquecimento normal.
+        if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}:
             continue
         candidate_limit = 35 if FAST_ALL_CATEGORIES and len(categories) > 1 else 70
         for raw, source_query in raw_by_cat.get(cat, [])[:candidate_limit]:
@@ -3473,9 +3551,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         int(x[2].get("best_seller_position") or 99),
     ))
 
-    # Começa com os perfumes árabes já convertidos diretamente de anúncios
-    # ITEM reais. As demais categorias seguem o fluxo normal.
-    offers = list(direct_arabic_offers)
+    # Começa com os perfumes já convertidos diretamente de anúncios ITEM reais.
+    # As demais categorias seguem o fluxo normal.
+    offers = list(direct_perfume_offers) + list(direct_arabic_offers)
     for result, cat, ds, source_query in fetched:
         try:
             pid, p, item, base = result
@@ -3596,7 +3674,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         offers = [
             o for o in offers
             if o.get("category_name") != "🌸 Perfumes"
-            or (_is_real_perfume(o.get("title")) and not _is_arabic_perfume(o.get("title")))
+            or (
+                _is_normal_perfume_for_query(
+                    o.get("title"),
+                    o.get("micro_nicho") or "",
+                )
+                and not _is_arabic_perfume(o.get("title"))
+            )
         ]
 
     # Perfumes Árabes: a rota direta já entregou ITEM real; aqui só mantém a
@@ -3866,7 +3950,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "20 por categoria + perfumes árabes por ITEM real, sem filtro Full/Gold/100 vendas",
+        "modo": "20 por categoria + perfumes por ITEM real, sem filtro Full/Gold/100 vendas",
     }
     print(f"[RESULTADO TOP 20] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
