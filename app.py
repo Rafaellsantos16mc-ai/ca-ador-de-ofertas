@@ -5020,92 +5020,271 @@ def ad_text(o, affiliate=""):
 
 
 def _marketing_phrase(title):
-    """Cria uma descrição curta e relacionada ao produto, no estilo dos anúncios de referência."""
+    """Cria uma chamada de anúncio realmente ligada ao produto.
+
+    Prioridade:
+      1) modelo/nome conhecido do perfume;
+      2) família ou característica explicitamente presente no título;
+      3) fallback específico por tipo de produto.
+
+    Evita frases vazias como "vale a pena conferir" sempre que o nome
+    do produto permite uma chamada mais interessante.
+    """
     t = str(title or "Produto").strip()
     n = norm(t)
 
-    # Perfumes/modelos conhecidos: usa uma descrição específica em vez de
-    # repetir sempre a mesma frase genérica.
+    # ------------------------------------------------------------
+    # PERFUMES — chamadas específicas por modelo.
+    # ------------------------------------------------------------
     perfume_profiles = [
-        (["fakhar black"], "FRESCO, MASCULINO E FÁCIL DEMAIS DE AGRADAR", "🧊🔥", "Inspirado no YSL Y EDP"),
-        (["asad"], "INTENSO, MARCANTE E CHEIO DE PRESENÇA", "🔥🖤", "Inspirado no Sauvage Elixir"),
-        (["khamrah"], "DOCE, ENVOLVENTE E MARCANTE NA MEDIDA CERTA", "🍂🔥", "Inspirado no Angel's Share"),
-        (["oud for glory"], "INTENSO, ELEGANTE E PARA QUEM GOSTA DE PRESENÇA", "🖤🔥", None),
-        (["club de nuit intense"], "MARCANTE, ELEGANTE E FÁCIL DE DESTACAR", "🔥🖤", "Inspirado no Creed Aventus"),
-        (["9pm"], "DOCE, SEDUTOR E PERFEITO PARA QUEM GOSTA DE PRESENÇA", "🌙🔥", None),
-        (["qaed al fursan"], "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE", "🍍🔥", None),
-        (["yara"], "DOCE, DELICADO E COM UMA PRESENÇA SUPER AGRADÁVEL", "🎀✨", None),
-        (["delilah"], "DELICADO, FEMININO E ELEGANTE", "🌸✨", "Inspirado no Delina"),
-        (["khair pistachio"], "DOCE, CREMOSO E IRRESISTÍVEL PARA QUEM AMA PERFUMES GOURMAND", "💚✨", None),
+        # Fakhar Rose / Fakhar Women
+        (
+            ["fakhar rose", "fakhar women", "fakhar feminino"],
+            "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA",
+            "🌸✨",
+            "Com notas florais como tuberosa e jasmim, além de uma base com baunilha, almíscar branco e sândalo.",
+        ),
+        (
+            ["fakhar black", "fakhar men", "fakhar masculino"],
+            "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE",
+            "🖤🔥",
+            "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno.",
+        ),
+        (
+            ["fakhar extrait"],
+            "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE",
+            "🔥✨",
+            "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro.",
+        ),
+
+        # Lattafa clássicos
+        (
+            ["asad"],
+            "INTENSO, ESPECIADO E MARCANTE — ASAD É PARA QUEM GOSTA DE PRESENÇA",
+            "🖤🔥",
+            "Uma escolha da Lattafa para quem prefere fragrâncias mais intensas e de personalidade.",
+        ),
+        (
+            ["khamrah qahwa"],
+            "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA",
+            "☕🔥",
+            "Uma combinação que chama atenção para quem gosta de perfumes quentes e envolventes.",
+        ),
+        (
+            ["khamrah"],
+            "DOCE, QUENTE E ENVOLVENTE — KHAMRAH É DAQUELES QUE MARCAM",
+            "🍂🔥",
+            "Perfeito para quem curte um perfil mais gourmand e cheio de presença.",
+        ),
+        (
+            ["oud for glory"],
+            "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA",
+            "🖤🔥",
+            "Uma escolha para quem procura um perfume árabe com personalidade forte.",
+        ),
+        (
+            ["club de nuit intense"],
+            "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE",
+            "🔥🖤",
+            "Uma fragrância conhecida pelo perfil marcante e pela proposta sofisticada.",
+        ),
+        (
+            ["club de nuit woman", "club de nuit women"],
+            "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN",
+            "🌹✨",
+            "Uma opção para quem gosta de fragrâncias femininas com presença.",
+        ),
+        (
+            ["9pm"],
+            "DOCE, SEDUTOR E MARCANTE — 9PM É PARA QUEM GOSTA DE CHEGAR CHEGANDO",
+            "🌙🔥",
+            "Uma opção muito procurada para quem prefere um perfume mais adocicado e envolvente.",
+        ),
+        (
+            ["qaed al fursan"],
+            "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN",
+            "🍍🔥",
+            "Uma escolha interessante para quem gosta de fragrâncias árabes com perfil frutado.",
+        ),
+        (
+            ["yara moi"],
+            "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI",
+            "🤍✨",
+            "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso.",
+        ),
+        (
+            ["yara tous"],
+            "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE",
+            "🥭✨",
+            "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre.",
+        ),
+        (
+            ["yara candy"],
+            "DOCE, JOVEM E DIVERTIDO — YARA CANDY PARA QUEM AMA PERFUME ADOCICADO",
+            "🍬💗",
+            "Uma opção para quem procura um perfume feminino com proposta mais doce.",
+        ),
+        (
+            ["yara"],
+            "DELICADO, FEMININO E ADOCICADO — YARA É UM DOS QUERIDINHOS DA LATTAFA",
+            "🎀✨",
+            "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas.",
+        ),
+        (
+            ["delilah"],
+            "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE",
+            "🌸✨",
+            "Uma opção para quem procura uma fragrância feminina com perfil floral.",
+        ),
+        (
+            ["khair pistachio"],
+            "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO CHAMA ATENÇÃO",
+            "💚✨",
+            "Uma escolha para quem ama perfumes gourmand e aquele perfil mais cremoso.",
+        ),
+        (
+            ["neb ras", "nebras"],
+            "DOCE, CREMOSO E ENVOLVENTE — NEBRAS PARA QUEM AMA GOURMAND",
+            "🍫✨",
+            "Uma opção para quem prefere fragrâncias doces e aconchegantes.",
+        ),
+        (
+            ["liam grey"],
+            "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY EM DESTAQUE",
+            "🩶🔥",
+            "Uma opção para quem gosta de perfumes com personalidade e perfil mais refinado.",
+        ),
+        (
+            ["liquid brun"],
+            "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN EM DESTAQUE",
+            "🤎🔥",
+            "Uma escolha para quem procura uma fragrância masculina com bastante presença.",
+        ),
+        (
+            ["maahir black"],
+            "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK PARA QUEM GOSTA DE PRESENÇA",
+            "🖤🔥",
+            "Uma opção para quem prefere perfumes árabes com personalidade mais forte.",
+        ),
+        (
+            ["najdia"],
+            "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE",
+            "💙🔥",
+            "Uma escolha para quem procura uma fragrância masculina com proposta mais fresca.",
+        ),
+        (
+            ["tériaq", "teriaq"],
+            "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE",
+            "🍯🔥",
+            "Uma opção para quem gosta de perfumes com presença e um lado mais adocicado.",
+        ),
+        (
+            ["asdaaf", "ramz silver", "ramz gold"],
+            "MARCANTE E ENVOLVENTE — UMA BOA PEDIDA PARA QUEM AMA PERFUMES ÁRABES",
+            "🔥✨",
+            "Uma opção para quem procura uma fragrância árabe com bastante personalidade.",
+        ),
     ]
 
-    for terms, headline, emojis, inspiration in perfume_profiles:
+    for terms, headline, emojis, detail in perfume_profiles:
         if any(term in n for term in terms):
-            return {"headline": headline, "emojis": emojis, "detail": inspiration}
+            return {"headline": headline, "emojis": emojis, "detail": detail}
 
+    # ------------------------------------------------------------
+    # PERFUME — quando não temos o modelo no nosso catálogo.
+    # A chamada ainda usa o que realmente aparece no título.
+    # ------------------------------------------------------------
     if any(x in n for x in [
         "perfume", "parfum", "eau de", "fragrance", "colonia", "colônia",
         "body splash", "body mist"
     ]):
-        if "masculino" in n:
+        brand = ""
+        for candidate in [
+            "lattafa", "afnan", "armaf", "rasasi", "al haramain",
+            "maison alhambra", "al watan iah", "al haramain",
+            "fragrance world", "paris corner", "rayhaan", "khadlaj",
+            "zimaya", "ajmal", "swiss arabian", "ard al zaafaran"
+        ]:
+            if norm(candidate) in n:
+                brand = candidate.title()
+                break
+
+        if "body splash" in n:
             return {
-                "headline": "UMA FRAGRÂNCIA MASCULINA QUE VALE A PENA CONFERIR",
-                "emojis": "🔥",
-                "detail": None,
-            }
-        if "feminino" in n:
-            return {
-                "headline": "UMA FRAGRÂNCIA FEMININA QUE VALE A PENA CONFERIR",
+                "headline": "BODY SPLASH PARA DEIXAR A ROTINA MAIS CHEIROSA E LEVE",
                 "emojis": "🌸✨",
-                "detail": None,
+                "detail": f"Uma opção {brand + ' ' if brand else ''}para quem prefere uma fragrância mais leve para o dia a dia.",
             }
-        if "body splash" in n or "body mist" in n:
+
+        if "body mist" in n:
             return {
-                "headline": "UMA FRAGRÂNCIA LEVE E FÁCIL DE USAR NO DIA A DIA",
+                "headline": "BODY MIST LEVE, PRÁTICO E FÁCIL DE USAR NO DIA A DIA",
                 "emojis": "✨🌸",
-                "detail": None,
+                "detail": f"Uma opção {brand + ' ' if brand else ''}para reaplicar ao longo do dia.",
             }
+
+        if "feminino" in n or "women" in n:
+            return {
+                "headline": f"{brand.upper() + ' • ' if brand else ''}UMA OPÇÃO FEMININA PARA QUEM AMA PERFUMES",
+                "emojis": "🌸✨",
+                "detail": "Vale olhar a proposta dessa fragrância e comparar o preço antes de aproveitar.",
+            }
+
+        if "masculino" in n or "men" in n:
+            return {
+                "headline": f"{brand.upper() + ' • ' if brand else ''}UMA OPÇÃO MASCULINA PARA QUEM GOSTA DE PERFUME COM PRESENÇA",
+                "emojis": "🖤🔥",
+                "detail": "Uma alternativa interessante para colocar no radar quando o preço aparece em promoção.",
+            }
+
         return {
-            "headline": "UMA FRAGRÂNCIA QUE VALE A PENA CONFERIR",
-            "emojis": "🔥",
-            "detail": None,
+            "headline": f"{brand.upper() + ' • ' if brand else ''}DESTAQUE DE PERFUME PARA FICAR DE OLHO",
+            "emojis": "✨🔥",
+            "detail": "Uma fragrância que merece entrar no radar quando aparece com preço promocional.",
         }
 
+    # ------------------------------------------------------------
+    # OUTRAS CATEGORIAS
+    # ------------------------------------------------------------
     if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
-        return {"headline": "ESTILOSO, VERSÁTIL E ÓTIMO PARA O DIA A DIA", "emojis": "👟🔥", "detail": None}
+        return {
+            "headline": "UM TÊNIS PARA QUEM QUER CONFORTO E ESTILO NO DIA A DIA",
+            "emojis": "👟🔥",
+            "detail": "Uma opção para colocar no radar quando o preço entra em promoção.",
+        }
 
     if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
         return {
-            "headline": "UMA ÓTIMA OPORTUNIDADE PARA QUEM ESTÁ DE OLHO EM TECNOLOGIA",
+            "headline": "TECNOLOGIA EM DESTAQUE — OLHA ESSE PREÇO",
             "emojis": "📱🔥",
-            "detail": None,
+            "detail": "Uma oferta para quem já estava de olho nesse tipo de produto.",
         }
 
     if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
         return {
-            "headline": "PRÁTICO PARA A ROTINA E VALE A PENA CONFERIR O PREÇO",
+            "headline": "UM ACHADO PARA FACILITAR A ROTINA EM CASA",
             "emojis": "🏠🔥",
-            "detail": None,
+            "detail": "Produto útil para o dia a dia e que vale conferir quando aparece em promoção.",
         }
 
     if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
         return {
-            "headline": "UMA OPÇÃO PRÁTICA PARA QUEM PRECISA DE FERRAMENTA",
+            "headline": "FERRAMENTA EM PROMOÇÃO — BOA HORA PARA QUEM ESTÁ PRECISANDO",
             "emojis": "🛠️🔥",
-            "detail": None,
+            "detail": "Uma opção prática para deixar no radar quando o preço cai.",
         }
 
     if any(x in n for x in ["cueca", "camiseta", "calca", "calça", "bermuda", "moletom"]):
         return {
-            "headline": "UMA BOA OPÇÃO PARA RENOVAR O GUARDA-ROUPA",
+            "headline": "PEÇA EM PROMOÇÃO — UMA BOA HORA PARA RENOVAR O GUARDA-ROUPA",
             "emojis": "👕🔥",
-            "detail": None,
+            "detail": "Vale conferir tamanhos, cores e condições antes de aproveitar.",
         }
 
     return {
-        "headline": "UMA OPORTUNIDADE QUE VALE A PENA CONFERIR",
-        "emojis": "🔥",
-        "detail": None,
+        "headline": "OFERTA EM DESTAQUE — OLHA O PREÇO DESSE PRODUTO",
+        "emojis": "🔥👀",
+        "detail": "Se estava procurando algo desse tipo, vale conferir a condição da oferta.",
     }
 
 
