@@ -2439,7 +2439,6 @@ PERFUME_EXCLUDED_TERMS = (
 PERFUME_BRAND_QUERIES = [
     # 🇧🇷 Nacionais
     "Natura perfume", "O Boticário perfume", "Eudora perfume",
-    "Phebo perfume",
     # 🌎 Importados — marcas de grande procura
     "Carolina Herrera perfume", "Rabanne perfume", "Paco Rabanne perfume",
     "Dior perfume", "Chanel perfume", "Yves Saint Laurent perfume",
@@ -2460,6 +2459,29 @@ PERFUME_BRAND_QUERIES = [
     "Michael Kors perfume", "Coach perfume", "Jimmy Choo perfume",
     "Ralph Lauren perfume", "DKNY perfume", "Ferragamo perfume",
     "Jil Sander perfume", "Lacoste perfume",
+    # Modelos populares nacionais
+    "Natura Kaiak", "Natura Essencial", "Natura Luna", "Natura Homem",
+    "Natura Una", "Natura Humor", "Natura Biografia", "Natura Ilía",
+    "Natura Kriska", "Natura Águas",
+    "Boticário Malbec", "Boticário Malbec Gold", "Boticário Malbec Black",
+    "Boticário Malbec Bleu", "Boticário Egeo", "Boticário Lily",
+    "Boticário Coffee", "Boticário Quasar", "Boticário The Blend",
+    "Boticário Zaad", "Boticário Floratta", "Boticário Glamour",
+    "Boticário Botica 214",
+    "Eudora Club 6", "Eudora La Victorie", "Eudora Lyra", "Eudora Rouge",
+    "Eudora Impression", "Eudora Instance", "Eudora Velvet Cristal",
+    # Modelos populares importados
+    "Dior Sauvage", "Dior J'adore", "Dior Miss Dior", "Dior Homme",
+    "Chanel Bleu de Chanel", "Chanel Coco Mademoiselle", "Chanel Chance",
+    "Chanel Allure", "YSL Libre", "YSL Black Opium", "YSL Y",
+    "Armani Acqua di Gio", "Armani Stronger With You", "Armani My Way",
+    "Carolina Herrera 212 VIP", "Carolina Herrera Good Girl", "Carolina Herrera CH",
+    "Paco Rabanne 1 Million", "Paco Rabanne Invictus", "Paco Rabanne Phantom",
+    "Versace Eros", "Versace Bright Crystal", "Dolce Gabbana Light Blue",
+    "Dolce Gabbana The One", "Prada Luna Rossa", "Prada Paradoxe",
+    "Valentino Born in Roma", "Jean Paul Gaultier Le Male", "Jean Paul Gaultier Scandal",
+    "Givenchy Gentleman", "Givenchy L'Interdit", "Hugo Boss Bottled",
+    "Montblanc Explorer", "Azzaro Wanted", "Azzaro The Most Wanted",
 ]
 
 # Marcas árabes que aparecem nas buscas atuais do Mercado Livre, além das
@@ -2479,6 +2501,30 @@ PERFUME_TREND_QUERIES = [
     "perfumes mais vendidos", "perfumes em alta", "perfumes mais procurados",
     "perfume feminino mais vendido", "perfume masculino mais vendido",
     "perfume importado mais vendido", "perfume nacional mais vendido",
+]
+
+# Modelos adicionais para aumentar a diversidade sem depender apenas de buscas genéricas por marca.
+ARABIC_MODEL_QUERIES = [
+    "Lattafa Asad Zanzibar", "Lattafa Asad Bourbon", "Lattafa Yara Moi", "Lattafa Yara Tous",
+    "Lattafa Nebras", "Lattafa Liam Grey", "Lattafa Liam Blue Shine", "Lattafa Teriaq",
+    "Lattafa Liquid Brun", "Lattafa Eclaire", "Lattafa Fakhar Extrait", "Lattafa Najdia Tribute",
+    "Lattafa Maahir Black", "Lattafa Maahir Gold", "Lattafa Qaed Al Fursan Unlimited",
+    "Lattafa Ramz Silver", "Lattafa Ramz Gold", "Lattafa Vintage Radio", "Lattafa Honor and Glory",
+    "Lattafa Ishq Al Shuyukh Gold", "Lattafa Sheikh Shuyukh Final Edition",
+    "Afnan 9PM Pour Femme", "Afnan 9PM Dive", "Afnan Supremacy Silver", "Afnan Turathi Brown",
+    "Afnan Rare Carbon", "Afnan Modest Une", "Afnan Historic Olmeda",
+    "Armaf Club de Nuit Woman", "Armaf Club de Nuit Milestone", "Armaf Club de Nuit Sillage",
+    "Armaf Club de Nuit Untold", "Armaf Odyssey Homme", "Armaf Odyssey Mandarin Sky",
+    "Rasasi Hawas Ice", "Rasasi Hawas Black", "Rasasi Daarej", "Rasasi La Yuqawam",
+    "Maison Alhambra Jean Lowe Immortal", "Maison Alhambra Jean Lowe Noir",
+    "Maison Alhambra Hercules", "Maison Alhambra Yeah!", "Maison Alhambra Galatea",
+    "Maison Alhambra Fabulo Intense", "Maison Alhambra Lovely Cherie",
+    "Al Haramain Amber Oud Gold Edition", "Al Haramain Amber Oud Tobacco Edition",
+    "Al Haramain Detour Eco", "Al Wataniah Attar Al Wesal", "Al Wataniah Kayaan Classic",
+    "French Avenue Imperium", "French Avenue Liquid Brun", "French Avenue After Effect",
+    "Paris Corner Khair Confection", "Paris Corner Khair Fusion", "Paris Corner Emir Celestial",
+    "Khadlaj Hareem Al Sultan Gold", "Khadlaj Shiyaaka Red", "Zimaya Sharaf The Club",
+    "Swiss Arabian Shaghaf Oud Azraq", "Swiss Arabian Shaghaf Oud Tonka",
 ]
 
 ARABIC_TREND_QUERIES = [
@@ -3056,7 +3102,7 @@ def _search_arabic_perfumes(fast=False):
     para um ITEM MLB real antes de entrar no resultado.
     """
     queries = []
-    for q in ARABIC_BESTSELLERS_35 + ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
+    for q in ARABIC_BESTSELLERS_35 + ARABIC_MODEL_QUERIES + ARABIC_BRAND_QUERIES + ARABIC_TREND_QUERIES:
         if q not in queries:
             queries.append(q)
 
@@ -3066,10 +3112,10 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:24]
+        queries = queries[:40]
     for q in queries:
         try:
-            rows = _search_arabic_real_listings(q, limit=20 if fast else 80)
+            rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
         except Exception as exc:
             print("[ARABES BUSCA]", q, repr(exc))
             continue
@@ -3121,7 +3167,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Antes eram só 8 buscas; isso fazia a categoria nacional/importada
             # terminar com poucas opções. Agora percorremos 24 marcas/modelos.
-            perfume_queries = perfume_queries[:24]
+            perfume_queries = perfume_queries[:40]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -3133,7 +3179,7 @@ def _search_category(cat, fast=False):
                 # /products/search, que pode retornar produto sem publicação
                 # utilizável para o perfume normal.
                 rows = _search_arabic_real_listings(
-                    search_q, limit=25 if fast else 40
+                    search_q, limit=30 if fast else 40
                 )
 
                 # IMPORTANTE: para perfumes normais, não podemos usar a busca
@@ -4379,7 +4425,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "menor preço do produto": brl(min(values or [0])),
         "menor total com frete": brl(min(totals or [0])),
         "produtos sem cupom": max(0, len(flat) - coupon_count),
-        "modo": "30 por categoria + perfumes árabes por ITEM real, sem filtro Full/Gold/100 vendas",
+        "modo": "30 por categoria + até 50 perfumes por categoria, por ITEM real, sem filtro Full/Gold/100 vendas",
     }
     print(f"[RESULTADO OFERTAS] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {"stats": stats, "modelos": models, "ofertas": flat}
