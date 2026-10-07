@@ -2539,158 +2539,172 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_real_listings(q, limit=80):
-    """Descobre publicações reais de perfumes árabes sem depender do catálogo.
+    """Busca perfumes usando dados de catálogo sem depender de /items/{id}.
 
-    O problema da versão anterior era estrutural: /products/search devolvia
-    30 candidatos, mas depois cada candidato precisava de /products/{id},
-    /products/{id}/items ou buy_box. Para perfumes isso frequentemente não
-    entregava ITEM real e ainda multiplicava as chamadas até provocar HTTP 429.
+    MOTIVO DA ALTERAÇÃO:
+    o Mercado Livre pode bloquear /items/{id} e /sites/MLB/search para apps
+    que não têm a liberação necessária. Nesse cenário, procurar um MLB real
+    e depois confirmá-lo com /items faz a busca virar zero, mesmo quando
+    /products/search e /products/{id}/items encontram a publicação.
 
-    Nova ordem:
-      1) busca pública do Mercado Livre -> extrai MLB reais;
-      2) confirma cada MLB em /items/{id};
-      3) somente se a busca pública não trouxer nada, usa /products/search
-         como fallback.
+    Para perfumes, usamos somente os dados que o próprio catálogo fornece:
+      1) /products/search para descobrir os modelos;
+      2) /products/{id} para buy_box_winner;
+      3) /products/{id}/items para obter as publicações ligadas ao produto.
 
-    Nunca retorna /p/MLB... e nunca passa catálogo para o gerador de afiliado.
+    Não fazemos GET /items/{id} nesta etapa.
     """
     query = str(q or "").strip()
     limit = min(max(int(limit or 30), 1), 30)
     if not query:
         return []
 
-    # Primeiro caminho: página pública. Ela já representa anúncios reais e
-    # evita o funil catálogo -> buy box -> items que estava zerando os árabes.
-    try:
-        public_rows = _search_perfume_public_fallback(query, limit=limit)
-    except Exception as exc:
-        public_rows = []
-        print("[ARABES PUBLICO]", query, repr(exc))
-
-    if public_rows:
-        print(f"[ARABES ITEM REAL] {query} -> {len(public_rows)} anúncios (busca pública)")
-        return public_rows[:limit]
-
-    # Segundo caminho: fallback de catálogo. É deliberadamente limitado para
-    # não transformar uma única pesquisa em dezenas de chamadas HTTP.
     listings = []
-    seen_items = set()
+    seen = set()
 
-    def add_real_item(item_id, fallback_title="", fallback_product=None):
-        iid = str(item_id or "").strip().upper()
-        if not re.fullmatch(r"MLB\d+", iid) or iid in seen_items:
-            return
-        try:
-            data, status, _ = ml_get(f"/items/{iid}")
-        except Exception as exc:
-            print("[ARABES ITEM]", iid, repr(exc))
-            return
-        if status != 200 or not isinstance(data, dict):
+    def add_listing(candidate, fallback_title="", fallback_product=None, position=99):
+        if not isinstance(candidate, dict):
             return
 
-        title = str(data.get("title") or fallback_title or "").strip()
-        permalink = str(data.get("permalink") or "").strip()
-        if not title or not permalink or _is_catalog_permalink(permalink):
+        iid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
+        if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
             return
+
+        title = str(
+            candidate.get("title")
+            or fallback_title
+            or (fallback_product or {}).get("title")
+            or (fallback_product or {}).get("name")
+            or ""
+        ).strip()
+        if not title:
+            return
+
+        permalink = str(candidate.get("permalink") or "").strip()
+        # Se o catálogo fornecer URL de produto, ela não pode ser usada como
+        # anúncio. Só aceitamos permalink de publicação quando vier no item.
+        if permalink and _is_catalog_permalink(permalink):
+            permalink = ""
+
         try:
-            price = float(data.get("price") or data.get("sale_price") or 0)
+            price = float(
+                candidate.get("price")
+                if candidate.get("price") is not None
+                else candidate.get("sale_price") or 0
+            )
         except Exception:
             price = 0
+
         if price < MIN_PRODUCT_PRICE or price > 100000:
             return
 
-        shipping = data.get("shipping") or {}
+        shipping = candidate.get("shipping") or {}
         if not isinstance(shipping, dict):
             shipping = {}
-        seller = data.get("seller") or {}
+
+        seller = candidate.get("seller") or {}
         if not isinstance(seller, dict):
             seller = {}
-        pictures = data.get("pictures") or []
-        thumbnail = str(data.get("thumbnail") or "").strip()
+
+        pictures = candidate.get("pictures") or []
+        thumbnail = str(candidate.get("thumbnail") or "").strip()
         if not thumbnail and pictures and isinstance(pictures[0], dict):
             thumbnail = str(
-                pictures[0].get("secure_url") or pictures[0].get("url") or
-                pictures[0].get("secure_thumbnail") or pictures[0].get("thumbnail") or ""
+                pictures[0].get("secure_url")
+                or pictures[0].get("url")
+                or pictures[0].get("secure_thumbnail")
+                or pictures[0].get("thumbnail")
+                or ""
             ).strip()
 
+        # /products/{id}/items normalmente já fornece seller, preço, envio e
+        # permalink. Se não houver permalink, ainda mantemos o candidato na
+        # fila: o fluxo de geração poderá resolver a publicação posteriormente.
         listings.append({
             "id": iid,
             "item_id": iid,
-            "product_id": str((fallback_product or {}).get("id") or data.get("catalog_product_id") or "").strip(),
+            "product_id": str(
+                candidate.get("catalog_product_id")
+                or candidate.get("product_id")
+                or (fallback_product or {}).get("id")
+                or ""
+            ).strip(),
             "title": title,
             "name": title,
             "permalink": permalink,
             "thumbnail": thumbnail,
             "pictures": pictures,
             "price": price,
-            "original_price": data.get("original_price") or data.get("base_price"),
-            "seller_id": data.get("seller_id") or seller.get("id"),
-            "sold_quantity": data.get("sold_quantity") or 0,
+            "original_price": candidate.get("original_price") or candidate.get("regular_price") or candidate.get("base_price"),
+            "seller_id": candidate.get("seller_id") or seller.get("id"),
+            "sold_quantity": candidate.get("sold_quantity") or candidate.get("sales") or 0,
             "shipping": shipping,
-            "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
-            "logistic_type": shipping.get("logistic_type") or data.get("logistic_type"),
-            "condition": data.get("condition") or "new",
-            "highlight_position": len(listings) + 1,
+            "free_shipping": bool(shipping.get("free_shipping") or candidate.get("free_shipping")),
+            "logistic_type": shipping.get("logistic_type") or candidate.get("logistic_type"),
+            "condition": candidate.get("condition") or "new",
+            "highlight_position": position,
+            "source_type": "ITEM",
         })
-        seen_items.add(iid)
+        seen.add(iid)
 
+    # Busca catálogo. É a rota que continua funcionando para o token atual.
     try:
-        products = search_products_direct(query, limit=min(10, limit))
+        products = search_products_direct(query, limit=min(8, max(3, limit)))
     except Exception as exc:
         print("[ARABES CATALOGO]", query, repr(exc))
         products = []
 
-    for product_row in products:
+    # No máximo 3 produtos de catálogo por consulta. Isso evita o efeito de
+    # 35 nichos x dezenas de chamadas que estava provocando HTTP 429.
+    for product_row in products[:3]:
         if len(listings) >= limit:
             break
         if not isinstance(product_row, dict):
             continue
+
         pid = str(product_row.get("id") or product_row.get("product_id") or "").strip()
         if not pid:
             continue
 
-        # Buy box presente no resultado.
+        # 1) Buy box já presente na resposta da busca.
         bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
         if isinstance(bb, dict):
-            iid = str(bb.get("item_id") or bb.get("id") or "").strip().upper()
-            if re.fullmatch(r"MLB\d+", iid) and iid != pid:
-                add_real_item(iid, product_row.get("title") or product_row.get("name") or "", product_row)
+            add_listing(bb, product_row.get("title") or product_row.get("name") or "", product_row, len(listings) + 1)
 
-        if len(listings) >= limit:
-            break
-
-        # Detalhe do catálogo, somente se necessário.
+        # 2) Detalhe do produto: uma chamada, sem /items/{id}.
+        detail = None
         try:
             detail = product(pid)
         except Exception as exc:
-            detail = None
             print("[ARABES PRODUTO DETALHE]", pid, repr(exc))
+
         if isinstance(detail, dict):
             dbb = detail.get("buy_box_winner") or detail.get("buy_box")
             if isinstance(dbb, dict):
-                iid = str(dbb.get("item_id") or dbb.get("id") or "").strip().upper()
-                if re.fullmatch(r"MLB\d+", iid) and iid != pid:
-                    add_real_item(iid, product_row.get("title") or product_row.get("name") or "", product_row)
+                add_listing(dbb, detail.get("name") or product_row.get("title") or "", detail, len(listings) + 1)
 
-        if len(listings) >= limit:
-            break
-
-        # Publicações associadas ao catálogo.
+        # 3) Publicações ligadas ao produto. Não consultamos /items/{id}.
         try:
             items = product_items(pid) or []
         except Exception as exc:
             items = []
             print("[ARABES ITEMS]", pid, repr(exc))
-        for item in items:
-            if len(listings) >= limit:
-                break
-            if not isinstance(item, dict):
-                continue
-            iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
-            if re.fullmatch(r"MLB\d+", iid):
-                add_real_item(iid, item.get("title") or product_row.get("title") or "", product_row)
 
-    print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios (fallback catálogo)")
+        if isinstance(items, list):
+            for item in items[:10]:
+                if len(listings) >= limit:
+                    break
+                add_listing(
+                    item,
+                    (detail or {}).get("name")
+                    or product_row.get("title")
+                    or product_row.get("name")
+                    or "",
+                    detail or product_row,
+                    len(listings) + 1,
+                )
+
+    print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios (catálogo sem /items)")
     return listings[:limit]
 
 _PUBLIC_PERFUME_CACHE = {}
@@ -5266,9 +5280,19 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
         )
         return real_permalink
 
-    # 1) Se recebemos um ID MLB, primeiro tratamos como possível ITEM real.
-    # Se /items/{id} não existir, tratamos o mesmo ID como possível catálogo.
-    if re.fullmatch(r"MLB\d+", item_id):
+    # Se a oferta já trouxe uma URL de publicação real, NÃO consulte /items/{id}
+    # novamente. Em 2026 esse endpoint pode retornar 403 para aplicações não
+    # liberadas, mesmo quando a URL pública do anúncio é perfeitamente válida.
+    # Isso é especialmente importante para os perfumes, cuja publicação já
+    # veio de /products/{id}/items.
+    product_host_ok = bool(re.search(
+        r"https?://(?:www\.|produto\.)?mercadolivre\.com\.br/",
+        product_url,
+        re.I,
+    ))
+    if product_url and product_host_ok and not is_catalog_url(product_url):
+        print("[AFILIADO] URL de publicação já confirmada; pulando /items:", product_url[:120])
+    elif re.fullmatch(r"MLB\d+", item_id):
         try:
             item_data, item_status, _ = ml_get(f"/items/{item_id}")
         except Exception as exc:
