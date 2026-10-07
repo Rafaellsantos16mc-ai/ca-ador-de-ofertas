@@ -193,6 +193,19 @@ CATALOG = {
         "calçados infantis",
         "acessórios para bebê",
     ],
+    "🌸 Perfumes": [
+        "perfumes",
+        "perfume masculino",
+        "perfume feminino",
+        "eau de parfum",
+        "eau de toilette",
+        "parfum",
+        "colônia",
+        "body splash",
+        "body mist",
+        "perfume importado",
+        "perfume nacional",
+    ],
     "🌙 Perfumes Árabes": [
         "Lattafa Asad",
         "Lattafa Yara",
@@ -2497,26 +2510,123 @@ def _arabic_brand_ids():
     return list(found)
 
 def _search_arabic_real_listings(q, limit=80):
-    """Busca perfumes árabes e força a resolução de uma publicação ITEM real.
+    """Busca perfumes árabes priorizando PUBLICAÇÕES ITEM reais.
 
-    A busca normal de produtos pode devolver um produto de catálogo sem
-    publicações vinculadas no primeiro retorno. Para perfumes árabes isso
-    estava fazendo a fila virar zero. Aqui tentamos, nesta ordem:
-      1) buy_box_winner retornado pela busca;
-      2) detalhe /products/{id} e seu buy_box_winner;
-      3) /products/{id}/items.
+    Ordem da descoberta:
+      1) Highlights da categoria de perfumes: quando o Mercado Livre
+         devolver TYPE=ITEM, já temos uma publicação real e ela é usada
+         diretamente.
+      2) /products/search para localizar produtos de catálogo do modelo.
+      3) /products/{id}/items e buy_box_winner para converter catálogo em
+         publicação ITEM real.
 
-    Nunca devolvemos o ID de catálogo como item. Só entram publicações MLB...
-    com preço >= R$69,90.
+    Nunca devolve /p/MLB... como item. O objetivo é deixar perfume com o
+    mesmo tipo de publicação que as demais categorias usam no gerador.
     """
     query = str(q or "").strip()
-    products = search_products_direct(query, limit=min(int(limit or 80), 50))
-    if not products:
-        print(f"[ARABES PRODUTOS] {query} -> 0 produtos")
-        return []
-
+    limit = min(max(int(limit or 80), 1), 80)
     listings = []
     seen_items = set()
+
+    def add_real_item(item_id, fallback_title="", fallback_product=None, position=99):
+        iid = str(item_id or "").strip().upper()
+        if not re.fullmatch(r"MLB\d+", iid) or iid in seen_items:
+            return
+
+        data, status, _ = ml_get(f"/items/{iid}")
+        if status != 200 or not isinstance(data, dict):
+            return
+
+        title = str(data.get("title") or fallback_title or "").strip()
+        if not title:
+            return
+
+        price = data.get("price")
+        if price is None:
+            price = data.get("sale_price")
+        try:
+            price = float(price) if price is not None else None
+        except Exception:
+            price = None
+        if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+            return
+
+        permalink = str(data.get("permalink") or "").strip()
+        if not permalink or _is_catalog_permalink(permalink):
+            return
+
+        shipping = data.get("shipping") or {}
+        if not isinstance(shipping, dict):
+            shipping = {}
+        seller = data.get("seller") or {}
+        if not isinstance(seller, dict):
+            seller = {}
+
+        pictures = data.get("pictures") or []
+        thumbnail = str(data.get("thumbnail") or "").strip()
+        if not thumbnail and pictures and isinstance(pictures[0], dict):
+            thumbnail = str(
+                pictures[0].get("secure_url")
+                or pictures[0].get("url")
+                or pictures[0].get("secure_thumbnail")
+                or pictures[0].get("thumbnail")
+                or ""
+            ).strip()
+
+        listings.append({
+            "id": iid,
+            "item_id": iid,
+            "product_id": str((fallback_product or {}).get("id") or data.get("catalog_product_id") or "").strip(),
+            "title": title,
+            "name": title,
+            "permalink": permalink,
+            "thumbnail": thumbnail,
+            "pictures": pictures,
+            "price": price,
+            "original_price": data.get("original_price") or data.get("base_price"),
+            "seller_id": data.get("seller_id") or seller.get("id"),
+            "sold_quantity": data.get("sold_quantity") or 0,
+            "shipping": shipping,
+            "free_shipping": bool(shipping.get("free_shipping") or data.get("free_shipping")),
+            "logistic_type": shipping.get("logistic_type") or data.get("logistic_type"),
+            "condition": data.get("condition") or data.get("item_condition") or "new",
+            "highlight_position": position,
+        })
+        seen_items.add(iid)
+
+    # ------------------------------------------------------------
+    # 1) MAIS VENDIDOS DE PERFUMES -> ITEM REAL
+    # ------------------------------------------------------------
+    perfume_category_id = BEST_SELLER_CATEGORY_IDS.get("🌸 Perfumes")
+    if perfume_category_id:
+        try:
+            ranking = highlights(perfume_category_id) or []
+        except Exception as exc:
+            ranking = []
+            print("[ARABES HIGHLIGHTS]", repr(exc))
+
+        for position, row in enumerate(ranking, start=1):
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or "").strip().upper()
+            rtype = str(row.get("type") or "").upper().strip()
+            if not rid:
+                continue
+
+            # O próprio Mercado Livre documenta que highlights pode devolver
+            # ITEM (publicação), PRODUCT (catálogo) ou USER_PRODUCT.
+            if rtype == "ITEM" and re.fullmatch(r"MLB\d+", rid):
+                add_real_item(rid, position=position)
+                if len(listings) >= limit:
+                    break
+
+    # ------------------------------------------------------------
+    # 2) BUSCA POR MODELO -> PRODUTO DE CATÁLOGO -> ITEM REAL
+    # ------------------------------------------------------------
+    if len(listings) < limit:
+        products = search_products_direct(query, limit=min(30, limit))
+    else:
+        products = []
 
     for product_row in products:
         if not isinstance(product_row, dict):
@@ -2525,13 +2635,12 @@ def _search_arabic_real_listings(q, limit=80):
         if not pid:
             continue
 
-        candidates = []
+        # Se a própria busca já trouxer buy box, aproveita.
         bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
-        if isinstance(bb, dict):
-            candidates.append(bb)
+        bb_candidates = [bb] if isinstance(bb, dict) else []
 
-        # O catálogo às vezes só entrega o buy box no detalhe.
-        if not candidates:
+        # Detalhe do produto pode trazer o buy_box_winner com ITEM real.
+        if not bb_candidates:
             try:
                 detail = product(pid)
             except Exception as exc:
@@ -2540,81 +2649,45 @@ def _search_arabic_real_listings(q, limit=80):
             if isinstance(detail, dict):
                 dbb = detail.get("buy_box_winner") or detail.get("buy_box")
                 if isinstance(dbb, dict):
-                    candidates.append(dbb)
+                    bb_candidates.append(dbb)
 
-        try:
-            candidates.extend(product_items(pid) or [])
-        except Exception as exc:
-            print("[ARABES ITEMS]", pid, repr(exc))
-
-        for item in candidates:
-            if not isinstance(item, dict):
+        for candidate in bb_candidates:
+            if not isinstance(candidate, dict):
                 continue
-            iid = str(
-                item.get("item_id")
-                or item.get("id")
-                or (item.get("item") or {}).get("item_id")
-                if isinstance(item.get("item"), dict)
-                else item.get("item_id") or item.get("id") or ""
-            ).strip()
-            if not iid or not re.fullmatch(r"MLB\d+", iid.upper()) or iid in seen_items:
-                continue
+            iid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
+            if re.fullmatch(r"MLB\d+", iid) and iid != pid:
+                add_real_item(iid, fallback_title=product_row.get("title") or product_row.get("name") or "", fallback_product=product_row)
+                if len(listings) >= limit:
+                    break
 
-            price = item.get("price")
-            if price is None:
-                price = item.get("sale_price")
-            if price is None:
-                price = item.get("regular_price")
-            try:
-                price = float(price) if price is not None else None
-            except Exception:
-                price = None
-            if price is None or price < MIN_PRODUCT_PRICE:
-                continue
-
-            shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
-            title = str(
-                item.get("title")
-                or product_row.get("title")
-                or product_row.get("name")
-                or ""
-            ).strip()
-            if not title:
-                continue
-
-            seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
-            seller_id = item.get("seller_id") or seller.get("id")
-            original = item.get("original_price") or item.get("regular_price")
-            thumbnail = item.get("thumbnail") or product_row.get("thumbnail") or ""
-
-            listings.append({
-                "id": iid,
-                "item_id": iid,
-                "product_id": pid,
-                "title": title,
-                "name": title,
-                "permalink": item.get("permalink") or "",
-                "thumbnail": thumbnail,
-                "pictures": item.get("pictures") or product_row.get("pictures") or [],
-                "price": price,
-                "original_price": original,
-                "seller_id": seller_id,
-                "sold_quantity": item.get("sold_quantity") or 0,
-                "shipping": shipping,
-                "free_shipping": bool(shipping.get("free_shipping") or item.get("free_shipping")),
-                "logistic_type": shipping.get("logistic_type") or item.get("logistic_type"),
-                "condition": item.get("condition") or "new",
-            })
-            seen_items.add(iid)
-            if len(listings) >= int(limit or 80):
-                break
-
-        if len(listings) >= int(limit or 80):
+        if len(listings) >= limit:
             break
 
-    print(f"[ARABES PRODUTOS -> ITEM REAL] {query} -> {len(listings)} anúncios")
-    return listings
+        # Publicações vinculadas ao produto.
+        try:
+            items = product_items(pid) or []
+        except Exception as exc:
+            items = []
+            print("[ARABES ITEMS]", pid, repr(exc))
 
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
+            if re.fullmatch(r"MLB\d+", iid):
+                add_real_item(
+                    iid,
+                    fallback_title=item.get("title") or product_row.get("title") or product_row.get("name") or "",
+                    fallback_product=product_row,
+                )
+            if len(listings) >= limit:
+                break
+
+        if len(listings) >= limit:
+            break
+
+    print(f"[ARABES ITEM REAL] {query} -> {len(listings)} anúncios")
+    return listings
 
 def _search_arabic_perfumes():
     """Busca uma amostra ampla de perfumes árabes por marca + termos de alta.
