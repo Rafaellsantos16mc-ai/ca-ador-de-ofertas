@@ -4707,6 +4707,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
     random.shuffle(flat)
 
+    dominant_type = None
+
     if apply_coupons and flat:
         public_cards = get_public_coupon_cards_cached()
         affiliate_coupon_catalog = get_affiliate_coupon_catalog_cached()
@@ -4876,6 +4878,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         best_coupon_price = None
         coupon_primary_code = ""
         coupon_coverage_count = 0
+        dominant_type = None
 
     if coupon_primary_code and coupon_coverage_count:
         for o in flat:
