@@ -3067,7 +3067,7 @@ def _search_arabic_real_listings(q, limit=80):
     Não fazemos GET /items/{id} nesta etapa.
     """
     query = str(q or "").strip()
-    limit = min(max(int(limit or 30), 1), 30)
+    limit = min(max(int(limit or 60), 1), 60)
     if not query:
         return []
 
@@ -3209,14 +3209,14 @@ def _search_arabic_real_listings(q, limit=80):
 
     # Busca catálogo. É a rota que continua funcionando para o token atual.
     try:
-        products = search_products_direct(query, limit=min(8, max(3, limit)))
+        products = search_products_direct(query, limit=min(12, max(6, limit)))
     except Exception as exc:
         print("[ARABES CATALOGO]", query, repr(exc))
         products = []
 
     # No máximo 3 produtos de catálogo por consulta. Isso evita o efeito de
     # 35 nichos x dezenas de chamadas que estava provocando HTTP 429.
-    for product_row in products[:3]:
+    for product_row in products[:6]:
         if len(listings) >= limit:
             break
         if not isinstance(product_row, dict):
@@ -3441,7 +3441,7 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:40]
+        queries = queries[:60]
     for q in queries:
         try:
             rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
@@ -3492,6 +3492,15 @@ def _search_category(cat, fast=False):
         # importados sem retirar os femininos. A lista prioritária entra antes
         # das demais porque o modo rápido usa as primeiras 40 consultas.
         PERFUME_PRIORITY_QUERIES = [
+            # 🌎 Consultas amplas: aumentam o universo de publicações antes
+            # de entrar nos modelos específicos. Isso é importante porque uma
+            # única marca pode ter dezenas de anúncios diferentes com desconto.
+            "perfume masculino importado", "perfumes masculinos importados",
+            "perfume masculino original importado", "perfumes importados masculinos",
+            "perfume feminino importado", "perfumes femininos importados",
+            "perfume importado masculino promoção", "perfume importado feminino promoção",
+            "perfume masculino desconto", "perfume feminino desconto",
+            "perfumes importados promoção", "perfumes importados desconto",
             # 🌎 Masculinos importados — prioridade maior
             "Dior Sauvage", "Dior Homme", "Dior Homme Intense",
             "Chanel Bleu de Chanel", "Chanel Allure Homme Sport",
@@ -3532,7 +3541,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Mantemos 40 consultas no modo rápido, mas agora as primeiras
             # consultas são majoritariamente importadas e masculinas.
-            perfume_queries = perfume_queries[:40]
+            perfume_queries = perfume_queries[:90]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -3544,7 +3553,7 @@ def _search_category(cat, fast=False):
                 # /products/search, que pode retornar produto sem publicação
                 # utilizável para o perfume normal.
                 rows = _search_arabic_real_listings(
-                    search_q, limit=30 if fast else 40
+                    search_q, limit=50 if fast else 60
                 )
 
                 # IMPORTANTE: para perfumes normais, não podemos usar a busca
@@ -3558,7 +3567,7 @@ def _search_category(cat, fast=False):
                 # quais anúncios realmente entram. Isso não altera as outras
                 # categorias nem o fluxo de afiliado/WhatsApp.
                 public_rows = _search_perfume_public_fallback(
-                    search_q, limit=10 if fast else 16
+                    search_q, limit=22 if fast else 30
                 )
                 if public_rows:
                     known_ids = {
@@ -3575,7 +3584,7 @@ def _search_category(cat, fast=False):
                 print("[PERFUMES BUSCA ITEM]", q, repr(exc))
                 try:
                     rows = _search_perfume_public_fallback(
-                        search_q, limit=12 if fast else 20
+                        search_q, limit=22 if fast else 30
                     )
                 except Exception as fallback_exc:
                     print("[PERFUMES FALLBACK]", q, repr(fallback_exc))
@@ -4280,8 +4289,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     if "🌸 Perfumes" in categories:
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
+        print(f"[PERFUMES CANDIDATOS BRUTOS] {len(perfume_raw)}")
         seen_perfume_items = set()
-        direct_limit = 180 if FAST_ALL_CATEGORIES and len(categories) > 1 else 400
+        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -4299,8 +4309,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     if "🌙 Perfumes Árabes" in categories:
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
+        print(f"[ARABES CANDIDATOS BRUTOS] {len(arabic_raw)}")
         seen_arabic_items = set()
-        direct_limit = 180 if FAST_ALL_CATEGORIES and len(categories) > 1 else 400
+        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
