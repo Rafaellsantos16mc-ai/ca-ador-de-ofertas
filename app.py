@@ -4,6 +4,7 @@ import sqlite3
 import secrets
 import hashlib
 import base64
+import json
 import time
 import re
 import html as html_lib
@@ -135,7 +136,7 @@ FAST_ALL_CATEGORIES = True
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
 SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
-SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 300
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
 SEARCH_RAW_POOL_PER_CATEGORY = 350
 SEARCH_SEEDS_FAST_PER_CATEGORY = 30
 SEARCH_RESULTS_PER_QUERY_FAST = 50
@@ -3915,7 +3916,7 @@ _PUBLIC_GENERIC_CACHE = {}
 _PUBLIC_GENERIC_CACHE_LOCK = threading.Lock()
 
 
-def _search_public_real_item_ids(q, limit=18):
+def _search_public_real_item_ids(q, limit=30):
     """Descobre IDs MLB reais diretamente na busca pública do Mercado Livre.
 
     A busca por /products/search retorna muitos IDs de catálogo. Esses IDs
@@ -4257,18 +4258,18 @@ def _search_category(cat, fast=False):
     # que entrega IDs de catálogo e fazia o pool 184 -> apenas 4 ofertas.
     # Agora descobrimos primeiro IDs MLB reais na página pública e os enviamos
     # ao mesmo pipeline de /items, preço, imagem e coerência.
-    real_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(350, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    real_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
     public_queries = _category_real_item_seed_queries(cat, fast=fast)
     # Na busca individual usamos até 25 consultas públicas; no modo todas
     # usamos 8 para preservar tempo. Cada consulta pode devolver vários IDs.
     if fast:
         public_queries = public_queries[:SEARCH_REAL_ITEM_QUERIES_ALL]
     else:
-        public_queries = public_queries[:25]
+        public_queries = public_queries[:40]
 
     def _public_ids_for_query(q):
         try:
-            return q, _search_public_real_item_ids(q, limit=18)
+            return q, _search_public_real_item_ids(q, limit=30)
         except Exception as exc:
             print("[BUSCA PUBLICA REAL]", cat, q, repr(exc))
             return q, []
@@ -4417,13 +4418,13 @@ def _search_category(cat, fast=False):
     # de anúncios reais. Esses IDs entram como source_type=ITEM e seguem o
     # mesmo enriquecimento/validação já existente. Não alteramos os filtros
     # de coerência, preço ou imagem.
-    public_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(350, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    public_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
     if len(out) < public_target:
         public_queries = seed_queries[:8] if fast else seed_queries[:14]
         public_added = 0
         for q in public_queries:
             try:
-                real_ids = _search_public_real_item_ids(q, limit=18 if fast else 22)
+                real_ids = _search_public_real_item_ids(q, limit=30 if fast else 30)
             except Exception as exc:
                 print('[BUSCA PUBLICA COMPLEMENTAR]', cat, q, repr(exc))
                 continue
@@ -4613,6 +4614,179 @@ def validate_high_turnover_item(item, product_id=None):
     return None
 
 
+
+_PUBLIC_ITEM_PAGE_CACHE = {}
+_PUBLIC_ITEM_PAGE_CACHE_LOCK = threading.Lock()
+
+def _scrape_public_item_page(item_id):
+    """Lê os dados básicos do anúncio diretamente da página pública.
+
+    O app já consegue descobrir IDs MLB reais na busca pública, mas o V44
+    descartava esses IDs quando GET /items/{id} retornava 403. Isso era o
+    gargalo que transformava centenas de candidatos em 4 ofertas.
+
+    A página pública do anúncio contém metadados públicos (título, imagem,
+    preço e URL canônica). Usamos esses dados apenas como fallback quando a
+    API de /items não estiver disponível.
+    """
+    iid = str(item_id or '').strip().upper()
+    if not re.fullmatch(r'MLB\d+', iid):
+        return None
+
+    cache_key = iid
+    with _PUBLIC_ITEM_PAGE_CACHE_LOCK:
+        cached = _PUBLIC_ITEM_PAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    urls = [
+        f'https://www.mercadolivre.com.br/{iid.lower()}-produto',
+        f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
+    ]
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Cache-Control': 'no-cache',
+    }
+
+    html = ''
+    final_url = ''
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if r.status_code == 200 and r.text:
+                html = r.text
+                final_url = str(r.url or url)
+                break
+            print('[ITEM PUBLICO] HTTP', r.status_code, iid, url)
+        except Exception as exc:
+            print('[ITEM PUBLICO] erro', iid, repr(exc))
+
+    if not html:
+        return None
+
+    def meta(prop=None, name=None, itemprop=None):
+        if prop:
+            attr = r'(?:property|name)=[\"\']' + re.escape(prop) + r'[\"\']'
+        elif name:
+            attr = r'name=[\"\']' + re.escape(name) + r'[\"\']'
+        elif itemprop:
+            attr = r'itemprop=[\"\']' + re.escape(itemprop) + r'[\"\']'
+        else:
+            return ''
+        patterns = [
+            r'<meta\b[^>]*' + attr + r'[^>]*content=[\"\']([^\"\']+)[\"\']',
+            r'<meta\b[^>]*content=[\"\']([^\"\']+)[\"\'][^>]*' + attr + r'[^>]*>',
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, html, re.I)
+            if m:
+                return html_lib.unescape(m.group(1)).strip()
+        return ''
+
+    title = meta(prop='og:title') or meta(name='twitter:title') or meta(itemprop='name')
+    image = meta(prop='og:image') or meta(name='twitter:image') or meta(itemprop='image')
+    price_raw = (
+        meta(prop='product:price:amount')
+        or meta(itemprop='price')
+        or meta(name='price')
+    )
+    currency = meta(prop='product:price:currency') or meta(itemprop='priceCurrency')
+
+    canonical = ''
+    m = re.search(r'<link\b[^>]*(?:rel=[\"\']canonical[\"\'])[^>]*href=[\"\']([^\"\']+)', html, re.I)
+    if not m:
+        m = re.search(r'<link\b[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*(?:rel=[\"\']canonical[\"\'])', html, re.I)
+    if m:
+        canonical = html_lib.unescape(m.group(1)).strip()
+
+    # Fallback para JSON-LD/Product/Offer.
+    if not title or not image or not price_raw:
+        for sm in re.finditer(r'<script\b[^>]*type=[\"\']application/ld\+json[\"\'][^>]*>(.*?)</script>', html, re.I | re.S):
+            raw_json = html_lib.unescape(sm.group(1)).strip()
+            try:
+                obj = json.loads(raw_json)
+            except Exception:
+                continue
+            stack = obj if isinstance(obj, list) else [obj]
+            while stack:
+                node = stack.pop(0)
+                if isinstance(node, list):
+                    stack.extend(node)
+                    continue
+                if not isinstance(node, dict):
+                    continue
+                if not title and node.get('name'):
+                    title = str(node.get('name')).strip()
+                if not image and node.get('image'):
+                    img = node.get('image')
+                    if isinstance(img, list):
+                        img = img[0] if img else ''
+                    image = str(img or '').strip()
+                offers_node = node.get('offers')
+                if isinstance(offers_node, dict):
+                    if not price_raw and offers_node.get('price') is not None:
+                        price_raw = str(offers_node.get('price'))
+                    if not currency and offers_node.get('priceCurrency'):
+                        currency = str(offers_node.get('priceCurrency'))
+                elif isinstance(offers_node, list):
+                    stack.extend(offers_node)
+                if node.get('@graph'):
+                    stack.extend(node.get('@graph') if isinstance(node.get('@graph'), list) else [node.get('@graph')])
+
+    def parse_price(v):
+        if v is None:
+            return None
+        txt = str(v).strip().replace('\xa0', ' ')
+        # JSON-LD costuma vir em 1234.56; meta pode vir em 1.234,56.
+        if re.fullmatch(r'\d+(?:\.\d+)?', txt):
+            try:
+                return float(txt)
+            except Exception:
+                return None
+        m = re.search(r'\d[\d.]*,\d{2}', txt)
+        if m:
+            try:
+                return float(m.group(0).replace('.', '').replace(',', '.'))
+            except Exception:
+                return None
+        m = re.search(r'\d+(?:\.\d+)?', txt)
+        try:
+            return float(m.group(0)) if m else None
+        except Exception:
+            return None
+
+    price = parse_price(price_raw)
+    if not title or price is None or price <= 0:
+        print('[ITEM PUBLICO] dados insuficientes', iid, 'title=', bool(title), 'price=', price_raw)
+        return None
+
+    if not canonical or '/p/' not in canonical:
+        canonical = final_url or f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}'
+
+    row = {
+        'id': iid,
+        'item_id': iid,
+        'title': title,
+        'name': title,
+        'permalink': canonical,
+        'price': price,
+        'original_price': None,
+        'thumbnail': image,
+        'pictures': [{'secure_url': image}] if image else [],
+        'seller_id': None,
+        'seller': {},
+        'shipping': {},
+        'condition': 'new',
+        'source_type': 'ITEM',
+        'public_page': True,
+        'currency_id': currency or 'BRL',
+    }
+    with _PUBLIC_ITEM_PAGE_CACHE_LOCK:
+        _PUBLIC_ITEM_PAGE_CACHE[cache_key] = dict(row)
+    return row
+
 def _fetch_product_fast(pid, raw=None, base=None):
     """Enriquece o candidato sem eliminar catálogo durante a busca.
 
@@ -4628,14 +4802,28 @@ def _fetch_product_fast(pid, raw=None, base=None):
             return _PRODUCT_CACHE[cache_key]
 
     # 0) Busca que já trouxe uma publicação ITEM real.
+    # Primeiro aproveitamos os dados já coletados da página pública. Isso é
+    # essencial porque /items/{id} pode responder 403 para o token atual.
     source_type = str((raw or {}).get("source_type") or "").upper().strip()
     if source_type == "ITEM":
+        raw_item = normalize_item(raw)
+        raw_title = str((raw or {}).get("title") or (raw or {}).get("name") or "").strip()
+        raw_price = raw_item.get("price") if raw_item else None
+        raw_image = _extract_image_url(raw or {})
+        if raw_item is not None and raw_title and raw_price is not None and float(raw_price or 0) > 0 and raw_image:
+            raw_item["permalink"] = (raw_item.get("permalink") or (raw or {}).get("permalink"))
+            p = dict(raw or {})
+            p.update({"id": pid, "name": raw_title, "title": raw_title})
+            result = (pid, p, raw_item, base)
+            with _PRODUCT_CACHE_LOCK:
+                _PRODUCT_CACHE[cache_key] = result
+            return result
+
+        # Segunda tentativa: API oficial /items.
         item_data, status, _ = ml_get(f"/items/{pid}")
         if status == 200 and isinstance(item_data, dict):
             item = normalize_item(item_data)
             if item is not None:
-                # Se houver permalink real, usamos. Se vier catálogo, também
-                # preservamos porque a geração do afiliado resolverá depois.
                 item = _hydrate_real_item_permalink(item)
                 p = dict(raw or {})
                 p.update({
@@ -4645,6 +4833,18 @@ def _fetch_product_fast(pid, raw=None, base=None):
                     "pictures": item_data.get("pictures") or [],
                     "permalink": item.get("permalink") or p.get("permalink"),
                 })
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
+
+        # Fallback definitivo: página pública do próprio anúncio.
+        public_row = _scrape_public_item_page(pid)
+        if public_row:
+            item = normalize_item(public_row)
+            if item is not None:
+                p = dict(public_row)
+                p.update({"id": pid, "name": public_row.get("title") or pid, "title": public_row.get("title") or pid})
                 result = (pid, p, item, base)
                 with _PRODUCT_CACHE_LOCK:
                     _PRODUCT_CACHE[cache_key] = result
@@ -5133,8 +5333,8 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V42 prioriza anúncios ITEM reais de /sites/MLB/search
-    e usa /products/search apenas como complemento. Perfumes mantêm a rota própria.
+    Para categorias comuns, a V45 prioriza IDs ITEM reais descobertos na página pública
+    e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
@@ -5850,7 +6050,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V42: anúncios ITEM reais primeiro; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; desconto real priorizado",
+        "modo": f"V45: anúncios ITEM reais pela página pública + fallback da página do anúncio; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
