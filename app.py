@@ -4251,31 +4251,79 @@ def _search_category(cat, fast=False):
     out = []
     seen = set()
 
-    # V42: PRIMEIRO procura anúncios reais (ITEM) diretamente na busca do ML.
-    # Isso corrige o gargalo observado: 184 catálogos -> apenas 4 ofertas.
-    # Os resultados ITEM entram no mesmo pipeline de imagem/preço/coerência.
+    # V44 — FONTE PRINCIPAL: página pública do Mercado Livre.
+    # A API /sites/MLB/search frequentemente retorna 403 neste projeto.
+    # Quando isso acontece, a versão anterior voltava para /products/search,
+    # que entrega IDs de catálogo e fazia o pool 184 -> apenas 4 ofertas.
+    # Agora descobrimos primeiro IDs MLB reais na página pública e os enviamos
+    # ao mesmo pipeline de /items, preço, imagem e coerência.
     real_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(350, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
-    real_queries = _category_real_item_seed_queries(cat, fast=fast)
-    real_added = 0
-    for q in real_queries:
-        if len(out) >= real_target:
-            break
+    public_queries = _category_real_item_seed_queries(cat, fast=fast)
+    # Na busca individual usamos até 25 consultas públicas; no modo todas
+    # usamos 8 para preservar tempo. Cada consulta pode devolver vários IDs.
+    if fast:
+        public_queries = public_queries[:SEARCH_REAL_ITEM_QUERIES_ALL]
+    else:
+        public_queries = public_queries[:25]
+
+    def _public_ids_for_query(q):
         try:
-            rows = _search_real_item_listings_api(q, limit=SEARCH_REAL_ITEM_RESULTS_PER_QUERY)
+            return q, _search_public_real_item_ids(q, limit=18)
         except Exception as exc:
-            print("[BUSCA ITEMS API]", cat, q, repr(exc))
-            rows = []
-        for row in rows:
-            iid = str(row.get("id") or "").strip().upper()
-            if not iid or iid in seen:
-                continue
-            seen.add(iid)
-            out.append((row, cat))
-            real_added += 1
+            print("[BUSCA PUBLICA REAL]", cat, q, repr(exc))
+            return q, []
+
+    public_added = 0
+    # Concorrência moderada: suficiente para não ficar lento, sem bombardear
+    # o site público e provocar 429.
+    with _ThreadPoolExecutor(max_workers=min(6, max(1, len(public_queries)))) as ex:
+        futures = [ex.submit(_public_ids_for_query, q) for q in public_queries]
+        for fut in as_completed(futures):
+            q, ids = fut.result()
+            for iid in ids:
+                iid = str(iid or '').strip().upper()
+                if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                    continue
+                seen.add(iid)
+                out.append(({
+                    "id": iid,
+                    "item_id": iid,
+                    "title": "",
+                    "name": "",
+                    "source_type": "ITEM",
+                    "public_query": q,
+                }, cat))
+                public_added += 1
+                if len(out) >= real_target:
+                    break
             if len(out) >= real_target:
                 break
 
-    print(f"[V42 ITEMS REAIS] {cat}: +{real_added} | pool inicial={len(out)}")
+    print(f"[V44 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+
+    # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
+    # a busca pública; se devolver 403, não impede a primeira fonte.
+    if len(out) < real_target:
+        real_queries = _category_real_item_seed_queries(cat, fast=fast)
+        real_added = 0
+        for q in real_queries:
+            if len(out) >= real_target:
+                break
+            try:
+                rows = _search_real_item_listings_api(q, limit=SEARCH_REAL_ITEM_RESULTS_PER_QUERY)
+            except Exception as exc:
+                print("[BUSCA ITEMS API]", cat, q, repr(exc))
+                rows = []
+            for row in rows:
+                iid = str(row.get("id") or "").strip().upper()
+                if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                    continue
+                seen.add(iid)
+                out.append((row, cat))
+                real_added += 1
+                if len(out) >= real_target:
+                    break
+        print(f"[V44 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
