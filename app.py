@@ -133,12 +133,12 @@ FAST_ALL_CATEGORIES = True
 # Com 6 categorias, 65 candidatos por categoria = até 390 candidatos
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
-SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 65
-SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 100
-SEARCH_RAW_POOL_PER_CATEGORY = 110
-SEARCH_SEEDS_FAST_PER_CATEGORY = 18
-SEARCH_RESULTS_PER_QUERY_FAST = 40
+SEARCH_TARGET_OFFERS = 270
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 160
+SEARCH_RAW_POOL_PER_CATEGORY = 220
+SEARCH_SEEDS_FAST_PER_CATEGORY = 28
+SEARCH_RESULTS_PER_QUERY_FAST = 50
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -4100,8 +4100,16 @@ def _search_category(cat, fast=False):
             clean_seed = re.sub(r'^[^A-Za-zÀ-ÿ0-9]+', '', clean_seed).strip()
         if clean_seed and clean_seed not in seed_queries:
             seed_queries.append(clean_seed)
-        if fast and len(seed_queries) >= SEARCH_SEEDS_FAST_PER_CATEGORY:
-            break
+
+    # No modo "todas", não pegamos simplesmente os primeiros 28 termos.
+    # Distribuímos as consultas ao longo de TODA a lista da categoria para
+    # representar os vários nichos (ex.: feminino, futebol, praia, fitness,
+    # informática etc.) em vez de deixar o início da lista dominar a busca.
+    if fast and len(seed_queries) > SEARCH_SEEDS_FAST_PER_CATEGORY:
+        total_seeds = len(seed_queries)
+        count = SEARCH_SEEDS_FAST_PER_CATEGORY
+        positions = [round(i * (total_seeds - 1) / (count - 1)) for i in range(count)]
+        seed_queries = [seed_queries[i] for i in positions]
 
     for q in seed_queries:
         try:
@@ -5161,81 +5169,36 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             moda.append(o)
         offers = moda
 
-    # DEDUPLICAÇÃO ROBUSTA
-    # O mesmo produto pode chegar com product_id diferente e com pequenas
-    # diferenças no título (ex.: "Escapes Urina G" x "Escapes Urina Gg").
-    # O agrupamento apenas por product_id/título não é suficiente.
-    # Primeiro usamos o título exato; depois a imagem normalizada, que é um
-    # identificador muito mais confiável quando o Mercado Livre devolve a
-    # mesma publicação/catálogo por caminhos diferentes.
+    # DEDUPLICAÇÃO ROBUSTA — SEM PERDER VARIEDADE
+    # O mesmo anúncio pode aparecer em várias sementes. A chave principal é
+    # o ITEM MLB (publicação real), e não a imagem nem apenas o título.
+    # Isso é importante porque vários vendedores usam a mesma foto de fábrica.
+    # Antes, "mesma imagem = mesmo produto" estava eliminando anúncios
+    # diferentes e era uma das principais causas de a busca parar perto de
+    # 100 ofertas.
     def _offer_value(x):
         try:
             return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
         except Exception:
             return 999999.0
 
-    def _image_identity(x):
-        raw = str(x.get("image") or "").strip()
-        if not raw:
-            return ""
-        try:
-            u = urlparse(raw)
-            path = re.sub(r"\s+", "", u.path.lower())
-            # Ignora parâmetros de CDN que só alteram tamanho/formato.
-            path = re.sub(r"[?&](?:width|height|size|quality|format)=[^&]+", "", path)
-            return (u.netloc.lower() + path).strip()
-        except Exception:
-            return raw.lower().split("?")[0].strip()
-
-    # 1) Título exato.
     unique_offers = {}
     for o in offers:
+        item_key = str(o.get("item_id") or "").strip().upper()
+        product_key = str(o.get("product_id") or "").strip().upper()
         title_key = norm(o.get("title") or "")
-        item_key = str(o.get("item_id") or o.get("product_id") or "").strip()
-        key = title_key or item_key
+        # Publicação real > catálogo > título.
+        key = item_key or product_key or title_key
         if not key:
             continue
         current = unique_offers.get(key)
+        # Se o mesmo anúncio foi encontrado mais de uma vez, fica a menor
+        # condição de preço, sem eliminar outras publicações do mesmo produto.
         if current is None or _offer_value(o) < _offer_value(current):
             unique_offers[key] = o
 
-    # 2) Mesma imagem = mesmo produto visual. Isso captura publicações que
-    # possuem IDs/títulos diferentes, mas mostram exatamente o mesmo produto.
-    by_image = {}
-    no_image = []
-    for o in unique_offers.values():
-        ikey = _image_identity(o)
-        if not ikey:
-            no_image.append(o)
-            continue
-        current = by_image.get(ikey)
-        if current is None or _offer_value(o) < _offer_value(current):
-            by_image[ikey] = o
-
-    deduped = list(by_image.values()) + no_image
-
-    # 3) Pequenas diferenças de título só são usadas como desempate quando
-    # a imagem também coincide. O objetivo é remover duplicata, não juntar
-    # variantes legítimas que possuem imagens diferentes.
-    final_offers = []
-    for o in deduped:
-        duplicate_index = None
-        title = norm(o.get("title") or "")
-        image = _image_identity(o)
-        if image and title:
-            for i, existing in enumerate(final_offers):
-                if image != _image_identity(existing):
-                    continue
-                other = norm(existing.get("title") or "")
-                if title == other or SequenceMatcher(None, title, other).ratio() >= 0.94:
-                    duplicate_index = i
-                    break
-        if duplicate_index is None:
-            final_offers.append(o)
-        elif _offer_value(o) < _offer_value(final_offers[duplicate_index]):
-            final_offers[duplicate_index] = o
-
-    offers = final_offers
+    offers = list(unique_offers.values())
+    print(f"[DEDUP VARIEDADE] {len(offers)} publicações únicas por ITEM/PRODUTO")
 
     def _display_demand_key(o):
         cat = o.get("category_name") or ""
@@ -5301,11 +5264,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         # final depende dos anúncios reais encontrados, preço, imagem e
         # filtros; não cortamos cedo em 15/20.
         if cat == "🌙 Perfumes Árabes":
-            limit = 50
+            limit = 60
         elif cat == "🌸 Perfumes":
-            limit = 50
+            limit = 60
         else:
-            limit = 30
+            limit = 45
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
@@ -5524,7 +5487,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
+        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} anúncios únicos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -6591,19 +6554,43 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
-def _whatsapp_should_publish(product_id, price):
-    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
+def _whatsapp_publication_key(offer):
+    """Identidade do anúncio para o WhatsApp. Prioriza ITEM MLB.
+
+    Assim dois vendedores diferentes do mesmo produto podem aparecer como
+    anúncios diferentes. O MESMO anúncio só volta a ser publicado quando o
+    preço cai.
+    """
+    return str(
+        offer.get("item_id")
+        or offer.get("product_id")
+        or ""
+    ).strip().upper()
+
+
+def _whatsapp_should_publish(offer_or_product_id, price=None):
+    if isinstance(offer_or_product_id, dict):
+        offer = offer_or_product_id
+        key = _whatsapp_publication_key(offer)
+        new_price = offer.get("price")
+    else:
+        key = str(offer_or_product_id or "").strip().upper()
+        new_price = price
+
+    if not key:
+        return False
+
     conn = get_db()
     row = conn.execute(
         "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
-        (str(product_id),),
+        (key,),
     ).fetchone()
     conn.close()
     if not row:
         return True
     try:
         old_price = float(row["last_price"])
-        new_price = float(price)
+        new_price = float(new_price)
     except (TypeError, ValueError):
         return False
     return new_price < old_price - 0.01
@@ -6622,7 +6609,7 @@ def _whatsapp_mark_published(offer):
             published_count=whatsapp_publicacoes.published_count + 1,
             last_published_at=CURRENT_TIMESTAMP
     """, (
-        str(offer.get("product_id") or ""),
+        _whatsapp_publication_key(offer),
         float(offer.get("price") or 0),
         offer.get("permalink") or "",
         offer.get("title") or "Produto",
@@ -6645,8 +6632,9 @@ def _whatsapp_publish_scan(result):
         if sent >= AUTO_WHATSAPP_LIMIT:
             break
 
+        publication_key = _whatsapp_publication_key(offer)
         product_id = str(offer.get("product_id") or "").strip()
-        if not product_id:
+        if not publication_key:
             continue
 
         price = offer.get("price")
@@ -6657,7 +6645,7 @@ def _whatsapp_publish_scan(result):
         if price <= 0:
             continue
 
-        if not _whatsapp_should_publish(product_id, price):
+        if not _whatsapp_should_publish(offer):
             skipped += 1
             continue
 
@@ -6713,7 +6701,7 @@ def _whatsapp_publish_scan(result):
 
         _whatsapp_mark_published(offer)
         sent += 1
-        print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
+        print(f"[AUTO WHATSAPP] Oferta {publication_key} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
 
     return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
 
