@@ -135,7 +135,7 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 160
 SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
 SEARCH_RAW_POOL_PER_CATEGORY = 350
 SEARCH_SEEDS_FAST_PER_CATEGORY = 30
@@ -145,7 +145,7 @@ SEARCH_RESULTS_PER_QUERY_FAST = 50
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 12
+SEARCH_REAL_ITEM_QUERIES_ALL = 18
 SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
@@ -1024,7 +1024,10 @@ def is_requested_product(title, query, category=None):
         "capa", "capinha", "pelicula", "película", "suporte", "holder",
         "cabo", "adaptador", "adesivo", "peca de reposicao", "peca avulsa",
         "refil vazio", "frasco vazio", "amostra", "decant", "decants", "miniatura",
-        "contratipo", "contratipos", "pingente", "chaveiro", "brinde", "molde", "manual digital"
+        "contratipo", "contratipos", "pingente", "chaveiro", "brinde", "molde", "manual digital",
+        "pelucia", "pelúcia", "plush", "bichinho de pelucia", "bicho de pelucia",
+        "boneco", "boneca", "brinquedo", "action figure", "figura de acao", "figura de ação",
+        "almofada", "pantufa de pelucia", "enfeite", "decorativo", "colecionavel", "colecionável"
     ]
 
     category_rules = {
@@ -1074,6 +1077,15 @@ def is_requested_product(title, query, category=None):
     }
 
     strong, bad = category_rules.get(cat, ([], generic_bad))
+    # Bloqueio global de brinquedos/itens de pelúcia, mesmo quando o título
+    # contém marcas/modelos como Nike ou Air Jordan.
+    non_product_terms = (
+        "pelucia", "pelúcia", "plush", "bichinho de pelucia", "bicho de pelucia",
+        "boneco", "boneca", "brinquedo", "action figure", "figura de acao", "figura de ação",
+        "almofada", "pantufa de pelucia", "enfeite", "decorativo", "colecionavel", "colecionável"
+    )
+    if any(x in t for x in non_product_terms):
+        return False
     if any(x in t for x in bad):
         return False
 
@@ -4037,7 +4049,11 @@ def _search_shoes_real_listings(q, limit=60):
         title_norm = norm(title)
         if (not re.fullmatch(r"MLB\d+", iid) or iid in seen or not title
                 or price < MIN_PRODUCT_PRICE or price > 100000
-                or any(term in title_norm for term in ("chuteira", "trava society", "trava campo", "futsal"))):
+                or any(term in title_norm for term in (
+                    "chuteira", "trava society", "trava campo", "futsal",
+                    "pelucia", "pelúcia", "plush", "boneco", "boneca", "brinquedo",
+                    "action figure", "almofada", "chaveiro", "miniatura", "colecionavel", "colecionável"
+                ))):
             continue
         row["id"] = iid
         row["item_id"] = iid
@@ -4117,7 +4133,11 @@ def _search_shoes_real_listings(q, limit=60):
             ).strip()
             if not title:
                 continue
-            if any(term in norm(title) for term in ("chuteira", "trava society", "trava campo", "futsal")):
+            if any(term in norm(title) for term in (
+                "chuteira", "trava society", "trava campo", "futsal",
+                "pelucia", "pelúcia", "plush", "boneco", "boneca", "brinquedo",
+                "action figure", "almofada", "chaveiro", "miniatura", "colecionavel", "colecionável"
+            )):
                 continue
 
             shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
@@ -4253,7 +4273,7 @@ def _shoe_diverse_queries(fast=False):
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
-    per_query = 16 if fast else 22
+    per_query = 22 if fast else 28
     rows_by_query = []
 
     for q in queries:
@@ -6109,6 +6129,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "bola de basquete", "bola de volei", "bola de vôlei", "bola de tenis",
         "bola de tênis", "bola de handebol", "bola esportiva", "bomba para bola",
         "agulha para bola", "rede de futebol", "rede para gol",
+        "pelucia", "pelúcia", "plush", "bichinho de pelucia", "bicho de pelucia",
+        "boneco", "boneca", "brinquedo", "action figure", "figura de acao", "figura de ação",
+        "almofada", "pantufa de pelucia", "enfeite decorativo", "miniatura colecionavel",
     )
     offers = [o for o in offers if not any(term in norm(o.get("title") or "") for term in junk_terms)]
 
@@ -6123,6 +6146,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "talco", "antisseptico", "antisséptico", "desodorante", "lubrificante",
         "creme", "spray para os pes", "spray para os pés", "palmilha", "cadarco", "cadarço",
         "meia", "meias", "limpa tenis", "limpa tênis", "escova para tenis", "escova para tênis",
+        "pelucia", "pelúcia", "plush", "boneco", "boneca", "brinquedo", "action figure",
+        "almofada", "chaveiro", "miniatura", "colecionavel", "colecionável",
     )
     offers = [o for o in offers if not (
         (o.get("category_name") in shoe_categories)
@@ -6454,7 +6479,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V49: remove bolas e produtos de cuidado dos pés confundidos com tênis; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; lubrificantes de esteira excluídos; máximo 1 bicicleta ergométrica; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V50: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
