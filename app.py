@@ -123,7 +123,7 @@ AFFILIATE_COUPON_BLOCKLIST_TERMS = (
 
 AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
 AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
-MIN_PRODUCT_PRICE = 69.90
+MIN_PRODUCT_PRICE = 29.90
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
@@ -133,12 +133,12 @@ FAST_ALL_CATEGORIES = True
 # Com 6 categorias, 65 candidatos por categoria = até 390 candidatos
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
-SEARCH_TARGET_OFFERS = 270
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
-SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 160
-SEARCH_RAW_POOL_PER_CATEGORY = 220
-SEARCH_SEEDS_FAST_PER_CATEGORY = 28
-SEARCH_RESULTS_PER_QUERY_FAST = 50
+SEARCH_TARGET_OFFERS = 230
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 90
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 140
+SEARCH_RAW_POOL_PER_CATEGORY = 160
+SEARCH_SEEDS_FAST_PER_CATEGORY = 22
+SEARCH_RESULTS_PER_QUERY_FAST = 40
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -864,20 +864,6 @@ def init_db():
             last_published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS whatsapp_diversidade (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            ofertas_desde_ultimo_perfume INTEGER DEFAULT 0,
-            total_ofertas_regra INTEGER DEFAULT 0,
-            ultimo_perfume_at TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        INSERT OR IGNORE INTO whatsapp_diversidade
-            (id, ofertas_desde_ultimo_perfume, total_ofertas_regra)
-        VALUES (1, 0, 0)
-    """)
-
     # Compatibilidade com bancos criados pelas versões anteriores.
     try:
         conn.execute("ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0")
@@ -1034,14 +1020,9 @@ def is_requested_product(title, query, category=None):
             []
         ),
         "💪 Academia & Fitness": (
-            ["academia", "halter", "halteres", "anilha", "barra", "banco", "kettlebell", "treino", "fitness",
-             "musculacao", "musculação", "crossfit", "elastico", "elástico", "faixa elastica", "faixa elástica",
-             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida",
-             "roupa fitness", "roupas fitness", "roupa esportiva", "roupas esportivas", "legging", "top fitness",
-             "short fitness", "camiseta dry fit", "regata esportiva", "conjunto fitness", "whey", "creatina",
-             "pre treino", "pré treino", "hipercalorico", "hipercalórico", "proteina", "proteína", "suplemento",
-             "suplementos", "bcaa", "aminoacido", "aminoácido", "vitamina esportiva", "isotonico", "isotônico",
-             "garrafa fitness", "coqueteleira", "shaker", "squeeze", "marmita fitness", "bolsa academia"],
+            ["academia", "halter", "anilha", "barra", "banco", "kettlebell", "treino", "fitness", "elastico",
+             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida", "roupa fitness",
+             "tênis academia", "tênis corrida", "garrafa fitness", "coqueteleira"],
             []
         ),
         "💇 Saúde & Beleza": (
@@ -1409,7 +1390,7 @@ def product_items(pid):
 
 def _is_catalog_permalink(url):
     """Retorna True somente para URLs de catálogo /p/MLB..., nunca para publicação."""
-    return bool(re.search(r"/p/MLB\\d+(?:[/?#]|$)", str(url or ""), re.I))
+    return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
 
 
 def _is_real_publication_item(item):
@@ -1418,7 +1399,7 @@ def _is_real_publication_item(item):
         return False
     iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
     permalink = str(item.get("permalink") or "").strip()
-    return bool(re.fullmatch(r"MLB\\d+", iid) and permalink and not _is_catalog_permalink(permalink))
+    return bool(re.fullmatch(r"MLB\d+", iid) and permalink and not _is_catalog_permalink(permalink))
 
 
 def _hydrate_real_item_permalink(item):
@@ -1451,7 +1432,7 @@ def _hydrate_real_item_permalink(item):
             continue
         cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
         cp = str(candidate.get("permalink") or "").strip()
-        if not re.fullmatch(r"MLB\\d+", cid):
+        if not re.fullmatch(r"MLB\d+", cid):
             continue
         if cid == item_id and _is_catalog_permalink(cp):
             continue
@@ -1486,14 +1467,14 @@ def _hydrate_real_item_permalink(item):
                 continue
             cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
             cp = str(candidate.get("permalink") or "").strip()
-            if not re.fullmatch(r"MLB\\d+", cid) or cid == item_id:
+            if not re.fullmatch(r"MLB\d+", cid) or cid == item_id:
                 continue
             if cp and not _is_catalog_permalink(cp):
                 normalized = normalize_item(candidate)
                 if normalized:
                     normalized.update({"item_id": cid, "permalink": cp})
                     return normalized
-            if re.fullmatch(r"MLB\\d+", cid):
+            if re.fullmatch(r"MLB\d+", cid):
                 try:
                     real_data, real_status, _ = ml_get(f"/items/{cid}")
                 except Exception:
@@ -2005,144 +1986,43 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
     return x
 
 def detect_cash_discount(item, price):
-    """Detecta desconto explícito para Pix/à vista sem inventar desconto.
-
-    A API do Mercado Livre nem sempre expõe o preço Pix para um afiliado.
-    Por isso só aceitamos um desconto quando ele aparece de forma explícita
-    nos dados recebidos do item, nos métodos de pagamento ou em estruturas de
-    preço já retornadas pela API.
+    """Só aceita desconto à vista/Pix quando o próprio dado da API o informa.
+    Não assume que todo Pix tem desconto e não soma com cupom sem indicação de cumulatividade.
     """
     if not isinstance(item, dict):
-        return 0.0, None
-    try:
-        p = float(price or 0)
-    except Exception:
-        p = 0.0
+        return 0, None
+    p = float(price or 0)
     if p <= 0:
-        return 0.0, None
+        return 0, None
 
-    discounts = []
+    explicit = []
+    for key in ("pix_discount", "cash_discount", "discount_pix", "payment_discount", "cashback_discount"):
+        v = item.get(key)
+        if isinstance(v, (int,float)) and float(v) > 0:
+            explicit.append(float(v))
 
-    def add_discount(value):
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return
-        if 0 < value < p:
-            discounts.append(value)
-
-    def add_price(value):
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return
-        if 0 < value < p:
-            discounts.append(p - value)
-
-    # Campos diretos que algumas respostas/integrações podem fornecer.
-    for key in ("pix_discount", "cash_discount", "discount_pix", "payment_discount"):
-        add_discount(item.get(key))
     for key in ("pix_price", "cash_price", "price_pix", "price_cash"):
-        add_price(item.get(key))
+        v = item.get(key)
+        if isinstance(v, (int,float)) and 0 < float(v) < p:
+            explicit.append(p - float(v))
 
-    # Estruturas de pagamento.
     payments = item.get("payment_methods") or item.get("payments") or {}
     if isinstance(payments, dict):
-        iterable = payments.items()
-    elif isinstance(payments, list):
-        iterable = []
-        for entry in payments:
-            if isinstance(entry, dict):
-                iterable.append((entry.get("method") or entry.get("type") or entry.get("name") or "", entry))
-    else:
-        iterable = []
-
-    for method, value in iterable:
-        method_text = norm(method)
-        if "pix" not in method_text and "avista" not in method_text and "cash" not in method_text:
-            continue
-        if isinstance(value, dict):
-            for key in ("discount", "discount_amount", "amount_discount"):
-                add_discount(value.get(key))
-            for key in ("price", "final_price", "amount", "pix_price"):
-                add_price(value.get(key))
-
-    # Algumas respostas podem trazer preços/promotions embutidos.
-    for container_key in ("prices", "sale_prices", "payment_prices", "price_options"):
-        arr = item.get(container_key)
-        if not isinstance(arr, list):
-            continue
-        for entry in arr:
-            if not isinstance(entry, dict):
+        for k, v in payments.items():
+            if "pix" not in str(k).lower() and "avista" not in norm(k):
                 continue
-            context = norm(str(entry.get("context") or entry.get("payment_method") or entry.get("method") or entry.get("type") or ""))
-            if "pix" not in context and "avista" not in context and "cash" not in context:
-                continue
-            for key in ("discount", "discount_amount", "amount_discount"):
-                add_discount(entry.get(key))
-            for key in ("price", "amount", "final_price", "sale_price"):
-                add_price(entry.get(key))
+            if isinstance(v, dict):
+                for key in ("discount", "discount_amount", "amount_discount"):
+                    n = v.get(key)
+                    if isinstance(n,(int,float)) and float(n)>0:
+                        explicit.append(float(n))
+                for key in ("price", "final_price"):
+                    n = v.get(key)
+                    if isinstance(n,(int,float)) and 0 < float(n) < p:
+                        explicit.append(p-float(n))
 
-    d = round(max(discounts, default=0.0), 2)
+    d = round(max(explicit, default=0),2)
     return d, ("Pix/à vista" if d > 0 else None)
-
-
-def detect_pix_discount_from_page(url, price):
-    """Tenta confirmar um preço Pix na página pública do anúncio.
-
-    É uma tentativa complementar e conservadora. Se a página não trouxer
-    evidência clara, retorna zero e o anúncio permanece como estava.
-    """
-    url = str(url or "").strip()
-    if not url or not re.match(r"^https?://", url, re.I):
-        return 0.0, None
-    try:
-        base = float(price or 0)
-    except (TypeError, ValueError):
-        return 0.0, None
-    if base <= 0:
-        return 0.0, None
-
-    try:
-        r = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-                "Accept-Language": "pt-BR,pt;q=0.9",
-            },
-            timeout=12,
-            allow_redirects=True,
-        )
-        if r.status_code != 200:
-            return 0.0, None
-        html = html_lib.unescape(r.text or "")
-        text = re.sub(r"<[^>]+>", " ", html)
-        text = re.sub(r"\\s+", " ", text)
-
-        # Procura um valor monetário próximo de termos explícitos de Pix.
-        money = re.compile(r"R\\$\\s*([0-9]{1,3}(?:\\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\\.[0-9]{2})?)", re.I)
-        candidates = []
-        for m in re.finditer(r".{0,180}pix.{0,220}", text, re.I):
-            block = m.group(0)
-            for pm in money.finditer(block):
-                raw = pm.group(1).replace(".", "").replace(",", ".")
-                try:
-                    value = float(raw)
-                except ValueError:
-                    continue
-                if 0 < value < base:
-                    candidates.append(value)
-
-        if not candidates:
-            return 0.0, None
-        pix_price = min(candidates)
-        discount_value = round(base - pix_price, 2)
-        if discount_value <= 0:
-            return 0.0, None
-        return discount_value, "Pix"
-    except Exception as exc:
-        print("[PIX] consulta pública falhou:", repr(exc))
-        return 0.0, None
 
 # ============================================================
 # CAÇADOR
@@ -4220,57 +4100,8 @@ def _search_category(cat, fast=False):
             clean_seed = re.sub(r'^[^A-Za-zÀ-ÿ0-9]+', '', clean_seed).strip()
         if clean_seed and clean_seed not in seed_queries:
             seed_queries.append(clean_seed)
-
-    # No modo "todas", não pegamos simplesmente os primeiros termos.
-    # Primeiro garantimos âncoras dos nichos que mais estavam ficando sem
-    # representação e depois completamos o restante distribuindo as consultas
-    # por TODA a lista.
-    if fast and len(seed_queries) > SEARCH_SEEDS_FAST_PER_CATEGORY:
-        priority_by_category = {
-            "💪 Academia & Fitness": [
-                "whey protein", "creatina", "pré treino", "hipercalórico",
-                "roupas fitness", "legging", "top fitness", "camiseta dry fit",
-                "halteres", "esteira", "coqueteleira",
-            ],
-            "👕 Moda": [
-                "camiseta Nike", "camiseta Adidas", "camisetas de marcas",
-                "camisas esportivas futebol", "jaqueta Nike", "bermuda Nike",
-                "roupas fitness", "legging", "top fitness", "conjunto fitness",
-                "moda feminina", "moda praia", "bonés",
-            ],
-            "👟 Tênis & Calçados": [
-                "tênis de corrida", "tênis para academia", "tênis casual",
-                "chuteiras", "tênis de basquete", "tênis trilha",
-                "tênis feminino", "tênis masculino", "Nike tênis", "Adidas tênis",
-                "Asics tênis", "New Balance tênis",
-            ],
-            "💇 Saúde & Beleza": [
-                "shampoo", "kit shampoo", "skincare", "protetor solar facial",
-                "unhas e manicure", "barbeador elétrico", "hidratante corporal",
-            ],
-            "🏠 Casa e Organização": [
-                "air fryer", "cafeteira", "aspirador de pó", "organizador",
-                "jogo de cama", "lâmpadas LED", "fita LED",
-            ],
-            "📱 Tecnologia": [
-                "iPhone", "Samsung Galaxy", "Motorola Moto G", "celular",
-                "fone bluetooth", "notebook", "smartwatch",
-            ],
-        }
-        priority = [q for q in priority_by_category.get(cat, []) if q in seed_queries]
-        remaining = [q for q in seed_queries if q not in priority]
-        count = SEARCH_SEEDS_FAST_PER_CATEGORY
-        slots = max(0, count - len(priority))
-        if slots and remaining:
-            total_remaining = len(remaining)
-            if slots >= total_remaining:
-                selected_remaining = remaining
-            else:
-                positions = [round(i * (total_remaining - 1) / max(1, slots - 1)) for i in range(slots)]
-                selected_remaining = [remaining[i] for i in positions]
-        else:
-            selected_remaining = []
-        seed_queries = priority + selected_remaining
+        if fast and len(seed_queries) >= SEARCH_SEEDS_FAST_PER_CATEGORY:
+            break
 
     for q in seed_queries:
         try:
@@ -4951,32 +4782,17 @@ def _title_matches_scan_category(category, title):
         ))
 
     if cat == "💪 Academia & Fitness":
-        # Tênis continuam na categoria própria de calçados; o restante dos
-        # subnichos de Academia precisa ser aceito aqui para não perder
-        # roupas fitness, suplementação e acessórios.
         if fragrance or shoe:
             return False
         return any(x in n for x in (
-            # Suplementação
             "creatina", "whey", "proteina", "proteína", "pre treino", "pré treino",
-            "hipercalorico", "hipercalórico", "bcaa", "aminoacido", "aminoácido",
-            "isotonico", "isotônico", "suplemento", "suplementos", "vitamina esportiva",
-            # Equipamentos / cardio
-            "halter", "halteres", "anilha", "barra musculacao", "barra musculação",
-            "rack", "estacao de musculacao", "estação de musculação", "aparelho de academia",
+            "hipercalorico", "hipercalórico", "bcaa", "isotonico", "isotônico",
+            "halter", "anilha", "barra musculacao", "barra musculação", "rack",
+            "estacao de musculacao", "estação de musculação", "aparelho de academia",
             "maquina de musculacao", "máquina de musculação", "esteira",
-            "bicicleta ergometrica", "bicicleta ergométrica", "spinning", "eliptico", "elíptico",
-            "step", "stepper", "banco de treino", "academia", "fitness", "musculacao",
-            "musculação", "crossfit", "kettlebell",
-            # Roupas / treino
-            "roupa fitness", "roupas fitness", "roupa esportiva", "roupas esportivas",
-            "legging", "top fitness", "short fitness", "camiseta dry fit", "regata esportiva",
-            "conjunto fitness", "short de academia", "bermuda fitness",
-            # Acessórios fitness
-            "faixa elastica", "faixa elástica", "elastico de resistencia", "elástico de resistência",
-            "garrafa fitness", "coqueteleira", "shaker", "squeeze", "marmita fitness",
-            "bolsa academia", "corda de pular", "tapete yoga", "tapete de yoga",
-            "yoga", "pilates", "alongamento",
+            "bicicleta ergometrica", "bicicleta ergométrica", "spinning",
+            "eliptico", "elíptico", "step", "banco de treino", "academia",
+            "fitness", "musculacao", "musculação", "crossfit",
         ))
 
     if cat == "💇 Saúde & Beleza":
@@ -5345,36 +5161,81 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             moda.append(o)
         offers = moda
 
-    # DEDUPLICAÇÃO ROBUSTA — SEM PERDER VARIEDADE
-    # O mesmo anúncio pode aparecer em várias sementes. A chave principal é
-    # o ITEM MLB (publicação real), e não a imagem nem apenas o título.
-    # Isso é importante porque vários vendedores usam a mesma foto de fábrica.
-    # Antes, "mesma imagem = mesmo produto" estava eliminando anúncios
-    # diferentes e era uma das principais causas de a busca parar perto de
-    # 100 ofertas.
+    # DEDUPLICAÇÃO ROBUSTA
+    # O mesmo produto pode chegar com product_id diferente e com pequenas
+    # diferenças no título (ex.: "Escapes Urina G" x "Escapes Urina Gg").
+    # O agrupamento apenas por product_id/título não é suficiente.
+    # Primeiro usamos o título exato; depois a imagem normalizada, que é um
+    # identificador muito mais confiável quando o Mercado Livre devolve a
+    # mesma publicação/catálogo por caminhos diferentes.
     def _offer_value(x):
         try:
             return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
         except Exception:
             return 999999.0
 
+    def _image_identity(x):
+        raw = str(x.get("image") or "").strip()
+        if not raw:
+            return ""
+        try:
+            u = urlparse(raw)
+            path = re.sub(r"\s+", "", u.path.lower())
+            # Ignora parâmetros de CDN que só alteram tamanho/formato.
+            path = re.sub(r"[?&](?:width|height|size|quality|format)=[^&]+", "", path)
+            return (u.netloc.lower() + path).strip()
+        except Exception:
+            return raw.lower().split("?")[0].strip()
+
+    # 1) Título exato.
     unique_offers = {}
     for o in offers:
-        item_key = str(o.get("item_id") or "").strip().upper()
-        product_key = str(o.get("product_id") or "").strip().upper()
         title_key = norm(o.get("title") or "")
-        # Publicação real > catálogo > título.
-        key = item_key or product_key or title_key
+        item_key = str(o.get("item_id") or o.get("product_id") or "").strip()
+        key = title_key or item_key
         if not key:
             continue
         current = unique_offers.get(key)
-        # Se o mesmo anúncio foi encontrado mais de uma vez, fica a menor
-        # condição de preço, sem eliminar outras publicações do mesmo produto.
         if current is None or _offer_value(o) < _offer_value(current):
             unique_offers[key] = o
 
-    offers = list(unique_offers.values())
-    print(f"[DEDUP VARIEDADE] {len(offers)} publicações únicas por ITEM/PRODUTO")
+    # 2) Mesma imagem = mesmo produto visual. Isso captura publicações que
+    # possuem IDs/títulos diferentes, mas mostram exatamente o mesmo produto.
+    by_image = {}
+    no_image = []
+    for o in unique_offers.values():
+        ikey = _image_identity(o)
+        if not ikey:
+            no_image.append(o)
+            continue
+        current = by_image.get(ikey)
+        if current is None or _offer_value(o) < _offer_value(current):
+            by_image[ikey] = o
+
+    deduped = list(by_image.values()) + no_image
+
+    # 3) Pequenas diferenças de título só são usadas como desempate quando
+    # a imagem também coincide. O objetivo é remover duplicata, não juntar
+    # variantes legítimas que possuem imagens diferentes.
+    final_offers = []
+    for o in deduped:
+        duplicate_index = None
+        title = norm(o.get("title") or "")
+        image = _image_identity(o)
+        if image and title:
+            for i, existing in enumerate(final_offers):
+                if image != _image_identity(existing):
+                    continue
+                other = norm(existing.get("title") or "")
+                if title == other or SequenceMatcher(None, title, other).ratio() >= 0.94:
+                    duplicate_index = i
+                    break
+        if duplicate_index is None:
+            final_offers.append(o)
+        elif _offer_value(o) < _offer_value(final_offers[duplicate_index]):
+            final_offers[duplicate_index] = o
+
+    offers = final_offers
 
     def _display_demand_key(o):
         cat = o.get("category_name") or ""
@@ -5426,8 +5287,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
 
-    # Até 20 por categoria; a categoria árabe recebe 30 para aparecer com
-    # mais frequência. Dentro dela, boas promoções têm prioridade real.
+    # Até 50 por categoria; perfumes recebem o mesmo limite para manter variedade e
+    # variedade. Dentro de cada categoria, boas promoções têm prioridade real.
     grouped = {}
     for o in offers:
         grouped.setdefault(o["category_name"], []).append(o)
@@ -5440,11 +5301,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         # final depende dos anúncios reais encontrados, preço, imagem e
         # filtros; não cortamos cedo em 15/20.
         if cat == "🌙 Perfumes Árabes":
-            limit = 60
+            limit = 50
         elif cat == "🌸 Perfumes":
-            limit = 60
+            limit = 50
         else:
-            limit = 45
+            limit = 50
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
@@ -5471,11 +5332,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 o.get("title") or "",
                 o.get("price") or 0,
                 public_cards,
-            )[:2]
-            # Mantemos no máximo 2 candidatos por produto: se o primeiro
-            # não for aplicável, o segundo pode ser usado. Nunca enviamos
-            # os dois cupons juntos.
-            o["cupons_candidatos"] = candidates_for_offer
+            )
             offer_key = str(o.get("item_id") or o.get("product_id") or id(o))
             offer_coupon_candidates[offer_key] = candidates_for_offer
             for cup in candidates_for_offer:
@@ -5667,7 +5524,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} anúncios únicos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
+        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -5821,7 +5678,8 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque (já identifica o produto)
+    - frase de destaque
+    - nome do produto
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -5833,10 +5691,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # A chamada já identifica o produto. Não repetimos o título abaixo,
-    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
+        "",
+        f"*{title}*",
         "",
     ]
 
@@ -5858,14 +5716,6 @@ def ad_text(o, affiliate=""):
 
     # Preço atual separado do preço antigo para ficar visualmente limpo.
     lines.append(f"Por *{brl(o['price'])}*")
-
-    try:
-        pix_price = float(o.get("preco_pix") or 0)
-    except (TypeError, ValueError):
-        pix_price = 0.0
-    if pix_price > 0 and pix_price < float(o.get("price") or 0):
-        pix_label = o.get("tipo_desconto_pix") or "Pix"
-        lines.append(f"💳 *{pix_label}: {brl(pix_price)}*")
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
@@ -6134,7 +5984,8 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque (já identifica o produto)
+    - frase de destaque
+    - nome do produto
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -6146,10 +5997,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # A chamada já identifica o produto. Não repetimos o título abaixo,
-    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
+        "",
+        f"*{title}*",
         "",
     ]
 
@@ -6183,198 +6034,246 @@ def ad_text(o, affiliate=""):
 
 
 def _marketing_phrase(title, offer=None):
-    """Cria uma chamada curta e neutra, sem repetir o nome do produto.
+    """Gera uma chamada comercial específica para qualquer categoria.
 
-    O nome completo do produto aparece logo abaixo no anúncio. A chamada
-    serve apenas como um gancho comercial curto, variando por tipo de oferta
-    para não ficar repetitiva.
+    A frase usa o próprio título do produto para identificar o tipo de item,
+    marca e/ou modelo quando possível. Evita deixar a comunicação restrita
+    a perfumes e evita o fallback genérico sempre que houver informação útil.
     """
-    t = re.sub(r"\s+", " ", str(title or "Produto").strip())
+    t = str(title or "Produto").strip()
     n = norm(t)
-    offer = offer or {}
 
-    seed_text = "|".join([
-        t,
-        str(offer.get("item_id") or ""),
-        str(offer.get("seller_id") or ""),
-    ])
-    try:
-        seed = int(hashlib.sha256(seed_text.encode("utf-8", "ignore")).hexdigest()[:12], 16)
-    except Exception:
-        seed = sum(ord(c) for c in seed_text)
+    # ============================================================
+    # PERFUMES — mantém as chamadas específicas já construídas.
+    # ============================================================
+    perfume_profiles = [
+        (["fakhar rose", "fakhar women", "fakhar feminino"],
+         "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA", "🌸✨",
+         "Tuberosa e jasmim no coração, com uma base de baunilha, almíscar branco e sândalo."),
+        (["fakhar black", "fakhar men", "fakhar masculino"],
+         "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno."),
+        (["fakhar extrait"],
+         "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE", "🔥✨",
+         "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro."),
+        (["asad"],
+         "INTENSO, ESPECIADO E MARCANTE — ASAD EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem prefere fragrâncias mais intensas e de personalidade."),
+        (["khamrah qahwa"],
+         "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA", "☕🔥",
+         "Uma combinação para quem gosta de perfumes quentes e envolventes."),
+        (["khamrah"],
+         "DOCE, QUENTE E ENVOLVENTE — KHAMRAH EM DESTAQUE", "🍂🔥",
+         "Uma opção para quem curte um perfil mais gourmand e cheio de presença."),
+        (["oud for glory"],
+         "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA", "🖤🔥",
+         "Uma escolha para quem procura um perfume árabe com personalidade forte."),
+        (["club de nuit intense"],
+         "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE", "🔥🖤",
+         "Uma fragrância para quem gosta de um perfil marcante e sofisticado."),
+        (["club de nuit woman", "club de nuit women"],
+         "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN", "🌹✨",
+         "Uma opção para quem gosta de fragrâncias femininas com presença."),
+        (["9pm"],
+         "DOCE, SEDUTOR E MARCANTE — 9PM EM DESTAQUE", "🌙🔥",
+         "Uma opção para quem prefere um perfume mais adocicado e envolvente."),
+        (["qaed al fursan"],
+         "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN", "🍍🔥",
+         "Uma escolha para quem gosta de fragrâncias árabes com perfil frutado."),
+        (["yara moi"],
+         "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI", "🤍✨",
+         "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso."),
+        (["yara tous"],
+         "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE", "🥭✨",
+         "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre."),
+        (["yara candy"],
+         "DOCE, JOVEM E DIVERTIDO — YARA CANDY", "🍬💗",
+         "Uma opção para quem procura um perfume feminino com proposta mais doce."),
+        (["yara"],
+         "DELICADO, FEMININO E ADOCICADO — YARA EM DESTAQUE", "🎀✨",
+         "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas."),
+        (["delilah"],
+         "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE", "🌸✨",
+         "Uma opção para quem procura uma fragrância feminina com perfil floral."),
+        (["khair pistachio"],
+         "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO", "💚✨",
+         "Uma escolha para quem ama perfumes gourmand e um perfil mais cremoso."),
+        (["nebras", "neb ras"],
+         "DOCE, CREMOSO E ENVOLVENTE — NEBRAS EM DESTAQUE", "🍫✨",
+         "Uma opção para quem prefere fragrâncias doces e aconchegantes."),
+        (["liam grey"],
+         "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY", "🩶🔥",
+         "Uma opção para quem gosta de perfumes com personalidade e perfil refinado."),
+        (["liquid brun"],
+         "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN", "🤎🔥",
+         "Uma escolha para quem procura uma fragrância masculina com presença."),
+        (["maahir black"],
+         "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK", "🖤🔥",
+         "Uma opção para quem prefere perfumes árabes com personalidade forte."),
+        (["najdia"],
+         "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE", "💙🔥",
+         "Uma escolha para quem procura uma fragrância masculina com proposta fresca."),
+        (["teriaq", "tériaq"],
+         "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE", "🍯🔥",
+         "Uma opção para quem gosta de perfumes com presença e lado adocicado."),
+    ]
+    for terms, headline, emojis, detail in perfume_profiles:
+        if any(term in n for term in terms):
+            return {"headline": headline, "emojis": emojis, "detail": detail}
 
-    def pick(values):
-        return values[seed % len(values)] if values else ""
+    if any(x in n for x in [
+        "perfume", "parfum", "eau de", "fragrance",
+        "colonia", "colônia", "body splash", "body mist",
+        "edt", "edp", "eau de toilette", "eau de parfum",
+        "eau de cologne", "deo colonia", "deo colônia",
+        "desodorante colonia", "desodorante colônia",
+    ]):
+        if "body splash" in n:
+            return {"headline": "BODY SPLASH EM OFERTA — PERFUME LEVE PARA O DIA A DIA", "emojis": "🌸🔥", "detail": "Uma opção prática para quem prefere uma fragrância leve e fácil de usar."}
+        if "body mist" in n:
+            return {"headline": "BODY MIST EM DESTAQUE — LEVE E PRÁTICO PARA REAPLICAR", "emojis": "✨🌸", "detail": "Uma opção para deixar na rotina e reaplicar ao longo do dia."}
+        if "feminino" in n or "women" in n:
+            return {"headline": "PERFUME FEMININO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🌸✨", "detail": "Uma opção para quem gosta de fragrâncias femininas e encontrou um bom preço."}
+        if "masculino" in n or "men" in n:
+            return {"headline": "PERFUME MASCULINO EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "🖤🔥", "detail": "Uma alternativa para quem procura uma fragrância masculina em promoção."}
+        return {"headline": "PERFUME EM DESTAQUE — OLHA O PREÇO DESSE ACHADO", "emojis": "✨🔥", "detail": "Uma fragrância para colocar no radar quando aparece com preço promocional."}
 
-    def result(headline, emojis):
-        return {
-            "headline": re.sub(r"\s+", " ", headline).strip(),
-            "emojis": emojis,
-            "detail": "",
-        }
+    # ============================================================
+    # TECNOLOGIA
+    # ============================================================
+    brands = ["Apple", "Samsung", "Xiaomi", "Motorola", "Realme", "Nike", "Adidas", "Puma", "Asics", "New Balance", "Mizuno", "Olympikus", "Fila", "Reebok", "Vans", "Converse", "Under Armour", "Skechers", "Oakley", "Lacoste", "JBL", "Sony", "Lenovo", "Dell", "Acer"]
+    brand = next((b for b in brands if norm(b) in n), "")
+    bprefix = f"{brand.upper()} • " if brand else ""
 
-    # PERFUMES ÁRABES — não cita marca/modelo na chamada.
-    arabic_terms = (
-        "lattafa", "maison alhambra", "afnan", "armaf", "rasasi",
-        "al haramain", "al wataniah", "french avenue", "fragrance world",
-        "paris corner", "rayhaan", "khadlaj", "zimaya", "ajmal",
-        "swiss arabian", "ard al zaafaran", "ahmed al maghribi",
-        "orientica", "al rehab", "emir", "perfume arabe", "perfume árabe",
-        "arabic perfume", "oud", "attar"
+    if any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"]):
+        return {"headline": f"{bprefix}CELULAR EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "📱🔥", "detail": "Uma oferta para quem já estava de olho em trocar ou atualizar o celular."}
+    if any(x in n for x in ["capa", "case", "pelicula", "película", "carregador", "cabo usb", "power bank", "suporte para celular"]):
+        return {"headline": "ACESSÓRIO PARA CELULAR EM OFERTA — PREÇO BAIXOU", "emojis": "📱⚡", "detail": "Itens úteis para proteger, carregar ou complementar o celular."}
+    if any(x in n for x in ["airpods", "fone", "headset", "caixa de som", "jbl", "soundbar", "bluetooth"]):
+        return {"headline": f"{bprefix}ÁUDIO EM DESTAQUE — OFERTA PARA FICAR DE OLHO", "emojis": "🎧🔥", "detail": "Uma opção para quem quer melhorar o áudio sem deixar passar uma boa oferta."}
+    if any(x in n for x in ["notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora", "webcam"]):
+        return {"headline": f"{bprefix}INFORMÁTICA EM OFERTA — OLHA O PREÇO", "emojis": "💻🔥", "detail": "Uma oportunidade para quem está montando ou atualizando o setup."}
+    if any(x in n for x in ["tablet", "smartwatch", "tv smart", "console", "videogame", "controle gamer"]):
+        return {"headline": "ELETRÔNICO EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "⚡🔥", "detail": "Um produto que pode valer a pena quando aparece com essa condição."}
+
+    # ============================================================
+    # CASA E FERRAMENTAS
+    # ============================================================
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer", "cozinha", "pote", "organizador", "estante", "sapateira", "varal"]):
+        return {"headline": "ACHADO PARA CASA — PREÇO BOM PARA DEIXAR NO RADAR", "emojis": "🏠🔥", "detail": "Produto útil para a rotina e que merece uma olhada quando entra em promoção."}
+    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete"]):
+        return {"headline": "FERRAMENTA EM OFERTA — BOA HORA PARA QUEM ESTÁ PRECISANDO", "emojis": "🔧🔥", "detail": "Uma opção prática para oficina, manutenção ou projetos em casa."}
+
+    # ============================================================
+    # ACADEMIA & FITNESS
+    # ============================================================
+    if any(x in n for x in ["esteira", "bicicleta ergométrica", "bike spinning", "elíptico", "step", "stepper", "cardio"]):
+        return {"headline": "TREINO EM CASA — EQUIPAMENTO EM OFERTA", "emojis": "🏃🔥", "detail": "Uma opção para montar ou melhorar o espaço de treino em casa."}
+    if any(x in n for x in ["faixa elástica", "faixa elastica", "elástico de resistência", "elastico de resistencia", "caneleira", "luva de academia", "strap", "wrist wrap", "cinturão", "corda de pular", "barra de porta"]):
+        return {"headline": "ACESSÓRIO DE TREINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "💪🔥", "detail": "Acessório para complementar o treino sem complicar a rotina."}
+    if any(x in n for x in ["garrafa fitness", "coqueteleira", "shaker", "mochila academia", "bolsa academia", "toalha academia"]):
+        return {"headline": "FITNESS EM OFERTA — ACESSÓRIO PARA O DIA A DIA", "emojis": "🥤💪", "detail": "Um item útil para acompanhar a rotina de treino."}
+    if any(x in n for x in ["yoga", "pilates", "alongamento", "tapete"]):
+        return {"headline": "YOGA E PILATES — ITEM EM OFERTA", "emojis": "🧘🔥", "detail": "Uma opção para treinar, alongar e montar seu espaço em casa."}
+
+    # ============================================================
+    # SAÚDE & BELEZA
+    # ============================================================
+    if any(x in n for x in ["shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador", "chapinha", "modelador", "escova secadora", "wella", "l'oreal", "loreal", "kerastase", "elseve", "truss", "salon line"]):
+        return {"headline": f"{bprefix}CUIDADOS COM O CABELO — OFERTA EM DESTAQUE", "emojis": "💇🔥", "detail": "Uma opção para cuidar dos cabelos aproveitando uma condição promocional."}
+    if any(x in n for x in ["unha", "manicure", "esmalte", "cabine uv", "cabine led", "nail art", "lixa elétrica", "gel para unhas"]):
+        return {"headline": "UNHAS E MANICURE — KIT OU PRODUTO EM OFERTA", "emojis": "💅✨", "detail": "Uma boa opção para montar ou renovar o kit de manicure."}
+    if any(x in n for x in ["skincare", "protetor solar facial", "hidratante facial", "serum facial", "sérum facial", "vitamina c", "niacinamida", "ácido hialurônico", "acido hialuronico", "cerave", "la roche", "principia", "neutrogena", "vichy"]):
+        return {"headline": "SKINCARE EM DESTAQUE — OLHA ESSA CONDIÇÃO", "emojis": "🧴✨", "detail": "Produto para cuidados faciais que apareceu com preço promocional."}
+    if any(x in n for x in ["barbeador", "barbearia", "máquina de cortar cabelo", "maquina de cortar cabelo", "aparador", "trimmer"]):
+        return {"headline": "CUIDADOS MASCULINOS — EQUIPAMENTO EM OFERTA", "emojis": "🪒🔥", "detail": "Uma opção prática para barba, cabelo e rotina de cuidados."}
+    if any(x in n for x in ["hidratante corporal", "creme corporal", "body cream", "óleo corporal", "oleo corporal", "cuidados corporais"]):
+        return {"headline": "CUIDADOS CORPORAIS — PRODUTO EM PROMOÇÃO", "emojis": "🧖✨", "detail": "Uma opção para cuidados diários com uma condição promocional."}
+
+    # ============================================================
+    # MODA — exclui social tradicional/manga longa no catálogo, mas
+    # a chamada também evita incentivar esse tipo de peça.
+    # ============================================================
+    if any(x in n for x in ["camiseta", "t-shirt", "tee"]):
+        return {"headline": f"{bprefix}CAMISETA EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "👕🔥", "detail": "Peça casual para o dia a dia com condição promocional."}
+    if any(x in n for x in ["camisa de futebol", "camisa esportiva", "camisa futebol", "jersey", "futebol"]):
+        return {"headline": f"{bprefix}CAMISA ESPORTIVA EM OFERTA — PREÇO PARA CONFERIR", "emojis": "⚽🔥", "detail": "Boa opção para quem curte futebol e quer aproveitar uma promoção."}
+    if any(x in n for x in ["jaqueta", "corta vento", "corta-vento", "corta vento"]):
+        return {"headline": f"{bprefix}JAQUETA EM OFERTA — PEÇA PARA FICAR DE OLHO", "emojis": "🧥🔥", "detail": "Uma peça versátil para completar o visual em dias mais frios ou de vento."}
+    if any(x in n for x in ["bermuda", "shorts"]):
+        return {"headline": f"{bprefix}BERMUDA EM DESTAQUE — PREÇO BOM PARA APROVEITAR", "emojis": "🩳🔥", "detail": "Peça prática para o dia a dia, treino ou momentos de lazer."}
+    if any(x in n for x in ["calça", "calca", "jeans"]):
+        return {"headline": f"{bprefix}CALÇA/JEANS EM OFERTA — OLHA O PREÇO", "emojis": "👖🔥", "detail": "Uma peça versátil para renovar o guarda-roupa."}
+    if any(x in n for x in ["fitness", "legging", "top esportivo", "short esportivo", "roupa esportiva"]):
+        return {"headline": f"{bprefix}ROUPA FITNESS EM DESTAQUE — OFERTA PARA O TREINO", "emojis": "🏃🔥", "detail": "Peça esportiva para treinar com uma condição promocional."}
+    if any(x in n for x in ["moletom", "casaco"]):
+        return {"headline": f"{bprefix}MOLETOM/CASACO EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🧥🔥", "detail": "Peça confortável para o dia a dia com preço promocional."}
+    if any(x in n for x in ["moda feminina", "vestido", "blusa feminina", "saia", "conjunto feminino"]):
+        return {"headline": f"{bprefix}MODA FEMININA EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "👚✨", "detail": "Uma peça para renovar o visual sem perder a oportunidade de promoção."}
+    if any(x in n for x in ["polo"]):
+        return {"headline": f"{bprefix}POLO EM OFERTA — ESTILO CASUAL COM PREÇO ESPECIAL", "emojis": "👔🔥", "detail": "Uma peça versátil para looks casuais e do dia a dia."}
+    if any(x in n for x in ["biquini", "biquíni", "maiô", "maio", "sunga", "moda praia"]):
+        return {"headline": f"{bprefix}MODA PRAIA EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🏖️🔥", "detail": "Uma opção para curtir praia ou piscina aproveitando o preço."}
+    if any(x in n for x in ["boné", "bone", "bucket", "viseira", "acessório de moda"]):
+        return {"headline": f"{bprefix}ACESSÓRIO EM OFERTA — DETALHE QUE FAZ DIFERENÇA", "emojis": "🧢🔥", "detail": "Um complemento fácil para o visual do dia a dia."}
+
+    # ============================================================
+    # TÊNIS & CALÇADOS
+    # ============================================================
+    shoe_brand = f"{brand.upper()} • " if brand else ""
+    if any(x in n for x in ["corrida", "running"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE CORRIDA EM OFERTA — OLHA ESSE PREÇO", "emojis": "🏃👟", "detail": "Uma opção para corrida e treinos, com preço promocional."}
+    if any(x in n for x in ["academia", "training", "treino"]):
+        return {"headline": f"{shoe_brand}TÊNIS PARA ACADEMIA — OFERTA EM DESTAQUE", "emojis": "🏋️👟", "detail": "Uma opção para complementar o treino com uma condição promocional."}
+    if any(x in n for x in ["chuteira", "futebol"]):
+        return {"headline": f"{shoe_brand}FUTEBOL EM OFERTA — CHUTEIRA PARA FICAR DE OLHO", "emojis": "⚽🔥", "detail": "Uma opção para quem joga e quer aproveitar um preço promocional."}
+    if any(x in n for x in ["basquete", "basketball"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE BASQUETE EM DESTAQUE", "emojis": "🏀🔥", "detail": "Uma opção para quadra ou para quem curte o estilo do basquete."}
+    if any(x in n for x in ["trilha", "adventure", "trail"]):
+        return {"headline": f"{shoe_brand}TRILHA/ADVENTURE — CALÇADO EM OFERTA", "emojis": "🥾🔥", "detail": "Uma opção para atividades ao ar livre e terrenos mais exigentes."}
+    if any(x in n for x in ["skate"]):
+        return {"headline": f"{shoe_brand}SKATE EM OFERTA — TÊNIS PARA FICAR DE OLHO", "emojis": "🛹🔥", "detail": "Uma opção casual e esportiva para quem anda de skate."}
+    if any(x in n for x in ["chinelo", "slide", "sandália"]):
+        return {"headline": f"{shoe_brand}CHINELO/SLIDE EM OFERTA — PREÇO PARA APROVEITAR", "emojis": "🏖️🔥", "detail": "Conforto para o dia a dia com uma condição promocional."}
+    if any(x in n for x in ["infantil", "kids"]):
+        return {"headline": f"{shoe_brand}TÊNIS INFANTIL EM DESTAQUE — OLHA O PREÇO", "emojis": "👟🧒", "detail": "Uma opção para os pequenos aproveitando uma condição promocional."}
+    # "masculino/feminino/men/women" sozinhos NÃO identificam calçado.
+    # Só usamos gênero depois de confirmar que o título realmente contém
+    # algum marcador de tênis/calçado.
+    shoe_markers = (
+        "tenis", "tênis", "sapatenis", "sapatênis", "calcado", "calçado",
+        "sneaker", "sneakers", "chuteira", "chinelo", "slide", "sandalia",
+        "sandália", "running shoe", "running shoes",
+        "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
+        "ultraboost", "superstar", "adizero", "pegasus", "vomero",
+        "novablast", "gel kayano", "gel nimbus", "gel cumulus", "fresh foam",
+        "1080", "574", "990", "clifton", "bondi", "corre",
     )
-    if any(x in n for x in arabic_terms):
-        return result(pick([
-            "ESSE ÁRABE VAI TE SURPREENDER",
-            "OLHA ESSE ÁRABE QUE APARECEU",
-            "ESSE ÁRABE MERECE SUA ATENÇÃO",
-            "ACHADO ÁRABE PARA FICAR DE OLHO",
-            "SE VOCÊ CURTE PERFUME ÁRABE, OLHA ESSE",
-            "ESSA FRAGRÂNCIA ÁRABE PODE TE SURPREENDER",
-            "UM ÁRABE DESSES NÃO APARECE TODA HORA",
-            "OLHA O ACHADO ÁRABE DE HOJE",
-        ]), pick(["🔥✨", "🖤🔥", "✨🔥", "🌙🔥"]))
+    has_shoe_marker = any(x in n for x in shoe_markers)
+    if has_shoe_marker and any(x in n for x in ["feminino", "feminina", "women"]):
+        return {"headline": f"{shoe_brand}TÊNIS FEMININO EM OFERTA — PREÇO PARA CONFERIR", "emojis": "👟✨", "detail": "Uma opção para completar o visual ou a rotina de treino."}
+    if has_shoe_marker and any(x in n for x in ["masculino", "masculina", "men"]):
+        return {"headline": f"{shoe_brand}TÊNIS MASCULINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "👟🔥", "detail": "Uma opção versátil para o dia a dia ou treino."}
+    if has_shoe_marker:
+        return {"headline": f"{shoe_brand}TÊNIS EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "👟🔥", "detail": "Uma opção para uso casual ou rotina, dependendo do modelo."}
 
-    # PERFUMES EM GERAL.
-    if any(x in n for x in (
-        "perfume", "parfum", "fragrance", "eau de parfum", "eau de toilette",
-        "eau de cologne", "body splash", "body mist", "colonia", "colônia",
-        "deo colonia", "deo colônia", "desodorante colonia", "desodorante colônia"
-    )):
-        return result(pick([
-            "ESSA FRAGRÂNCIA MERECE SUA ATENÇÃO",
-            "OLHA ESSE ACHADO DE PERFUMARIA",
-            "ESSA FRAGRÂNCIA PODE TE SURPREENDER",
-            "ACHADO DE PERFUMARIA PARA FICAR DE OLHO",
-            "SE VOCÊ GOSTA DE PERFUME, OLHA ESSE",
-            "ESSA OFERTA DE PERFUMARIA VALE CONFERIR",
-            "OLHA O ACHADO QUE APARECEU HOJE",
-        ]), pick(["✨🔥", "🌸🔥", "🔥👀", "💫🔥"]))
+    # ============================================================
+    # FALLBACK — ainda é específico o suficiente para qualquer item.
+    # ============================================================
+    if brand:
+        return {"headline": f"{brand.upper()} EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🔥👀", "detail": "Produto de marca em condição promocional para ficar no radar."}
 
-    # CELULARES / TECNOLOGIA.
-    if any(x in n for x in ("iphone", "smartphone", "celular", "telefone", "galaxy", "redmi", "poco", "moto g")):
-        return result(pick([
-            "OLHA ESSA OPORTUNIDADE PARA TROCAR DE CELULAR",
-            "ESSE CELULAR MERECE ENTRAR NO RADAR",
-            "ACHADO TECH QUE VALE CONFERIR",
-            "OLHA O PREÇO QUE APARECEU HOJE",
-            "ESSA OFERTA DE CELULAR PODE TE SURPREENDER",
-            "SE ESTAVA PENSANDO EM TROCAR, OLHA ESSA",
-        ]), pick(["📱🔥", "📱👀", "⚡📱", "🔥📱"]))
-
-    if any(x in n for x in ("fone", "headset", "airpods", "caixa de som", "soundbar", "bluetooth", "jbl")):
-        return result(pick([
-            "OLHA ESSE ACHADO DE ÁUDIO",
-            "ESSA OFERTA DE ÁUDIO MERECE ATENÇÃO",
-            "ACHADO TECH PARA FICAR DE OLHO",
-            "OLHA O PREÇO QUE APARECEU",
-            "ESSE AQUI PODE VALER A PENA",
-        ]), pick(["🎧🔥", "🔊🔥", "👀🔥"]))
-
-    if any(x in n for x in ("notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora")):
-        return result(pick([
-            "ACHADO DE INFORMÁTICA PARA FICAR DE OLHO",
-            "OLHA ESSA OPORTUNIDADE PARA O SETUP",
-            "ESSA OFERTA DE INFORMÁTICA MERECE ATENÇÃO",
-            "OLHA O QUE APARECEU PARA QUEM CURTE TECH",
-            "ESSE ACHADO PODE VALER A PENA",
-        ]), pick(["💻🔥", "🖥️🔥", "⚡🔥"]))
-
-    # TÊNIS / CALÇADOS.
-    if any(x in n for x in ("tênis", "tenis", "sapatênis", "sapatenis", "chuteira", "calçado", "calcado", "slide", "chinelo")):
-        return result(pick([
-            "ESSE AQUI MERECE ENTRAR NO RADAR",
-            "OLHA ESSE ACHADO DE CALÇADOS",
-            "ESSA OFERTA DE TÊNIS VALE CONFERIR",
-            "OLHA O PREÇO QUE APARECEU",
-            "ESSE MODELO PODE TE SURPREENDER",
-            "ACHADO DE CALÇADOS PARA FICAR DE OLHO",
-        ]), pick(["👟🔥", "🔥👟", "👀👟"]))
-
-    # MODA.
-    if any(x in n for x in (
-        "camiseta", "t-shirt", "tee", "camisa de futebol", "camisa esportiva",
-        "jersey", "jaqueta", "corta vento", "corta-vento", "bermuda", "short",
-        "calça", "calca", "jeans", "moletom", "casaco", "polo", "boné", "bone"
-    )):
-        return result(pick([
-            "OLHA ESSE ACHADO DE MODA",
-            "ESSA PEÇA MERECE SUA ATENÇÃO",
-            "OLHA O QUE APARECEU HOJE",
-            "ESSA OFERTA DE MODA PODE TE SURPREENDER",
-            "ACHADO PARA QUEM GOSTA DE SE VESTIR BEM",
-            "ESSA AQUI VALE ENTRAR NO RADAR",
-        ]), pick(["👕🔥", "🔥👕", "👀✨"]))
-
-    # CASA.
-    if any(x in n for x in (
-        "air fryer", "cafeteira", "liquidificador", "aspirador", "panela",
-        "mixer", "cozinha", "pote", "organizador", "estante", "sapateira",
-        "varal", "casa", "decoração", "decoracao", "cama", "mesa", "banho"
-    )):
-        return result(pick([
-            "OLHA ESSE ACHADO PARA CASA",
-            "ESSE AQUI PODE FACILITAR MUITO A ROTINA",
-            "ACHADO PARA CASA QUE VALE CONFERIR",
-            "OLHA O QUE APARECEU PARA A CASA",
-            "ESSA OFERTA MERECE FICAR NO RADAR",
-        ]), pick(["🏠🔥", "🏡✨", "🔥🏠"]))
-
-    # FERRAMENTAS.
-    if any(x in n for x in ("furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete")):
-        return result(pick([
-            "OLHA ESSE ACHADO DE FERRAMENTAS",
-            "ESSA OFERTA DE FERRAMENTA MERECE ATENÇÃO",
-            "ACHADO PARA QUEM GOSTA DE TER FERRAMENTA BOA",
-            "OLHA O PREÇO QUE APARECEU",
-            "ESSA AQUI PODE VALER A PENA",
-        ]), pick(["🔧🔥", "🛠️🔥", "🔥🔧"]))
-
-    # FITNESS / ACADEMIA.
-    if any(x in n for x in (
-        "esteira", "bicicleta ergométrica", "spinning", "elíptico", "eliptico",
-        "step", "corda", "halter", "anilha", "banco de musculação", "academia",
-        "whey", "creatina", "pré-treino", "pre-treino", "hipercalórico", "hipercalorico",
-        "coqueteleira", "shaker", "garrafa fitness"
-    )):
-        return result(pick([
-            "ESSE ACHADO FITNESS MERECE SUA ATENÇÃO",
-            "OLHA ESSA OPORTUNIDADE PARA O TREINO",
-            "ACHADO FITNESS PARA FICAR DE OLHO",
-            "ESSA OFERTA PODE AJUDAR NO SEU TREINO",
-            "OLHA O QUE APARECEU PARA QUEM TREINA",
-        ]), pick(["💪🔥", "🏋️🔥", "🔥💪"]))
-
-    # SAÚDE & BELEZA.
-    if any(x in n for x in (
-        "shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador",
-        "chapinha", "skincare", "protetor solar", "hidratante", "serum", "sérum",
-        "esmalte", "manicure", "barbeador", "aparador", "trimmer", "creme corporal"
-    )):
-        return result(pick([
-            "OLHA ESSE ACHADO DE BELEZA",
-            "ESSA OFERTA MERECE FICAR NO RADAR",
-            "ACHADO DE BELEZA QUE VALE CONFERIR",
-            "OLHA O QUE APARECEU HOJE",
-            "ESSA AQUI PODE TE SURPREENDER",
-        ]), pick(["✨🔥", "💄🔥", "🧴✨"]))
-
-    # FALLBACK neutro: nunca usa o nome do produto.
-    return result(pick([
-        "OLHA ESSE ACHADO QUE APARECEU",
-        "ESSA OFERTA MERECE SUA ATENÇÃO",
-        "OLHA O QUE APARECEU HOJE",
-        "ESSE AQUI PODE TE SURPREENDER",
-        "ACHADO PARA FICAR DE OLHO",
-        "ESSA OPORTUNIDADE VALE CONFERIR",
-        "OLHA ESSA CONDIÇÃO",
-    ]), pick(["🔥👀", "✨🔥", "👀🔥", "🔥"]))
+    words = [w for w in re.split(r"\s+", t) if len(w) > 2]
+    short_name = " ".join(words[:4]) if words else "produto"
+    return {"headline": f"{short_name.upper()} EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🔥👀", "detail": "Oferta encontrada pelo Caçador de Ofertas; confira preço, condições e disponibilidade."}
 
 def ad_text(o, affiliate=""):
-    """Monta o anúncio com chamada neutra e nome do produto separado."""
+    """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # A chamada não repete o produto. O nome completo fica logo abaixo.
+    # Formato aprovado pelo usuário: headline comercial específico + emojis,
+    # depois o produto. Não exibe uma segunda descrição em itálico.
     lines = [
         f"*{marketing['headline']}*",
         marketing["emojis"],
@@ -6384,6 +6283,7 @@ def ad_text(o, affiliate=""):
     ]
 
     if o.get("original_price"):
+        # Tachado real do WhatsApp.
         lines.append(f"~De {brl(o['original_price'])}~")
 
     if o.get("cupom"):
@@ -6397,7 +6297,9 @@ def ad_text(o, affiliate=""):
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
+    # A chama fica DEPOIS de PROMOÇÃO.
     lines += ["", "*PEGAR PROMOÇÃO 🔥:* " + link]
+
     return "\n".join(lines)
 
 # ============================================================
@@ -6637,8 +6539,8 @@ def whatsapp_image(filename):
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
 AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
-AUTO_WHATSAPP_START = "08:30"
-AUTO_WHATSAPP_END = "22:30"
+AUTO_WHATSAPP_START = "00:00"
+AUTO_WHATSAPP_END = "23:59"
 # Automação contínua: não existe horário de início/fim.
 AUTO_WHATSAPP_ALWAYS_ON = True
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
@@ -6646,33 +6548,14 @@ AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 def _auto_whatsapp_horario_atual():
-    """Controla a janela diária de publicação automática."""
+    """Automação contínua: sempre ativa, sem horário de início ou parada."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
+    return True, now, 0, 24 * 60 - 1
 
-    def _parse_hhmm(value, default):
-        try:
-            h, m = str(value).split(":", 1)
-            h, m = int(h), int(m)
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                return h * 60 + m
-        except Exception:
-            pass
-        return default
-
-    start = _parse_hhmm(AUTO_WHATSAPP_START, 8 * 60 + 30)
-    end = _parse_hhmm(AUTO_WHATSAPP_END, 22 * 60 + 30)
-    current = now.hour * 60 + now.minute
-
-    if start <= end:
-        active = start <= current < end
-    else:
-        active = current >= start or current < end
-
-    return active, now, start, end
 
 def _whatsapp_send_text(text, image_url=""):
     """Envia texto ou foto com legenda ao grupo selecionado pelo WhatsApp Bot."""
@@ -6708,43 +6591,19 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
-def _whatsapp_publication_key(offer):
-    """Identidade do anúncio para o WhatsApp. Prioriza ITEM MLB.
-
-    Assim dois vendedores diferentes do mesmo produto podem aparecer como
-    anúncios diferentes. O MESMO anúncio só volta a ser publicado quando o
-    preço cai.
-    """
-    return str(
-        offer.get("item_id")
-        or offer.get("product_id")
-        or ""
-    ).strip().upper()
-
-
-def _whatsapp_should_publish(offer_or_product_id, price=None):
-    if isinstance(offer_or_product_id, dict):
-        offer = offer_or_product_id
-        key = _whatsapp_publication_key(offer)
-        new_price = offer.get("price")
-    else:
-        key = str(offer_or_product_id or "").strip().upper()
-        new_price = price
-
-    if not key:
-        return False
-
+def _whatsapp_should_publish(product_id, price):
+    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
     conn = get_db()
     row = conn.execute(
         "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
-        (key,),
+        (str(product_id),),
     ).fetchone()
     conn.close()
     if not row:
         return True
     try:
         old_price = float(row["last_price"])
-        new_price = float(new_price)
+        new_price = float(price)
     except (TypeError, ValueError):
         return False
     return new_price < old_price - 0.01
@@ -6763,7 +6622,7 @@ def _whatsapp_mark_published(offer):
             published_count=whatsapp_publicacoes.published_count + 1,
             last_published_at=CURRENT_TIMESTAMP
     """, (
-        _whatsapp_publication_key(offer),
+        str(offer.get("product_id") or ""),
         float(offer.get("price") or 0),
         offer.get("permalink") or "",
         offer.get("title") or "Produto",
@@ -6772,90 +6631,13 @@ def _whatsapp_mark_published(offer):
     conn.close()
 
 
-def _whatsapp_diversidade_estado():
-    """Retorna quantas ofertas foram publicadas desde o último perfume.
-
-    Regra: 1 perfume a cada 20 ofertas publicadas. O contador é salvo no
-    SQLite para não reiniciar quando o Railway reiniciar o processo.
-    """
-    conn = get_db()
-    row = conn.execute("""
-        SELECT ofertas_desde_ultimo_perfume, total_ofertas_regra
-        FROM whatsapp_diversidade
-        WHERE id = 1
-    """).fetchone()
-    conn.close()
-    if not row:
-        return 0, 0
-    return int(row[0] or 0), int(row[1] or 0)
-
-
-def _whatsapp_diversidade_registrar(offer):
-    """Atualiza a contagem da regra depois de uma publicação confirmada."""
-    cat = str(offer.get("category_name") or "").strip()
-    is_perfume = cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
-    conn = get_db()
-    if is_perfume:
-        conn.execute("""
-            UPDATE whatsapp_diversidade
-            SET ofertas_desde_ultimo_perfume = 0,
-                total_ofertas_regra = total_ofertas_regra + 1,
-                ultimo_perfume_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-        """)
-    else:
-        conn.execute("""
-            UPDATE whatsapp_diversidade
-            SET ofertas_desde_ultimo_perfume = ofertas_desde_ultimo_perfume + 1,
-                total_ofertas_regra = total_ofertas_regra + 1
-            WHERE id = 1
-        """)
-    conn.commit()
-    conn.close()
-
-
-def _whatsapp_diversidade_reordenar(offers):
-    """Ordena a fila para cumprir 1 perfume a cada 20 publicações.
-
-    O contador considera somente publicações realmente confirmadas. Assim um
-    anúncio repetido, sem afiliado ou que falhar no WhatsApp não consome uma
-    posição da regra.
-    """
-    perfumes = [
-        o for o in offers
-        if str(o.get("category_name") or "").strip() in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
-    ]
-    outros = [
-        o for o in offers
-        if str(o.get("category_name") or "").strip() not in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
-    ]
-
-    desde_perfume, _total = _whatsapp_diversidade_estado()
-    # A 20ª oferta é perfume. Portanto, com 19 ofertas não-perfume desde o
-    # último perfume, o próximo candidato prioritário deve ser perfume.
-    if desde_perfume >= 19:
-        return perfumes + outros
-    return outros + perfumes
-
-
 def _whatsapp_publish_scan(result):
     """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
 
-    Mantém a regra de 1 perfume a cada 20 ofertas publicadas, persistida no
-    SQLite, e distribui as demais categorias para evitar concentração.
+    Se o WhatsApp falhar, a rodada é interrompida imediatamente e os produtos
+    que ainda não foram enviados permanecem disponíveis para a próxima rodada.
     """
     offers = list((result or {}).get("ofertas") or [])
-
-    # ========================================================
-    # DIVERSIDADE DO GRUPO
-    # ========================================================
-    # Regra fixa: 1 perfume (normal ou árabe) a cada 20 ofertas PUBLICADAS.
-    # As outras 19 ofertas são distribuídas entre Academia, Tênis, Moda,
-    # Saúde/Beleza, Casa e Tecnologia. O contador é persistente no SQLite.
-    # A fila abaixo só define a prioridade; o contador só avança depois que
-    # o WhatsApp confirma o envio.
-    offers = _whatsapp_diversidade_reordenar(offers)
-
     sent = 0
     skipped = 0
 
@@ -6863,9 +6645,8 @@ def _whatsapp_publish_scan(result):
         if sent >= AUTO_WHATSAPP_LIMIT:
             break
 
-        publication_key = _whatsapp_publication_key(offer)
         product_id = str(offer.get("product_id") or "").strip()
-        if not publication_key:
+        if not product_id:
             continue
 
         price = offer.get("price")
@@ -6876,7 +6657,7 @@ def _whatsapp_publish_scan(result):
         if price <= 0:
             continue
 
-        if not _whatsapp_should_publish(offer):
+        if not _whatsapp_should_publish(product_id, price):
             skipped += 1
             continue
 
@@ -6916,24 +6697,6 @@ def _whatsapp_publish_scan(result):
                 skipped += 1
                 continue
 
-        # Confirma eventual desconto Pix somente depois que a oferta foi
-        # escolhida para publicação. Assim não aumentamos desnecessariamente
-        # o número de consultas durante a caça.
-        if not offer.get("desconto_pix"):
-            pix_discount, pix_label = detect_cash_discount(offer, price)
-            if pix_discount <= 0:
-                pix_discount, pix_label = detect_pix_discount_from_page(
-                    offer.get("permalink") or "", price
-                )
-            if pix_discount > 0:
-                offer["desconto_pix"] = round(pix_discount, 2)
-                offer["preco_pix"] = round(price - pix_discount, 2)
-                offer["tipo_desconto_pix"] = pix_label or "Pix"
-                print(
-                    f"[PIX] {product_id}: {offer['tipo_desconto_pix']} "
-                    f"R$ {offer['preco_pix']:.2f} (desconto R$ {pix_discount:.2f})"
-                )
-
         # Gera o mesmo anúncio usado pelo fluxo manual, agora com o
         # meli.la recém-criado, e só então envia ao WhatsApp.
         try:
@@ -6949,9 +6712,8 @@ def _whatsapp_publish_scan(result):
             return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
 
         _whatsapp_mark_published(offer)
-        _whatsapp_diversidade_registrar(offer)
         sent += 1
-        print(f"[AUTO WHATSAPP] Oferta {publication_key} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
+        print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
 
     return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
 
@@ -6990,18 +6752,15 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] HORÁRIO: {AUTO_WHATSAPP_START} às {AUTO_WHATSAPP_END}; "
+            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
             f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
             f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
             f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            ativo, now, start, end = _auto_whatsapp_horario_atual()
-            if ativo:
-                executar_caca_automatica()
-                time.sleep(AUTO_WHATSAPP_INTERVAL)
-            else:
-                time.sleep(60)
+            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
+            executar_caca_automatica()
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
@@ -7093,19 +6852,59 @@ def run_caca_job(job_id, category=None):
 # ============================================================
 
 def _manual_queries_for_category(q):
-    """Se o usuário digitar uma categoria, pesquisa cada nicho dela individualmente."""
+    """Resolve a busca manual para a categoria inteira.
+
+    A busca manual não pode tratar variações como "Tênis e calçados" como
+    uma consulta literal. Elas precisam apontar para "👟 Tênis & Calçados"
+    e então disparar TODOS os micro-nichos da categoria.
+    """
     nq = norm(q)
 
-    # Correspondência exata é a prioridade.
+    # Correspondência exata pelo nome cadastrado.
     for category, seeds in CATALOG.items():
         if nq == norm(category):
             return category, list(seeds)
 
-    # Também aceita digitar somente o nome sem emoji.
+    # Também aceita o nome sem emoji.
     for category, seeds in CATALOG.items():
         plain = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+", "", category).strip()
         if nq == norm(plain):
             return category, list(seeds)
+
+    # ALIASES IMPORTANTES: o usuário normalmente digita a categoria de
+    # forma natural, sem copiar exatamente o texto do botão.
+    aliases = {
+        "tecnologia": "📱 Tecnologia",
+        "celulares": "📱 Tecnologia",
+        "celular": "📱 Tecnologia",
+        "casa": "🏠 Casa e Organização",
+        "casa e organizacao": "🏠 Casa e Organização",
+        "casa e cozinha": "🏠 Casa e Organização",
+        "organizacao": "🏠 Casa e Organização",
+        "academia": "💪 Academia & Fitness",
+        "academia e fitness": "💪 Academia & Fitness",
+        "fitness": "💪 Academia & Fitness",
+        "saude e beleza": "💇 Saúde & Beleza",
+        "saude beleza": "💇 Saúde & Beleza",
+        "beleza": "💇 Saúde & Beleza",
+        "moda": "👕 Moda",
+        "roupas": "👕 Moda",
+        "roupa": "👕 Moda",
+        "tenis": "👟 Tênis & Calçados",
+        "tenis e calcados": "👟 Tênis & Calçados",
+        "tenis e calcados": "👟 Tênis & Calçados",
+        "calcados": "👟 Tênis & Calçados",
+        "calcado": "👟 Tênis & Calçados",
+        "sapatos": "👟 Tênis & Calçados",
+        "perfumes": "🌸 Perfumes",
+        "perfume": "🌸 Perfumes",
+        "perfumes arabes": "🌙 Perfumes Árabes",
+        "perfumes arabes": "🌙 Perfumes Árabes",
+        "perfume arabe": "🌙 Perfumes Árabes",
+    }
+    category = aliases.get(nq)
+    if category in CATALOG:
+        return category, list(CATALOG[category])
 
     return None, None
 
@@ -7127,6 +6926,9 @@ def api_buscar():
 
     if category and category_queries:
         print(f"[BUSCA MANUAL CATEGORIA] {category}: {len(category_queries)} nichos")
+        # Categoria manual = TODOS os micro-nichos, nunca apenas a frase
+        # digitada pelo usuário. Isso é o que permite encontrar dezenas de
+        # modelos diferentes em Tênis, Moda, Tecnologia etc.
         queries = category_queries
     else:
         # Busca livre continua funcionando normalmente.
@@ -8417,14 +8219,14 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 69,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos de alto giro a partir de R$ 29,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria ou procure <b>todas de uma vez</b>. O sistema combina <b>categoria → subnicho → marca → produto</b> e só mostra o resultado quando a consulta terminar.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão acima para buscar todas.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Digite uma categoria ou produto: Tecnologia, Moda, Tênis, Academia, Perfumes..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal combina vários micro-nichos da categoria e usa a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div><script>window.addEventListener('load',()=>{processarRetornoAfiliado();});</script></body></html>
 """
