@@ -128,6 +128,18 @@ MIN_PRODUCT_PRICE = 69.90
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
 
+# Expansão da busca: o objetivo é formar um universo grande de candidatos
+# antes dos filtros finais de preço, coerência, imagem e desconto.
+# Com 6 categorias, 65 candidatos por categoria = até 390 candidatos
+# para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
+# estoque suficiente de anúncios promocionais.
+SEARCH_TARGET_OFFERS = 230
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 65
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 100
+SEARCH_RAW_POOL_PER_CATEGORY = 110
+SEARCH_SEEDS_FAST_PER_CATEGORY = 18
+SEARCH_RESULTS_PER_QUERY_FAST = 40
+
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
 # ============================================================
@@ -236,17 +248,25 @@ CATALOG = {'📱 Tecnologia': ['📱 Celulares',
                           'step',
                           'mini stepper',
                           'banco de treino',
-                          'barra de porta',
-                          '🥤 Acessórios Fitness',
-                          'acessórios fitness',
-                          'garrafa fitness',
-                          'coqueteleira',
-                          'shaker',
-                          'mochila academia',
-                          'toalha academia',
-                          'luvas fitness',
-                          'bolsa academia',
-                          'faixa de resistência'],
+                          '🏋️ Equipamentos de Academia',
+                          'halteres',
+                          'halter',
+                          'anilhas',
+                          'barra musculação',
+                          'rack de musculação',
+                          'estação de musculação',
+                          'aparelho de academia',
+                          'máquina de musculação',
+                          '🥤 Suplementação',
+                          'whey protein',
+                          'creatina',
+                          'pré treino',
+                          'pre treino',
+                          'hipercalórico',
+                          'proteína',
+                          'BCAA',
+                          'vitaminas esportivas',
+                          'isotônico'],
  '💇 Saúde & Beleza': ['💇 Cabelos',
                       'cabelos',
                       'shampoo',
@@ -2686,13 +2706,13 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
-def search_products_direct(q, limit=30):
+def search_products_direct(q, limit=40):
     """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
     data, status, _ = ml_get("/products/search", {
         "site_id": SITE_ID,
         "q": q,
         "status": "active",
-        "limit": min(int(limit or 30), 50),
+        "limit": min(int(limit or 40), 50),
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
@@ -4062,12 +4082,33 @@ def _search_category(cat, fast=False):
     # por categoria para combinar subnicho + marcas e ampliar a descoberta.
     # A busca manual continua usando todas as sementes da categoria.
     rank_base = 100
-    seed_queries = CATALOG.get(cat, [])
-    if fast:
-        seed_queries = seed_queries[:12]
+    seed_queries = []
+    for seed in CATALOG.get(cat, []):
+        # Entradas que são somente cabeçalhos visuais (emoji + nome da seção)
+        # não devem consumir uma chamada de busca.
+        clean_seed = str(seed or '').strip()
+        if not clean_seed:
+            continue
+        if clean_seed == cat:
+            continue
+        if re.match(r'^[^A-Za-zÀ-ÿ0-9]+$', clean_seed):
+            continue
+        # Cabeçalhos como "📱 Celulares" / "🥤 Suplementação" podem ser
+        # úteis como contexto visual, mas não são consultas tão boas quanto
+        # os termos reais logo abaixo deles.
+        if re.match(r'^[^A-Za-zÀ-ÿ0-9]*[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 &/+-]*$', clean_seed) and clean_seed.count(' ') <= 4 and any(ch in clean_seed for ch in '📱🏠💪🏃🏋️🥤💇💅🧴🪒🧖👕🏀🧥🩳👖👚👔🩱🧢👟⚽'):
+            clean_seed = re.sub(r'^[^A-Za-zÀ-ÿ0-9]+', '', clean_seed).strip()
+        if clean_seed and clean_seed not in seed_queries:
+            seed_queries.append(clean_seed)
+        if fast and len(seed_queries) >= SEARCH_SEEDS_FAST_PER_CATEGORY:
+            break
+
     for q in seed_queries:
         try:
-            rows = search_products_direct(q, limit=30 if fast else 50)
+            rows = search_products_direct(
+                q,
+                limit=SEARCH_RESULTS_PER_QUERY_FAST if fast else 50,
+            )
         except Exception as exc:
             print("[BUSCA ESPECIFICA]", cat, q, repr(exc))
             continue
@@ -4086,8 +4127,8 @@ def _search_category(cat, fast=False):
                 "highlight_position": rank_base + j,
                 "highlight_category_id": category_id,
             }, cat))
-        rank_base += 30
-        if len(out) >= 120:
+        rank_base += SEARCH_RESULTS_PER_QUERY_FAST if fast else 50
+        if len(out) >= (SEARCH_RAW_POOL_PER_CATEGORY if fast else 180):
             break
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
@@ -4668,6 +4709,112 @@ def _arabic_relevance_score(title, ds):
     return brand_bonus + trend_bonus + bestseller_bonus + both_bonus
 
 
+
+def _title_matches_scan_category(category, title):
+    """Validação final de coerência: o produto encontrado precisa pertencer ao nicho."""
+    cat = str(category or "").strip()
+    n = norm(title or "")
+    if not n:
+        return False
+
+    # Bloqueios universais para evitar cruzamento óbvio entre categorias.
+    fragrance = any(x in n for x in (
+        "perfume", "parfum", "eau de", "edt", "edp", "fragrance",
+        "body splash", "body mist", "colonia", "colônia",
+    ))
+    shoe = any(x in n for x in (
+        "tenis", "tênis", "sneaker", "sneakers", "sapatenis", "sapatênis",
+        "calcado", "calçado", "chuteira", "chinelo", "slide", "sandalia",
+        "sandália", "running shoe", "running shoes",
+        # modelos/linhas muito característicos de tênis
+        "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
+        "ultraboost", "superstar", "adizero", "pegasus", "vomero",
+        "novablast", "gel kayano", "gel nimbus", "gel cumulus", "fresh foam",
+        "1080", "574", "990", "1080v", "clifton", "bondi", "corre",
+    ))
+
+    if cat == "🌸 Perfumes":
+        return _is_normal_perfume_for_query(title, "")
+    if cat == "🌙 Perfumes Árabes":
+        return _is_arabic_perfume_for_query(title, "")
+
+    if cat == "👟 Tênis & Calçados":
+        if fragrance:
+            return False
+        return shoe
+
+    if cat == "👕 Moda":
+        if fragrance or shoe:
+            return False
+        return any(x in n for x in (
+            "camiseta", "t shirt", "tshirt", "camisa", "jersey", "bermuda",
+            "short", "jaqueta", "corta vento", "calca", "calça", "jeans",
+            "moletom", "casaco", "polo", "vestido", "blusa", "cropped",
+            "legging", "top fitness", "regata", "conjunto", "biquini",
+            "biquíni", "sunga", "maio", "maiô", "bone", "boné", "viseira",
+            "oculos de sol", "óculos de sol", "carteira", "cinto", "mochila",
+        ))
+
+    if cat == "📱 Tecnologia":
+        if fragrance or shoe:
+            return False
+        return any(x in n for x in (
+            "iphone", "ipad", "smartphone", "celular", "galaxy", "redmi",
+            "poco", "motorola", "realme", "notebook", "macbook", "laptop",
+            "monitor", "teclado", "mouse", "ssd", "memoria ram", "impressora",
+            "webcam", "tablet", "smartwatch", "fone", "headset", "airpods",
+            "caixa de som", "soundbar", "bluetooth", "carregador", "cabo usb",
+            "power bank", "pelicula", "película", "capa", "case", "console",
+            "videogame", "playstation", "xbox", "nintendo",
+        ))
+
+    if cat == "🏠 Casa e Organização":
+        if fragrance or shoe:
+            return False
+        return any(x in n for x in (
+            "organizador", "guarda roupa", "armario", "armário", "estante",
+            "prateleira", "sapateira", "pote", "cozinha", "utensilio",
+            "utensílio", "air fryer", "aspirador", "cafeteira", "liquidificador",
+            "panela", "mixer", "lampada", "lâmpada", "fita led", "jogo de cama",
+            "toalha", "varal", "escorredor", "mesa", "cadeira", "sofa", "sofá",
+            "cama", "colchao", "colchão", "armario", "armário", "móvel", "moveis",
+            "móveis", "decoração", "decoracao",
+        ))
+
+    if cat == "💪 Academia & Fitness":
+        if fragrance or shoe:
+            return False
+        return any(x in n for x in (
+            "creatina", "whey", "proteina", "proteína", "pre treino", "pré treino",
+            "hipercalorico", "hipercalórico", "bcaa", "isotonico", "isotônico",
+            "halter", "anilha", "barra musculacao", "barra musculação", "rack",
+            "estacao de musculacao", "estação de musculação", "aparelho de academia",
+            "maquina de musculacao", "máquina de musculação", "esteira",
+            "bicicleta ergometrica", "bicicleta ergométrica", "spinning",
+            "eliptico", "elíptico", "step", "banco de treino", "academia",
+            "fitness", "musculacao", "musculação", "crossfit",
+        ))
+
+    if cat == "💇 Saúde & Beleza":
+        # Perfumes possuem categorias próprias no catálogo e não devem cair
+        # nesta categoria por acidente.
+        if fragrance or shoe:
+            return False
+        return any(x in n for x in (
+            "shampoo", "condicionador", "mascara capilar", "máscara capilar",
+            "secador", "chapinha", "modelador", "escova secadora", "wella",
+            "loreal", "l'oreal", "kerastase", "elseve", "truss", "salon line",
+            "manicure", "esmalte", "cabine uv", "cabine led", "unha", "nail art",
+            "skincare", "protetor solar", "hidratante facial", "serum", "sérum",
+            "niacinamida", "acido hialuronico", "ácido hialurônico", "cerave",
+            "la roche", "principia", "neutrogena", "vichy", "barbeador",
+            "barbearia", "aparador", "trimmer", "hidratante corporal",
+            "creme corporal", "esfoliante", "depilador", "oleo corporal",
+            "óleo corporal", "desodorante",
+        ))
+
+    return True
+
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
@@ -4743,7 +4890,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         # de ITEM real e não passam pelo enriquecimento normal.
         if cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}:
             continue
-        candidate_limit = 35 if FAST_ALL_CATEGORIES and len(categories) > 1 else 70
+        candidate_limit = (
+            SEARCH_CANDIDATES_PER_CATEGORY_ALL
+            if FAST_ALL_CATEGORIES and len(categories) > 1
+            else SEARCH_CANDIDATES_PER_CATEGORY_SINGLE
+        )
         for raw, source_query in raw_by_cat.get(cat, [])[:candidate_limit]:
             pid = str(raw.get("id") or raw.get("product_id") or "").strip()
             if not pid or pid in seen:
@@ -4795,7 +4946,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
     fetched = []
-    enrichment_workers = 8 if FAST_ALL_CATEGORIES and len(categories) > 1 else 12
+    enrichment_workers = 10 if FAST_ALL_CATEGORIES and len(categories) > 1 else 14
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
@@ -4875,6 +5026,12 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 or p.get("permalink")
                 or ""
             ).strip()
+
+            # BLOQUEIO DE COERÊNCIA: a busca pode devolver um item fora do
+            # nicho. Nunca publicamos só porque ele apareceu na pesquisa.
+            if not _title_matches_scan_category(cat, title):
+                print(f"[COERÊNCIA] descartado fora do nicho: {cat} -> {title[:120]}")
+                continue
 
             image = _resolve_offer_image(p, item, base, item.get("item_id"))
             if not image:
@@ -5367,7 +5524,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": "30 por categoria + até 50 perfumes por categoria, por ITEM real, sem filtro Full/Gold/100 vendas",
+        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
+        "meta_ofertas": SEARCH_TARGET_OFFERS,
+        "pool_candidatos": len(candidates),
     }
     print(f"[RESULTADO OFERTAS] {len(flat)} produtos | categorias={categories} | candidatos={len(candidates)} | enriquecidos={len(fetched)}")
     return {
@@ -5962,7 +6121,13 @@ def _marketing_phrase(title, offer=None):
         if any(term in n for term in terms):
             return {"headline": headline, "emojis": emojis, "detail": detail}
 
-    if any(x in n for x in ["perfume", "parfum", "eau de", "fragrance", "colonia", "colônia", "body splash", "body mist"]):
+    if any(x in n for x in [
+        "perfume", "parfum", "eau de", "fragrance",
+        "colonia", "colônia", "body splash", "body mist",
+        "edt", "edp", "eau de toilette", "eau de parfum",
+        "eau de cologne", "deo colonia", "deo colônia",
+        "desodorante colonia", "desodorante colônia",
+    ]):
         if "body splash" in n:
             return {"headline": "BODY SPLASH EM OFERTA — PERFUME LEVE PARA O DIA A DIA", "emojis": "🌸🔥", "detail": "Uma opção prática para quem prefere uma fragrância leve e fácil de usar."}
         if "body mist" in n:
@@ -6072,11 +6237,24 @@ def _marketing_phrase(title, offer=None):
         return {"headline": f"{shoe_brand}CHINELO/SLIDE EM OFERTA — PREÇO PARA APROVEITAR", "emojis": "🏖️🔥", "detail": "Conforto para o dia a dia com uma condição promocional."}
     if any(x in n for x in ["infantil", "kids"]):
         return {"headline": f"{shoe_brand}TÊNIS INFANTIL EM DESTAQUE — OLHA O PREÇO", "emojis": "👟🧒", "detail": "Uma opção para os pequenos aproveitando uma condição promocional."}
-    if any(x in n for x in ["feminino", "feminina", "women"]):
+    # "masculino/feminino/men/women" sozinhos NÃO identificam calçado.
+    # Só usamos gênero depois de confirmar que o título realmente contém
+    # algum marcador de tênis/calçado.
+    shoe_markers = (
+        "tenis", "tênis", "sapatenis", "sapatênis", "calcado", "calçado",
+        "sneaker", "sneakers", "chuteira", "chinelo", "slide", "sandalia",
+        "sandália", "running shoe", "running shoes",
+        "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
+        "ultraboost", "superstar", "adizero", "pegasus", "vomero",
+        "novablast", "gel kayano", "gel nimbus", "gel cumulus", "fresh foam",
+        "1080", "574", "990", "clifton", "bondi", "corre",
+    )
+    has_shoe_marker = any(x in n for x in shoe_markers)
+    if has_shoe_marker and any(x in n for x in ["feminino", "feminina", "women"]):
         return {"headline": f"{shoe_brand}TÊNIS FEMININO EM OFERTA — PREÇO PARA CONFERIR", "emojis": "👟✨", "detail": "Uma opção para completar o visual ou a rotina de treino."}
-    if any(x in n for x in ["masculino", "masculina", "men"]):
+    if has_shoe_marker and any(x in n for x in ["masculino", "masculina", "men"]):
         return {"headline": f"{shoe_brand}TÊNIS MASCULINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "👟🔥", "detail": "Uma opção versátil para o dia a dia ou treino."}
-    if any(x in n for x in ["tenis", "tênis", "sapatenis", "sapatênis", "calcado", "calçado"]):
+    if has_shoe_marker:
         return {"headline": f"{shoe_brand}TÊNIS EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "👟🔥", "detail": "Uma opção para uso casual ou rotina, dependendo do modelo."}
 
     # ============================================================
@@ -8051,7 +8229,9 @@ def health():
         "catalogo_categorias":len(CATALOG),
         "fluxo":"products/{product_id}/items",
         "cupons":"separado","cupom_por_produto":"separado","cupom_primeiro":"não aplicado na busca rápida","produto_minimo":MIN_PRODUCT_PRICE,"gerador_anuncio":"ativo",
-        "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial"
+        "produtos_alto_giro":"ativo","link_afiliado":"gerador_oficial",
+        "meta_busca_ofertas": SEARCH_TARGET_OFFERS,
+        "candidatos_por_categoria": SEARCH_CANDIDATES_PER_CATEGORY_ALL,
     })
 
 @app.errorhandler(404)
