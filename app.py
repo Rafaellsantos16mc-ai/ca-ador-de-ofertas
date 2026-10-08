@@ -5498,114 +5498,158 @@ def _save_generated_whatsapp_image(image_bytes, extension="png"):
     return f"{PUBLIC_BASE_URL}/whatsapp/image/{filename}"
 
 
+def _try_higher_resolution_ml_image(source):
+    """Tenta trocar uma miniatura do Mercado Livre pela variante original."""
+    candidates = [source]
+    replacements = [
+        ("-I.jpg", "-O.jpg"), ("-I.png", "-O.png"), ("-I.webp", "-O.webp"),
+        ("-I.jpeg", "-O.jpeg"), ("-F.jpg", "-O.jpg"), ("-F.png", "-O.png"),
+        ("-F.webp", "-O.webp"), ("-F.jpeg", "-O.jpeg"),
+        ("-V.jpg", "-O.jpg"), ("-V.webp", "-O.webp"),
+    ]
+    for old, new in replacements:
+        if old in source:
+            candidates.insert(0, source.replace(old, new))
+    # Algumas URLs usam parâmetros de thumbnail; remover apenas parâmetros
+    # conhecidos de tamanho para tentar obter o arquivo maior.
+    candidates.append(re.sub(r"([?&](?:width|height|w|h)=)\d+", "", source))
+
+    seen = set()
+    for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            r = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/jpeg,image/png,*/*"},
+                stream=True,
+                timeout=15,
+                allow_redirects=True,
+            )
+            ctype = (r.headers.get("content-type") or "").lower()
+            if r.status_code == 200 and ctype.startswith("image/"):
+                data = r.content
+                r.close()
+                if data:
+                    return url, data
+            r.close()
+        except Exception:
+            pass
+    return source, None
+
+
 def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
-    """Prepara a foto para o WhatsApp sem cortar nem deformar o produto.
+    """Prepara a imagem para o WhatsApp no estilo visual aprovado pelo usuário.
 
-    V24: preserva 100% da imagem original do Mercado Livre.
-      1) baixa a imagem original;
-      2) corrige a orientação EXIF;
-      3) mantém a proporção original;
-      4) aumenta a resolução somente quando necessário;
-      5) aplica melhoria leve de qualidade/nitidez;
-      6) salva em JPEG de alta qualidade.
+    V26:
+      - cria uma área quadrada branca 1080x1080;
+      - preserva 100% da foto original, sem crop/deformação;
+      - deixa margem confortável ao redor do produto;
+      - tenta obter a versão original/maior da imagem do Mercado Livre;
+      - aplica melhoria leve de nitidez e contraste;
+      - mantém a foto limpa, sem texto, sem moldura colorida e sem arte.
 
-    NÃO faz crop, NÃO estica e NÃO cria uma arte por cima da foto.
-    Assim o produto inteiro continua visível quando a imagem chegar ao grupo.
+    O resultado fica semelhante ao exemplo enviado: produto centralizado,
+    inteiro e com respiro nas bordas, em vez de ocupar a tela inteira.
     """
     source = str(image_url or "").strip()
     if not source:
         return ""
 
     if Image is None:
-        print("[IMAGEM INTEIRA] Pillow não instalado; usando original.")
+        print("[IMAGEM ESTILO WHATSAPP] Pillow não instalado; usando original.")
         return source
 
-    cache_key = "v24-original-ratio:" + source
+    cache_key = "v26-whatsapp-square-white:" + source
     cached = _WHATSAPP_IMAGE_ENHANCE_CACHE.get(cache_key)
     if cached:
         return cached
 
     try:
-        response = requests.get(
-            source,
-            headers={
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
-                              "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-                "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
-            },
-            timeout=20,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
+        used_source, raw = _try_higher_resolution_ml_image(source)
+        if not raw:
+            response = requests.get(
+                source,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/jpeg,image/png,*/*"},
+                timeout=20,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+            raw = response.content
+            used_source = source
 
-        raw = response.content
         if not raw:
             return source
 
         from io import BytesIO
-
         with Image.open(BytesIO(raw)) as original:
             img = ImageOps.exif_transpose(original)
-
             if img.mode in ("RGBA", "LA"):
-                background = Image.new("RGB", img.size, (255, 255, 255))
+                bg = Image.new("RGB", img.size, (255, 255, 255))
                 alpha = img.getchannel("A")
-                background.paste(img.convert("RGB"), mask=alpha)
-                img = background
+                bg.paste(img.convert("RGB"), mask=alpha)
+                img = bg
             else:
                 img = img.convert("RGB")
 
             original_width, original_height = img.size
 
-            # SEM CROP: a proporção original da foto é preservada.
-            # Só aumentamos/reduzimos a resolução para uma dimensão adequada
-            # ao WhatsApp, sem cortar nenhuma parte do produto.
-            MAX_LONGEST = 1800
-            MIN_LONGEST = 1400
+            # Qualidade final suficiente para o WhatsApp sem criar arquivos
+            # gigantes. Primeiro garantimos uma resolução boa da foto.
+            MAX_SOURCE = 2200
+            MIN_SOURCE = 1400
             longest = max(img.width, img.height)
+            if longest < MIN_SOURCE:
+                scale = MIN_SOURCE / max(1, longest)
+                img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
+            elif longest > MAX_SOURCE:
+                scale = MAX_SOURCE / longest
+                img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
 
-            if longest < MIN_LONGEST:
-                scale = MIN_LONGEST / max(1, longest)
-                new_w = max(1, int(round(img.width * scale)))
-                new_h = max(1, int(round(img.height * scale)))
-                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            elif longest > MAX_LONGEST:
-                scale = MAX_LONGEST / max(1, longest)
-                new_w = max(1, int(round(img.width * scale)))
-                new_h = max(1, int(round(img.height * scale)))
-                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-            # Melhoria leve: mais definição sem deixar a foto artificial.
-            img = ImageEnhance.Contrast(img).enhance(1.03)
+            img = ImageEnhance.Contrast(img).enhance(1.035)
             img = ImageEnhance.Color(img).enhance(1.02)
-            img = ImageEnhance.Sharpness(img).enhance(1.12)
-            img = img.filter(ImageFilter.UnsharpMask(radius=0.8, percent=85, threshold=2))
+            img = ImageEnhance.Sharpness(img).enhance(1.10)
+            img = img.filter(ImageFilter.UnsharpMask(radius=0.7, percent=70, threshold=2))
+
+            # CANVAS APROVADO: quadrado branco, com margem. A foto inteira
+            # entra dentro dele proporcionalmente, sem nenhum corte.
+            CANVAS = 1080
+            MARGIN = 90
+            max_w = CANVAS - (MARGIN * 2)
+            max_h = CANVAS - (MARGIN * 2)
+            scale = min(max_w / img.width, max_h / img.height, 1.0)
+            if scale < 1.0:
+                fit = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.Resampling.LANCZOS)
+            else:
+                fit = img
+
+            canvas = Image.new("RGB", (CANVAS, CANVAS), (255, 255, 255))
+            x = (CANVAS - fit.width) // 2
+            y = (CANVAS - fit.height) // 2
+            canvas.paste(fit, (x, y))
 
             output = BytesIO()
-            img.save(
+            canvas.save(
                 output,
                 format="JPEG",
-                quality=98,
+                quality=97,
                 optimize=True,
                 progressive=True,
                 subsampling=0,
             )
-
-            prepared_url = _save_generated_whatsapp_image(
-                output.getvalue(),
-                extension="jpg",
-            )
+            prepared_url = _save_generated_whatsapp_image(output.getvalue(), extension="jpg")
 
         _WHATSAPP_IMAGE_ENHANCE_CACHE[cache_key] = prepared_url
         print(
-            "[IMAGEM INTEIRA] OK:",
-            f"{original_width}x{original_height} -> {img.width}x{img.height} (sem crop)",
-            prepared_url,
+            "[IMAGEM ESTILO WHATSAPP] OK:",
+            f"{original_width}x{original_height} -> {CANVAS}x{CANVAS}",
+            "sem crop, com margem branca, fonte:", used_source[:120],
         )
         return prepared_url
 
     except Exception as exc:
-        print("[IMAGEM INTEIRA] falhou; usando original:", repr(exc))
+        print("[IMAGEM ESTILO WHATSAPP] falhou; usando original:", repr(exc))
         return source
 
 
