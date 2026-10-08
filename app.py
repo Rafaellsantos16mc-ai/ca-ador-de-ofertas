@@ -3988,6 +3988,252 @@ def _search_public_real_item_ids(q, limit=30):
     return ids[:lim]
 
 
+def _search_shoes_real_listings(q, limit=60):
+    """Busca publicações reais de tênis/calçados pela rota catálogo -> ITEM.
+
+    A busca pública por IDs estava concentrando o resultado nos primeiros
+    anúncios da consulta (principalmente tênis de corrida). Para tênis,
+    precisamos de diversidade de MARCAS, MODELOS e SUBNICHOS. Esta rota usa
+    /products/search + /products/{id}/items, que já é a rota que funciona no
+    projeto, e retorna os dados da publicação diretamente sem depender de
+    GET /items/{id}.
+    """
+    query = str(q or "").strip()
+    if not query:
+        return []
+    lim = max(1, min(int(limit or 60), 60))
+    listings = []
+    seen = set()
+
+    try:
+        products = search_products_direct(query, limit=min(10, max(6, lim)))
+    except Exception as exc:
+        print("[TENIS CATALOGO]", query, repr(exc))
+        products = []
+
+    for product_row in products:
+        if len(listings) >= lim:
+            break
+        if not isinstance(product_row, dict):
+            continue
+        pid = str(product_row.get("id") or product_row.get("product_id") or "").strip()
+        if not pid:
+            continue
+
+        candidates = []
+        bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
+        if isinstance(bb, dict):
+            candidates.append(bb)
+
+        try:
+            candidates.extend(product_items(pid) or [])
+        except Exception as exc:
+            print("[TENIS ITEMS]", pid, repr(exc))
+
+        # Se a busca direta não trouxe itens, tenta o detalhe do catálogo
+        # apenas para recuperar o buy box/publicação ligada ao produto.
+        if not candidates:
+            try:
+                detail = product(pid)
+                if isinstance(detail, dict):
+                    dbb = detail.get("buy_box_winner") or detail.get("buy_box")
+                    if isinstance(dbb, dict):
+                        candidates.append(dbb)
+            except Exception as exc:
+                print("[TENIS PRODUTO]", pid, repr(exc))
+
+        for item in candidates:
+            if len(listings) >= lim:
+                break
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("id") or item.get("item_id") or "").strip().upper()
+            if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                continue
+
+            price = item.get("price")
+            if price is None:
+                price = item.get("sale_price")
+            try:
+                price = float(price) if price is not None else None
+            except Exception:
+                price = None
+            if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+                continue
+
+            title = str(
+                item.get("title")
+                or product_row.get("title")
+                or product_row.get("name")
+                or ""
+            ).strip()
+            if not title:
+                continue
+
+            shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+            seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
+            pictures = item.get("pictures") or product_row.get("pictures") or []
+            thumbnail = str(item.get("thumbnail") or product_row.get("thumbnail") or "").strip()
+            if not thumbnail and isinstance(pictures, list):
+                for pic in pictures:
+                    if isinstance(pic, dict):
+                        thumbnail = str(
+                            pic.get("secure_url") or pic.get("url") or
+                            pic.get("secure_thumbnail") or pic.get("thumbnail") or ""
+                        ).strip()
+                        if thumbnail:
+                            break
+
+            seen.add(iid)
+            listings.append({
+                "id": iid,
+                "item_id": iid,
+                "product_id": pid,
+                "title": title,
+                "name": title,
+                "permalink": item.get("permalink") or "",
+                "thumbnail": thumbnail,
+                "pictures": pictures,
+                "price": price,
+                "original_price": item.get("original_price") or item.get("regular_price"),
+                "seller_id": item.get("seller_id") or seller.get("id"),
+                "official_store_id": _extract_official_store_id(item) or _extract_official_store_id(product_row),
+                "sold_quantity": item.get("sold_quantity") or 0,
+                "shipping": shipping,
+                "free_shipping": bool(shipping.get("free_shipping") or item.get("free_shipping")),
+                "logistic_type": shipping.get("logistic_type") or item.get("logistic_type"),
+                "condition": item.get("condition") or "new",
+                "source_type": "ITEM",
+            })
+
+    print(f"[TENIS BUSCA REAL] {query} -> {len(listings)} anúncios")
+    return listings[:lim]
+
+
+def _shoe_diverse_queries(fast=False):
+    """Monta consultas de tênis em ordem intercalada por marca/subnicho."""
+    groups = [
+        [
+            "Nike tênis corrida", "Adidas tênis corrida", "Asics tênis corrida",
+            "Mizuno tênis corrida", "New Balance tênis corrida", "Olympikus tênis corrida",
+            "Fila tênis corrida", "Puma tênis corrida", "Reebok tênis corrida",
+            "Under Armour tênis corrida", "Skechers tênis corrida", "Hoka tênis corrida",
+        ],
+        [
+            "Nike tênis casual", "Adidas tênis casual", "Puma tênis casual",
+            "Vans tênis casual", "Converse tênis casual", "New Balance 574",
+            "Fila tênis casual", "Lacoste tênis casual", "Skechers tênis casual",
+        ],
+        [
+            "Nike chuteira", "Adidas chuteira", "Puma chuteira", "Mizuno chuteira",
+            "Umbro chuteira", "Fila chuteira",
+        ],
+        [
+            "Nike basquete", "Jordan tênis", "Nike LeBron", "Adidas Harden",
+            "Under Armour Curry", "Puma basquete", "New Balance basquete",
+        ],
+        [
+            "Salomon tênis trilha", "Columbia tênis trilha", "Timberland tênis",
+            "Oakley tênis adventure", "Mizuno tênis trilha",
+        ],
+        [
+            "Vans skate", "Nike SB", "Adidas Skateboarding", "DC Shoes skate",
+            "Converse skate", "Puma skate",
+        ],
+        [
+            "Nike slide", "Adidas slide", "Puma slide", "Havaianas", "Rider", "Ipanema",
+        ],
+        [
+            "Nike tênis feminino", "Adidas tênis feminino", "Puma tênis feminino",
+            "Asics tênis feminino", "New Balance tênis feminino", "Mizuno tênis feminino",
+            "Olympikus tênis feminino", "Fila tênis feminino", "Skechers tênis feminino",
+        ],
+        [
+            "Nike tênis masculino", "Adidas tênis masculino", "Puma tênis masculino",
+            "Asics tênis masculino", "New Balance tênis masculino", "Mizuno tênis masculino",
+            "Olympikus tênis masculino", "Fila tênis masculino", "Reebok tênis masculino",
+            "Skechers tênis masculino",
+        ],
+        [
+            "Nike Air Force 1", "Nike Air Max", "Adidas Superstar", "Adidas Ultraboost",
+            "Puma Caven", "Asics Gel Nimbus", "Mizuno Wave", "New Balance 9060",
+            "Olympikus Corre", "Fila Float", "Vans Old Skool", "Converse Chuck Taylor",
+        ],
+    ]
+
+    # Intercala uma consulta de cada bloco para que o modo "todas" não fique
+    # preso em corrida só porque ela aparece primeiro no catálogo.
+    merged = []
+    pos = 0
+    while True:
+        added = False
+        for group in groups:
+            if pos < len(group):
+                q = group[pos]
+                if q not in merged:
+                    merged.append(q)
+                added = True
+        if not added:
+            break
+        pos += 1
+
+    limit = 16 if fast else 36
+    return merged[:limit]
+
+
+def _search_shoes_category(cat, fast=False):
+    """Busca tênis/calçados com diversidade real de marcas e modelos."""
+    queries = _shoe_diverse_queries(fast=fast)
+    per_query = 8 if fast else 12
+    rows_by_query = []
+
+    for q in queries:
+        try:
+            rows = _search_shoes_real_listings(q, limit=per_query)
+        except Exception as exc:
+            print("[TENIS BUSCA]", q, repr(exc))
+            rows = []
+        rows_by_query.append((q, rows))
+
+    # Round-robin entre consultas: primeiro entra 1 produto de cada marca,
+    # depois o segundo de cada marca. Assim Nike/Puma/Fila não ocupam toda a
+    # primeira página antes de Adidas/Asics/Mizuno/New Balance etc.
+    out = []
+    seen = set()
+    round_index = 0
+    target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    while len(out) < target:
+        progressed = False
+        for q, rows in rows_by_query:
+            if round_index >= len(rows):
+                continue
+            row = rows[round_index]
+            progressed = True
+            if not isinstance(row, dict):
+                continue
+            iid = str(row.get("id") or row.get("item_id") or "").strip().upper()
+            if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                continue
+            seen.add(iid)
+            out.append(({
+                **row,
+                "id": iid,
+                "item_id": iid,
+                "title": row.get("title") or row.get("name") or iid,
+                "name": row.get("title") or row.get("name") or iid,
+                "source_type": "ITEM",
+                "highlight_position": len(out) + 1,
+                "public_query": q,
+            }, cat))
+            if len(out) >= target:
+                break
+        if not progressed:
+            break
+        round_index += 1
+
+    print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
+    return out
+
 def _search_real_item_listings_api(q, limit=50, offset=0):
     """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
 
@@ -4117,6 +4363,9 @@ def _search_category(cat, fast=False):
     # pode trazer poucos/nenhum candidato útil para os filtros finais.
     # Buscamos anúncios reais por vários termos positivos e deixamos o
     # enriquecimento /items resolver preço, vendedor e imagem.
+    if cat == "👟 Tênis & Calçados":
+        return _search_shoes_category(cat, fast=fast)
+
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
@@ -6050,7 +6299,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V45: anúncios ITEM reais pela página pública + fallback da página do anúncio; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V46: tênis por marcas/modelos/subnichos via catálogo->ITEM + anúncios reais públicos nas demais categorias; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
