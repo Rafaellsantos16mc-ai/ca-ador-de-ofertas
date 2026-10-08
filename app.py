@@ -5543,7 +5543,7 @@ def ad_text(o, affiliate=""):
     O ~texto~ é o recurso nativo de tachado do WhatsApp.
     """
     title = str(o.get("title") or "Produto").strip()
-    marketing = _marketing_phrase(title)
+    marketing = _marketing_phrase(title, o)
 
     lines = [
         f"*{marketing.upper()}*",
@@ -5581,286 +5581,537 @@ def ad_text(o, affiliate=""):
     return "\n".join(lines)
 
 
-def _marketing_phrase(title):
-    """Cria uma chamada de anúncio realmente ligada ao produto.
+def _marketing_phrase(title, offer=None):
+    """Cria uma chamada curta e uma microdescrição de venda baseada no produto.
 
-    Prioridade:
-      1) modelo/nome conhecido do perfume;
-      2) família ou característica explicitamente presente no título;
-      3) fallback específico por tipo de produto.
+    A ideia é não usar uma frase genérica por categoria. A função aproveita
+    marca, modelo, linha, características que aparecem no título e, quando
+    disponíveis, preço/desconto do próprio anúncio. Não inventa especificações
+    que não estejam no título ou em regras conhecidas do produto.
+    """
+    t = str(title or "Produto").strip()
+    n = norm(t)
+    o = offer or {}
 
-    Evita frases vazias como "vale a pena conferir" sempre que o nome
-    do produto permite uma chamada mais interessante.
+    def money(v):
+        try:
+            return brl(float(v))
+        except Exception:
+            return ""
+
+    def product_name(max_words=8):
+        # Remove ruídos comuns de título sem apagar marca/modelo.
+        clean = re.sub(r"\b(mercado livre|original|novo|lacrado|envio gratis|frete gratis)\b", "", t, flags=re.I)
+        clean = re.sub(r"\s+", " ", clean).strip(" -|/")
+        parts = clean.split()
+        return " ".join(parts[:max_words]) if parts else "este produto"
+
+    pn = product_name()
+    price = money(o.get("price"))
+    old = money(o.get("original_price"))
+
+    # Desconto: usa somente valores presentes no próprio anúncio.
+    discount_text = ""
+    try:
+        if o.get("original_price") and o.get("price"):
+            op = float(o["original_price"])
+            cp = float(o["price"])
+            if op > cp > 0:
+                pct = round((1 - cp / op) * 100)
+                if pct >= 1:
+                    discount_text = f"{pct}% abaixo do preço anterior"
+    except Exception:
+        pass
+
+    brands = ["Apple", "Samsung", "Xiaomi", "Motorola", "Realme", "Nike", "Adidas", "Puma", "Asics", "New Balance", "Mizuno", "Olympikus", "Fila", "Reebok", "Vans", "Converse", "Under Armour", "Skechers", "Oakley", "Lacoste", "JBL", "Sony", "Lenovo", "Dell", "Acer", "Boticário", "Natura", "Lattafa", "Wella", "L'Oréal", "L'Oreal", "CeraVe", "Principia"]
+    brand = next((b for b in brands if norm(b) in n), "")
+    bprefix = f"{brand.upper()} • " if brand else ""
+
+    def result(headline, emojis, detail):
+        return {"headline": headline, "emojis": emojis, "detail": detail}
+
+    # ============================================================
+    # PERFUMES — mantém o estilo específico por modelo.
+    # ============================================================
+    perfume_profiles = [
+        (["fakhar rose", "fakhar women", "fakhar feminino"],
+         "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA", "🌸✨",
+         "Tuberosa e jasmim no coração, com uma base de baunilha, almíscar branco e sândalo."),
+        (["fakhar black", "fakhar men", "fakhar masculino"],
+         "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno."),
+        (["fakhar extrait"],
+         "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE", "🔥✨",
+         "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro."),
+        (["asad"],
+         "INTENSO, ESPECIADO E MARCANTE — ASAD EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem prefere fragrâncias mais intensas e de personalidade."),
+        (["khamrah qahwa"],
+         "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA", "☕🔥",
+         "Uma combinação para quem gosta de perfumes quentes e envolventes."),
+        (["khamrah"],
+         "DOCE, QUENTE E ENVOLVENTE — KHAMRAH EM DESTAQUE", "🍂🔥",
+         "Uma opção para quem curte um perfil mais gourmand e cheio de presença."),
+        (["oud for glory"],
+         "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA", "🖤🔥",
+         "Uma escolha para quem procura um perfume árabe com personalidade forte."),
+        (["club de nuit intense"],
+         "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE", "🔥🖤",
+         "Uma fragrância para quem gosta de um perfil marcante e sofisticado."),
+        (["club de nuit woman", "club de nuit women"],
+         "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN", "🌹✨",
+         "Uma opção para quem gosta de fragrâncias femininas com presença."),
+        (["9pm"],
+         "DOCE, SEDUTOR E MARCANTE — 9PM EM DESTAQUE", "🌙🔥",
+         "Uma opção para quem prefere um perfume mais adocicado e envolvente."),
+        (["qaed al fursan"],
+         "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN", "🍍🔥",
+         "Uma escolha para quem gosta de fragrâncias árabes com perfil frutado."),
+        (["yara moi"],
+         "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI", "🤍✨",
+         "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso."),
+        (["yara tous"],
+         "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE", "🥭✨",
+         "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre."),
+        (["yara candy"],
+         "DOCE, JOVEM E DIVERTIDO — YARA CANDY", "🍬💗",
+         "Uma opção para quem procura um perfume feminino com proposta mais doce."),
+        (["yara"],
+         "DELICADO, FEMININO E ADOCICADO — YARA EM DESTAQUE", "🎀✨",
+         "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas."),
+        (["delilah"],
+         "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE", "🌸✨",
+         "Uma opção para quem procura uma fragrância feminina com perfil floral."),
+        (["khair pistachio"],
+         "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO", "💚✨",
+         "Uma escolha para quem ama perfumes gourmand e um perfil mais cremoso."),
+        (["nebras", "neb ras"],
+         "DOCE, CREMOSO E ENVOLVENTE — NEBRAS EM DESTAQUE", "🍫✨",
+         "Uma opção para quem prefere fragrâncias doces e aconchegantes."),
+        (["liam grey"],
+         "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY", "🩶🔥",
+         "Uma opção para quem gosta de perfumes com personalidade e perfil refinado."),
+        (["liquid brun"],
+         "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN", "🤎🔥",
+         "Uma escolha para quem procura uma fragrância masculina com presença."),
+        (["maahir black"],
+         "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK", "🖤🔥",
+         "Uma opção para quem prefere perfumes árabes com personalidade forte."),
+        (["najdia"],
+         "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE", "💙🔥",
+         "Uma escolha para quem procura uma fragrância masculina com proposta fresca."),
+        (["teriaq", "tériaq"],
+         "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE", "🍯🔥",
+         "Uma opção para quem gosta de perfumes com presença e lado adocicado."),
+    ]
+    for terms, headline, emojis, detail in perfume_profiles:
+        if any(term in n for term in terms):
+            return result(headline, emojis, detail)
+
+    if any(x in n for x in ["perfume", "parfum", "eau de", "fragrance", "colonia", "colônia", "body splash", "body mist"]):
+        if "body splash" in n:
+            return result(f"BODY SPLASH EM OFERTA — {pn.upper()}", "🌸🔥", f"{pn} aparece com preço promocional — uma opção leve para quem gosta de manter a fragrância por perto.")
+        if "body mist" in n:
+            return result(f"BODY MIST EM DESTAQUE — {pn.upper()}", "✨🌸", f"{pn} entra no radar com preço promocional, uma opção prática para a rotina.")
+        if "feminino" in n or "women" in n:
+            return result(f"PERFUME FEMININO EM DESTAQUE — {pn.upper()}", "🌸✨", f"{pn} aparece com condição promocional para quem procura uma fragrância feminina para a coleção.")
+        if "masculino" in n or "men" in n:
+            return result(f"PERFUME MASCULINO EM DESTAQUE — {pn.upper()}", "🖤🔥", f"{pn} aparece com condição promocional para quem procura uma fragrância masculina com presença.")
+        return result(f"PERFUME EM DESTAQUE — {pn.upper()}", "✨🔥", f"{pn} apareceu com preço promocional e merece entrar no radar de quem gosta de perfumaria.")
+
+    # ============================================================
+    # TECNOLOGIA — descrição baseada no item/modelo.
+    # ============================================================
+    if any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"]):
+        extra = ""
+        if re.search(r"\b(5g)\b", n): extra = " com 5G"
+        if re.search(r"\b(128gb|256gb|512gb|1tb)\b", n): extra += " e armazenamento destacado no anúncio"
+        return result(f"{bprefix}{pn.upper()} — PREÇO PARA FICAR DE OLHO", "📱🔥", f"O {pn}{extra} aparece com condição promocional — uma oportunidade para quem quer atualizar o celular.")
+    if any(x in n for x in ["capa", "case", "pelicula", "película", "carregador", "cabo usb", "power bank", "suporte para celular"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "📱⚡", f"{pn} é aquele acessório útil para complementar o celular e apareceu com preço promocional.")
+    if any(x in n for x in ["airpods", "fone", "headset", "caixa de som", "jbl", "soundbar", "bluetooth"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "🎧🔥", f"{pn} aparece com preço promocional — uma boa hora para melhorar o áudio sem deixar a oferta passar.")
+    if any(x in n for x in ["notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora", "webcam"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "💻🔥", f"{pn} aparece com condição promocional — ótimo para quem está montando, atualizando ou completando o setup.")
+    if any(x in n for x in ["tablet", "smartwatch", "tv smart", "console", "videogame", "controle gamer"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "⚡🔥", f"{pn} apareceu com preço promocional e pode ser uma boa oportunidade para quem já estava procurando esse tipo de produto.")
+
+    # ============================================================
+    # CASA / FERRAMENTAS
+    # ============================================================
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer"]):
+        return result(f"{pn.upper()} EM OFERTA — ACHADO PARA CASA", "🏠🔥", f"{pn} combina praticidade para a rotina com uma condição promocional que vale conferir.")
+    if any(x in n for x in ["pote", "organizador", "estante", "sapateira", "varal", "organização"]):
+        return result(f"{pn.upper()} EM DESTAQUE — CASA MAIS ORGANIZADA", "🏠✨", f"{pn} é uma solução prática para organização e apareceu com preço promocional.")
+    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "broca", "ferramenta", "serra", "martelete"]):
+        extra = ""
+        m = re.search(r"\b(\d+\s?v|\d+\s?volts?)\b", n)
+        if m: extra = f" com {m.group(1)}"
+        return result(f"{pn.upper()} EM OFERTA — OLHA ESSA CONDIÇÃO", "🔧🔥", f"{pn}{extra} aparece com preço promocional — uma opção para oficina, manutenção ou projetos em casa.")
+
+    # ============================================================
+    # ACADEMIA & FITNESS
+    # ============================================================
+    if any(x in n for x in ["esteira", "bicicleta ergométrica", "bike spinning", "elíptico", "step", "stepper"]):
+        return result(f"{pn.upper()} EM OFERTA — TREINO EM CASA", "🏃🔥", f"{pn} apareceu com preço promocional para quem quer montar ou melhorar o espaço de treino em casa.")
+    if any(x in n for x in ["faixa elástica", "faixa elastica", "elástico de resistência", "elastico de resistencia", "caneleira", "luva de academia", "strap", "wrist wrap", "cinturão", "corda de pular", "barra de porta"]):
+        return result(f"{pn.upper()} EM DESTAQUE — ACESSÓRIO DE TREINO", "💪🔥", f"{pn} é um acessório para complementar a rotina de treino e apareceu com uma condição promocional.")
+    if any(x in n for x in ["garrafa fitness", "coqueteleira", "shaker", "mochila academia", "bolsa academia", "toalha academia"]):
+        return result(f"{pn.upper()} EM OFERTA — PARA A ROTINA FITNESS", "🥤💪", f"{pn} é aquele item prático para acompanhar os treinos e apareceu com preço promocional.")
+    if any(x in n for x in ["yoga", "pilates", "alongamento", "tapete"]):
+        return result(f"{pn.upper()} EM DESTAQUE — YOGA/PILATES", "🧘🔥", f"{pn} apareceu com preço promocional para treinos, alongamentos e exercícios em casa.")
+
+    # ============================================================
+    # SAÚDE & BELEZA
+    # ============================================================
+    if any(x in n for x in ["shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador", "chapinha", "modelador", "escova secadora"]):
+        return result(f"{pn.upper()} EM DESTAQUE — CUIDADOS COM O CABELO", "💇🔥", f"{pn} aparece com preço promocional para quem quer cuidar ou renovar a rotina de cabelos.")
+    if any(x in n for x in ["unha", "manicure", "esmalte", "cabine uv", "cabine led", "nail art", "lixa elétrica", "gel para unhas"]):
+        return result(f"{pn.upper()} EM OFERTA — UNHAS E MANICURE", "💅✨", f"{pn} apareceu com condição promocional para montar, renovar ou completar o kit de manicure.")
+    if any(x in n for x in ["skincare", "protetor solar facial", "hidratante facial", "serum facial", "sérum facial", "vitamina c", "niacinamida", "ácido hialurônico", "acido hialuronico"]):
+        return result(f"{pn.upper()} EM DESTAQUE — SKINCARE", "🧴✨", f"{pn} apareceu com preço promocional para quem quer manter ou completar a rotina de cuidados faciais.")
+    if any(x in n for x in ["barbeador", "barbearia", "máquina de cortar cabelo", "maquina de cortar cabelo", "aparador", "trimmer"]):
+        return result(f"{pn.upper()} EM OFERTA — CUIDADOS MASCULINOS", "🪒🔥", f"{pn} é uma opção prática para barba e cabelo e apareceu com condição promocional.")
+    if any(x in n for x in ["hidratante corporal", "creme corporal", "body cream", "óleo corporal", "oleo corporal"]):
+        return result(f"{pn.upper()} EM DESTAQUE — CUIDADOS CORPORAIS", "🧖✨", f"{pn} apareceu com preço promocional para completar a rotina de cuidados corporais.")
+
+    # ============================================================
+    # MODA
+    # ============================================================
+    if any(x in n for x in ["camiseta", "t-shirt", "tee"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "👕🔥", f"{pn} traz uma proposta casual e apareceu com preço promocional — boa hora para renovar o guarda-roupa.")
+    if any(x in n for x in ["camisa de futebol", "camisa esportiva", "camisa futebol", "jersey"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "⚽🔥", f"{pn} apareceu com condição promocional para quem curte futebol e quer garantir uma peça esportiva.")
+    if any(x in n for x in ["jaqueta", "corta vento", "corta-vento"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "🧥🔥", f"{pn} é uma peça versátil para completar o visual e apareceu com preço promocional.")
+    if any(x in n for x in ["bermuda", "shorts"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "🩳🔥", f"{pn} é uma peça prática para dia a dia, lazer ou treino e apareceu com condição promocional.")
+    if any(x in n for x in ["calça", "calca", "jeans"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "👖🔥", f"{pn} é uma peça versátil para o guarda-roupa e apareceu com preço promocional.")
+    if any(x in n for x in ["fitness", "legging", "top esportivo", "short esportivo", "roupa esportiva"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "🏃🔥", f"{pn} aparece com condição promocional para quem procura roupa para treinar ou praticar esportes.")
+    if any(x in n for x in ["moletom", "casaco"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "🧥🔥", f"{pn} combina conforto para o dia a dia e apareceu com preço promocional.")
+    if any(x in n for x in ["vestido", "blusa feminina", "saia", "conjunto feminino"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "👚✨", f"{pn} apareceu com preço promocional para quem quer renovar o visual.")
+    if "polo" in n:
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "👔🔥", f"{pn} é uma peça versátil para produções casuais e apareceu com condição promocional.")
+    if any(x in n for x in ["biquini", "biquíni", "maiô", "maio", "sunga"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "🏖️🔥", f"{pn} apareceu com preço promocional para quem já está de olho na próxima praia ou piscina.")
+    if any(x in n for x in ["boné", "bone", "bucket", "viseira"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "🧢🔥", f"{pn} é um detalhe fácil para completar o visual e apareceu com condição promocional.")
+
+    # ============================================================
+    # TÊNIS & CALÇADOS
+    # ============================================================
+    if any(x in n for x in ["corrida", "running"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA — CORRIDA", "🏃👟", f"{pn} aparece com preço promocional para quem procura um tênis voltado para corrida e treinos.")
+    if any(x in n for x in ["academia", "training", "treino"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE — ACADEMIA", "🏋️👟", f"{pn} apareceu com condição promocional para acompanhar a rotina de treino.")
+    if any(x in n for x in ["chuteira", "futebol"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA — FUTEBOL", "⚽🔥", f"{pn} apareceu com preço promocional para quem joga ou curte futebol.")
+    if any(x in n for x in ["basquete", "basketball"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE — BASQUETE", "🏀🔥", f"{pn} aparece com condição promocional para quadra ou para quem curte o estilo do basquete.")
+    if any(x in n for x in ["trilha", "adventure", "trail"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA — TRILHA/ADVENTURE", "🥾🔥", f"{pn} apareceu com preço promocional para quem procura um calçado para atividades ao ar livre.")
+    if "skate" in n:
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE — SKATE", "🛹🔥", f"{pn} apareceu com condição promocional para quem anda de skate ou curte a pegada casual.")
+    if any(x in n for x in ["chinelo", "slide", "sandália"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "🏖️🔥", f"{pn} aposta em praticidade para o dia a dia e apareceu com preço promocional.")
+    if any(x in n for x in ["infantil", "kids"]):
+        return result(f"{bprefix}{pn.upper()} EM DESTAQUE", "👟🧒", f"{pn} apareceu com condição promocional para os pequenos.")
+    if any(x in n for x in ["tênis", "tenis", "sapatênis", "sapatenis", "calçado", "calcado"]):
+        return result(f"{bprefix}{pn.upper()} EM OFERTA", "👟🔥", f"{pn} apareceu com preço promocional — uma opção para quem já estava procurando esse tipo de calçado.")
+
+    # ============================================================
+    # FALLBACK: ainda usa o nome real do produto, sem descrição falsa.
+    # ============================================================
+    if brand:
+        return result(f"{brand.upper()} • {pn.upper()} EM DESTAQUE", "🔥👀", f"{pn} apareceu com condição promocional e merece entrar no radar de quem já procurava esse produto.")
+
+    detail = f"{pn} apareceu com preço promocional — confira a condição enquanto a oferta estiver disponível."
+    if discount_text:
+        detail = f"{pn} está {discount_text}; uma boa oportunidade para quem já estava de olho nesse produto."
+    return result(f"{pn.upper()} EM OFERTA", "🔥👀", detail)
+
+def ad_text(o, affiliate=""):
+    """Monta o anúncio no formato visual pedido para o WhatsApp.
+
+    Formato:
+    - frase de destaque
+    - nome do produto
+    - preço antigo riscado com ~ ~
+    - cupom, quando existir
+    - preço atual em destaque
+    - uma linha em branco antes da chamada
+    - PEGAR PROMOÇÃO + link na MESMA linha
+
+    O ~texto~ é o recurso nativo de tachado do WhatsApp.
+    """
+    title = str(o.get("title") or "Produto").strip()
+    marketing = _marketing_phrase(title, o)
+
+    lines = [
+        f"*{marketing.upper()}*",
+        "",
+        f"*{title}*",
+        "",
+    ]
+
+    # Preço antigo no estilo do anúncio de referência: ~De R$222,83~
+    # Só mostramos o valor riscado quando ele realmente existe.
+    original = o.get("original_price")
+    try:
+        original_value = float(original) if original not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        original_value = 0.0
+
+    if original_value > 0:
+        lines.append(f"~De {brl(original_value)}~")
+
+    if o.get("cupom"):
+        c = o["cupom"] or {}
+        label = c.get("code") or c.get("label") or "Cupom disponível"
+        lines.append(f"🎟️ Cupom: *{label}*")
+
+    # Preço atual separado do preço antigo para ficar visualmente limpo.
+    lines.append(f"Por *{brl(o['price'])}*")
+
+    link = str(affiliate or "").strip()
+    if not valid_affiliate_link(link):
+        raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
+
+    # Link fica na frente, continuando a mesma linha de PEGAR PROMOÇÃO.
+    lines.append(f"*PEGAR PROMOÇÃO 🔥:* {link}")
+
+    return "\n".join(lines)
+
+
+def _marketing_phrase(title, offer=None):
+    """Gera uma chamada comercial específica para qualquer categoria.
+
+    A frase usa o próprio título do produto para identificar o tipo de item,
+    marca e/ou modelo quando possível. Evita deixar a comunicação restrita
+    a perfumes e evita o fallback genérico sempre que houver informação útil.
     """
     t = str(title or "Produto").strip()
     n = norm(t)
 
-    # ------------------------------------------------------------
-    # PERFUMES — chamadas específicas por modelo.
-    # ------------------------------------------------------------
+    # ============================================================
+    # PERFUMES — mantém as chamadas específicas já construídas.
+    # ============================================================
     perfume_profiles = [
-        # Fakhar Rose / Fakhar Women
-        (
-            ["fakhar rose", "fakhar women", "fakhar feminino"],
-            "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA",
-            "🌸✨",
-            "",
-        ),
-        (
-            ["fakhar black", "fakhar men", "fakhar masculino"],
-            "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE",
-            "🖤🔥",
-            "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno.",
-        ),
-        (
-            ["fakhar extrait"],
-            "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE",
-            "🔥✨",
-            "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro.",
-        ),
-
-        # Lattafa clássicos
-        (
-            ["asad"],
-            "INTENSO, ESPECIADO E MARCANTE — ASAD É PARA QUEM GOSTA DE PRESENÇA",
-            "🖤🔥",
-            "Uma escolha da Lattafa para quem prefere fragrâncias mais intensas e de personalidade.",
-        ),
-        (
-            ["khamrah qahwa"],
-            "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA",
-            "☕🔥",
-            "Uma combinação que chama atenção para quem gosta de perfumes quentes e envolventes.",
-        ),
-        (
-            ["khamrah"],
-            "DOCE, QUENTE E ENVOLVENTE — KHAMRAH É DAQUELES QUE MARCAM",
-            "🍂🔥",
-            "Perfeito para quem curte um perfil mais gourmand e cheio de presença.",
-        ),
-        (
-            ["oud for glory"],
-            "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA",
-            "🖤🔥",
-            "Uma escolha para quem procura um perfume árabe com personalidade forte.",
-        ),
-        (
-            ["club de nuit intense"],
-            "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE",
-            "🔥🖤",
-            "Uma fragrância conhecida pelo perfil marcante e pela proposta sofisticada.",
-        ),
-        (
-            ["club de nuit woman", "club de nuit women"],
-            "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN",
-            "🌹✨",
-            "Uma opção para quem gosta de fragrâncias femininas com presença.",
-        ),
-        (
-            ["9pm"],
-            "DOCE, SEDUTOR E MARCANTE — 9PM É PARA QUEM GOSTA DE CHEGAR CHEGANDO",
-            "🌙🔥",
-            "Uma opção muito procurada para quem prefere um perfume mais adocicado e envolvente.",
-        ),
-        (
-            ["qaed al fursan"],
-            "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN",
-            "🍍🔥",
-            "Uma escolha interessante para quem gosta de fragrâncias árabes com perfil frutado.",
-        ),
-        (
-            ["yara moi"],
-            "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI",
-            "🤍✨",
-            "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso.",
-        ),
-        (
-            ["yara tous"],
-            "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE",
-            "🥭✨",
-            "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre.",
-        ),
-        (
-            ["yara candy"],
-            "DOCE, JOVEM E DIVERTIDO — YARA CANDY PARA QUEM AMA PERFUME ADOCICADO",
-            "🍬💗",
-            "Uma opção para quem procura um perfume feminino com proposta mais doce.",
-        ),
-        (
-            ["yara"],
-            "DELICADO, FEMININO E ADOCICADO — YARA É UM DOS QUERIDINHOS DA LATTAFA",
-            "🎀✨",
-            "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas.",
-        ),
-        (
-            ["delilah"],
-            "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE",
-            "🌸✨",
-            "Uma opção para quem procura uma fragrância feminina com perfil floral.",
-        ),
-        (
-            ["khair pistachio"],
-            "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO CHAMA ATENÇÃO",
-            "💚✨",
-            "Uma escolha para quem ama perfumes gourmand e aquele perfil mais cremoso.",
-        ),
-        (
-            ["neb ras", "nebras"],
-            "DOCE, CREMOSO E ENVOLVENTE — NEBRAS PARA QUEM AMA GOURMAND",
-            "🍫✨",
-            "Uma opção para quem prefere fragrâncias doces e aconchegantes.",
-        ),
-        (
-            ["liam grey"],
-            "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY EM DESTAQUE",
-            "🩶🔥",
-            "Uma opção para quem gosta de perfumes com personalidade e perfil mais refinado.",
-        ),
-        (
-            ["liquid brun"],
-            "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN EM DESTAQUE",
-            "🤎🔥",
-            "Uma escolha para quem procura uma fragrância masculina com bastante presença.",
-        ),
-        (
-            ["maahir black"],
-            "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK PARA QUEM GOSTA DE PRESENÇA",
-            "🖤🔥",
-            "Uma opção para quem prefere perfumes árabes com personalidade mais forte.",
-        ),
-        (
-            ["najdia"],
-            "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE",
-            "💙🔥",
-            "Uma escolha para quem procura uma fragrância masculina com proposta mais fresca.",
-        ),
-        (
-            ["tériaq", "teriaq"],
-            "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE",
-            "🍯🔥",
-            "Uma opção para quem gosta de perfumes com presença e um lado mais adocicado.",
-        ),
-        (
-            ["asdaaf", "ramz silver", "ramz gold"],
-            "MARCANTE E ENVOLVENTE — UMA BOA PEDIDA PARA QUEM AMA PERFUMES ÁRABES",
-            "🔥✨",
-            "Uma opção para quem procura uma fragrância árabe com bastante personalidade.",
-        ),
+        (["fakhar rose", "fakhar women", "fakhar feminino"],
+         "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA", "🌸✨",
+         "Tuberosa e jasmim no coração, com uma base de baunilha, almíscar branco e sândalo."),
+        (["fakhar black", "fakhar men", "fakhar masculino"],
+         "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno."),
+        (["fakhar extrait"],
+         "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE", "🔥✨",
+         "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro."),
+        (["asad"],
+         "INTENSO, ESPECIADO E MARCANTE — ASAD EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem prefere fragrâncias mais intensas e de personalidade."),
+        (["khamrah qahwa"],
+         "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA", "☕🔥",
+         "Uma combinação para quem gosta de perfumes quentes e envolventes."),
+        (["khamrah"],
+         "DOCE, QUENTE E ENVOLVENTE — KHAMRAH EM DESTAQUE", "🍂🔥",
+         "Uma opção para quem curte um perfil mais gourmand e cheio de presença."),
+        (["oud for glory"],
+         "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA", "🖤🔥",
+         "Uma escolha para quem procura um perfume árabe com personalidade forte."),
+        (["club de nuit intense"],
+         "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE", "🔥🖤",
+         "Uma fragrância para quem gosta de um perfil marcante e sofisticado."),
+        (["club de nuit woman", "club de nuit women"],
+         "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN", "🌹✨",
+         "Uma opção para quem gosta de fragrâncias femininas com presença."),
+        (["9pm"],
+         "DOCE, SEDUTOR E MARCANTE — 9PM EM DESTAQUE", "🌙🔥",
+         "Uma opção para quem prefere um perfume mais adocicado e envolvente."),
+        (["qaed al fursan"],
+         "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN", "🍍🔥",
+         "Uma escolha para quem gosta de fragrâncias árabes com perfil frutado."),
+        (["yara moi"],
+         "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI", "🤍✨",
+         "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso."),
+        (["yara tous"],
+         "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE", "🥭✨",
+         "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre."),
+        (["yara candy"],
+         "DOCE, JOVEM E DIVERTIDO — YARA CANDY", "🍬💗",
+         "Uma opção para quem procura um perfume feminino com proposta mais doce."),
+        (["yara"],
+         "DELICADO, FEMININO E ADOCICADO — YARA EM DESTAQUE", "🎀✨",
+         "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas."),
+        (["delilah"],
+         "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE", "🌸✨",
+         "Uma opção para quem procura uma fragrância feminina com perfil floral."),
+        (["khair pistachio"],
+         "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO", "💚✨",
+         "Uma escolha para quem ama perfumes gourmand e um perfil mais cremoso."),
+        (["nebras", "neb ras"],
+         "DOCE, CREMOSO E ENVOLVENTE — NEBRAS EM DESTAQUE", "🍫✨",
+         "Uma opção para quem prefere fragrâncias doces e aconchegantes."),
+        (["liam grey"],
+         "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY", "🩶🔥",
+         "Uma opção para quem gosta de perfumes com personalidade e perfil refinado."),
+        (["liquid brun"],
+         "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN", "🤎🔥",
+         "Uma escolha para quem procura uma fragrância masculina com presença."),
+        (["maahir black"],
+         "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK", "🖤🔥",
+         "Uma opção para quem prefere perfumes árabes com personalidade forte."),
+        (["najdia"],
+         "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE", "💙🔥",
+         "Uma escolha para quem procura uma fragrância masculina com proposta fresca."),
+        (["teriaq", "tériaq"],
+         "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE", "🍯🔥",
+         "Uma opção para quem gosta de perfumes com presença e lado adocicado."),
     ]
-
     for terms, headline, emojis, detail in perfume_profiles:
         if any(term in n for term in terms):
             return {"headline": headline, "emojis": emojis, "detail": detail}
 
-    # ------------------------------------------------------------
-    # PERFUME — quando não temos o modelo no nosso catálogo.
-    # A chamada ainda usa o que realmente aparece no título.
-    # ------------------------------------------------------------
-    if any(x in n for x in [
-        "perfume", "parfum", "eau de", "fragrance", "colonia", "colônia",
-        "body splash", "body mist"
-    ]):
-        brand = ""
-        for candidate in [
-            "lattafa", "afnan", "armaf", "rasasi", "al haramain",
-            "maison alhambra", "al watan iah", "al haramain",
-            "fragrance world", "paris corner", "rayhaan", "khadlaj",
-            "zimaya", "ajmal", "swiss arabian", "ard al zaafaran"
-        ]:
-            if norm(candidate) in n:
-                brand = candidate.title()
-                break
-
+    if any(x in n for x in ["perfume", "parfum", "eau de", "fragrance", "colonia", "colônia", "body splash", "body mist"]):
         if "body splash" in n:
-            return {
-                "headline": "BODY SPLASH PARA DEIXAR A ROTINA MAIS CHEIROSA E LEVE",
-                "emojis": "🌸✨",
-                "detail": f"Uma opção {brand + ' ' if brand else ''}para quem prefere uma fragrância mais leve para o dia a dia.",
-            }
-
+            return {"headline": "BODY SPLASH EM OFERTA — PERFUME LEVE PARA O DIA A DIA", "emojis": "🌸🔥", "detail": "Uma opção prática para quem prefere uma fragrância leve e fácil de usar."}
         if "body mist" in n:
-            return {
-                "headline": "BODY MIST LEVE, PRÁTICO E FÁCIL DE USAR NO DIA A DIA",
-                "emojis": "✨🌸",
-                "detail": f"Uma opção {brand + ' ' if brand else ''}para reaplicar ao longo do dia.",
-            }
-
+            return {"headline": "BODY MIST EM DESTAQUE — LEVE E PRÁTICO PARA REAPLICAR", "emojis": "✨🌸", "detail": "Uma opção para deixar na rotina e reaplicar ao longo do dia."}
         if "feminino" in n or "women" in n:
-            return {
-                "headline": f"{brand.upper() + ' • ' if brand else ''}UMA OPÇÃO FEMININA PARA QUEM AMA PERFUMES",
-                "emojis": "🌸✨",
-                "detail": "Vale olhar a proposta dessa fragrância e comparar o preço antes de aproveitar.",
-            }
-
+            return {"headline": "PERFUME FEMININO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🌸✨", "detail": "Uma opção para quem gosta de fragrâncias femininas e encontrou um bom preço."}
         if "masculino" in n or "men" in n:
-            return {
-                "headline": f"{brand.upper() + ' • ' if brand else ''}UMA OPÇÃO MASCULINA PARA QUEM GOSTA DE PERFUME COM PRESENÇA",
-                "emojis": "🖤🔥",
-                "detail": "Uma alternativa interessante para colocar no radar quando o preço aparece em promoção.",
-            }
+            return {"headline": "PERFUME MASCULINO EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "🖤🔥", "detail": "Uma alternativa para quem procura uma fragrância masculina em promoção."}
+        return {"headline": "PERFUME EM DESTAQUE — OLHA O PREÇO DESSE ACHADO", "emojis": "✨🔥", "detail": "Uma fragrância para colocar no radar quando aparece com preço promocional."}
 
-        return {
-            "headline": f"{brand.upper() + ' • ' if brand else ''}DESTAQUE DE PERFUME PARA FICAR DE OLHO",
-            "emojis": "✨🔥",
-            "detail": "Uma fragrância que merece entrar no radar quando aparece com preço promocional.",
-        }
+    # ============================================================
+    # TECNOLOGIA
+    # ============================================================
+    brands = ["Apple", "Samsung", "Xiaomi", "Motorola", "Realme", "Nike", "Adidas", "Puma", "Asics", "New Balance", "Mizuno", "Olympikus", "Fila", "Reebok", "Vans", "Converse", "Under Armour", "Skechers", "Oakley", "Lacoste", "JBL", "Sony", "Lenovo", "Dell", "Acer"]
+    brand = next((b for b in brands if norm(b) in n), "")
+    bprefix = f"{brand.upper()} • " if brand else ""
 
-    # ------------------------------------------------------------
-    # OUTRAS CATEGORIAS
-    # ------------------------------------------------------------
-    if any(x in n for x in ["tenis", "sapatenis", "calcado"]):
-        return {
-            "headline": "UM TÊNIS PARA QUEM QUER CONFORTO E ESTILO NO DIA A DIA",
-            "emojis": "👟🔥",
-            "detail": "Uma opção para colocar no radar quando o preço entra em promoção.",
-        }
+    if any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"]):
+        return {"headline": f"{bprefix}CELULAR EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "📱🔥", "detail": "Uma oferta para quem já estava de olho em trocar ou atualizar o celular."}
+    if any(x in n for x in ["capa", "case", "pelicula", "película", "carregador", "cabo usb", "power bank", "suporte para celular"]):
+        return {"headline": "ACESSÓRIO PARA CELULAR EM OFERTA — PREÇO BAIXOU", "emojis": "📱⚡", "detail": "Itens úteis para proteger, carregar ou complementar o celular."}
+    if any(x in n for x in ["airpods", "fone", "headset", "caixa de som", "jbl", "soundbar", "bluetooth"]):
+        return {"headline": f"{bprefix}ÁUDIO EM DESTAQUE — OFERTA PARA FICAR DE OLHO", "emojis": "🎧🔥", "detail": "Uma opção para quem quer melhorar o áudio sem deixar passar uma boa oferta."}
+    if any(x in n for x in ["notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora", "webcam"]):
+        return {"headline": f"{bprefix}INFORMÁTICA EM OFERTA — OLHA O PREÇO", "emojis": "💻🔥", "detail": "Uma oportunidade para quem está montando ou atualizando o setup."}
+    if any(x in n for x in ["tablet", "smartwatch", "tv smart", "console", "videogame", "controle gamer"]):
+        return {"headline": "ELETRÔNICO EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "⚡🔥", "detail": "Um produto que pode valer a pena quando aparece com essa condição."}
 
-    if any(x in n for x in ["iphone", "smartphone", "celular", "notebook", "tablet"]):
-        return {
-            "headline": "TECNOLOGIA EM DESTAQUE — OLHA ESSE PREÇO",
-            "emojis": "📱🔥",
-            "detail": "Uma oferta para quem já estava de olho nesse tipo de produto.",
-        }
+    # ============================================================
+    # CASA E FERRAMENTAS
+    # ============================================================
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer", "cozinha", "pote", "organizador", "estante", "sapateira", "varal"]):
+        return {"headline": "ACHADO PARA CASA — PREÇO BOM PARA DEIXAR NO RADAR", "emojis": "🏠🔥", "detail": "Produto útil para a rotina e que merece uma olhada quando entra em promoção."}
+    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete"]):
+        return {"headline": "FERRAMENTA EM OFERTA — BOA HORA PARA QUEM ESTÁ PRECISANDO", "emojis": "🔧🔥", "detail": "Uma opção prática para oficina, manutenção ou projetos em casa."}
 
-    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador"]):
-        return {
-            "headline": "UM ACHADO PARA FACILITAR A ROTINA EM CASA",
-            "emojis": "🏠🔥",
-            "detail": "Produto útil para o dia a dia e que vale conferir quando aparece em promoção.",
-        }
+    # ============================================================
+    # ACADEMIA & FITNESS
+    # ============================================================
+    if any(x in n for x in ["esteira", "bicicleta ergométrica", "bike spinning", "elíptico", "step", "stepper", "cardio"]):
+        return {"headline": "TREINO EM CASA — EQUIPAMENTO EM OFERTA", "emojis": "🏃🔥", "detail": "Uma opção para montar ou melhorar o espaço de treino em casa."}
+    if any(x in n for x in ["faixa elástica", "faixa elastica", "elástico de resistência", "elastico de resistencia", "caneleira", "luva de academia", "strap", "wrist wrap", "cinturão", "corda de pular", "barra de porta"]):
+        return {"headline": "ACESSÓRIO DE TREINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "💪🔥", "detail": "Acessório para complementar o treino sem complicar a rotina."}
+    if any(x in n for x in ["garrafa fitness", "coqueteleira", "shaker", "mochila academia", "bolsa academia", "toalha academia"]):
+        return {"headline": "FITNESS EM OFERTA — ACESSÓRIO PARA O DIA A DIA", "emojis": "🥤💪", "detail": "Um item útil para acompanhar a rotina de treino."}
+    if any(x in n for x in ["yoga", "pilates", "alongamento", "tapete"]):
+        return {"headline": "YOGA E PILATES — ITEM EM OFERTA", "emojis": "🧘🔥", "detail": "Uma opção para treinar, alongar e montar seu espaço em casa."}
 
-    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "ferramenta"]):
-        return {
-            "headline": "FERRAMENTA EM PROMOÇÃO — BOA HORA PARA QUEM ESTÁ PRECISANDO",
-            "emojis": "🛠️🔥",
-            "detail": "Uma opção prática para deixar no radar quando o preço cai.",
-        }
+    # ============================================================
+    # SAÚDE & BELEZA
+    # ============================================================
+    if any(x in n for x in ["shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador", "chapinha", "modelador", "escova secadora", "wella", "l'oreal", "loreal", "kerastase", "elseve", "truss", "salon line"]):
+        return {"headline": f"{bprefix}CUIDADOS COM O CABELO — OFERTA EM DESTAQUE", "emojis": "💇🔥", "detail": "Uma opção para cuidar dos cabelos aproveitando uma condição promocional."}
+    if any(x in n for x in ["unha", "manicure", "esmalte", "cabine uv", "cabine led", "nail art", "lixa elétrica", "gel para unhas"]):
+        return {"headline": "UNHAS E MANICURE — KIT OU PRODUTO EM OFERTA", "emojis": "💅✨", "detail": "Uma boa opção para montar ou renovar o kit de manicure."}
+    if any(x in n for x in ["skincare", "protetor solar facial", "hidratante facial", "serum facial", "sérum facial", "vitamina c", "niacinamida", "ácido hialurônico", "acido hialuronico", "cerave", "la roche", "principia", "neutrogena", "vichy"]):
+        return {"headline": "SKINCARE EM DESTAQUE — OLHA ESSA CONDIÇÃO", "emojis": "🧴✨", "detail": "Produto para cuidados faciais que apareceu com preço promocional."}
+    if any(x in n for x in ["barbeador", "barbearia", "máquina de cortar cabelo", "maquina de cortar cabelo", "aparador", "trimmer"]):
+        return {"headline": "CUIDADOS MASCULINOS — EQUIPAMENTO EM OFERTA", "emojis": "🪒🔥", "detail": "Uma opção prática para barba, cabelo e rotina de cuidados."}
+    if any(x in n for x in ["hidratante corporal", "creme corporal", "body cream", "óleo corporal", "oleo corporal", "cuidados corporais"]):
+        return {"headline": "CUIDADOS CORPORAIS — PRODUTO EM PROMOÇÃO", "emojis": "🧖✨", "detail": "Uma opção para cuidados diários com uma condição promocional."}
 
-    if any(x in n for x in ["cueca", "camiseta", "calca", "calça", "bermuda", "moletom"]):
-        return {
-            "headline": "PEÇA EM PROMOÇÃO — UMA BOA HORA PARA RENOVAR O GUARDA-ROUPA",
-            "emojis": "👕🔥",
-            "detail": "Vale conferir tamanhos, cores e condições antes de aproveitar.",
-        }
+    # ============================================================
+    # MODA — exclui social tradicional/manga longa no catálogo, mas
+    # a chamada também evita incentivar esse tipo de peça.
+    # ============================================================
+    if any(x in n for x in ["camiseta", "t-shirt", "tee"]):
+        return {"headline": f"{bprefix}CAMISETA EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "👕🔥", "detail": "Peça casual para o dia a dia com condição promocional."}
+    if any(x in n for x in ["camisa de futebol", "camisa esportiva", "camisa futebol", "jersey", "futebol"]):
+        return {"headline": f"{bprefix}CAMISA ESPORTIVA EM OFERTA — PREÇO PARA CONFERIR", "emojis": "⚽🔥", "detail": "Boa opção para quem curte futebol e quer aproveitar uma promoção."}
+    if any(x in n for x in ["jaqueta", "corta vento", "corta-vento", "corta vento"]):
+        return {"headline": f"{bprefix}JAQUETA EM OFERTA — PEÇA PARA FICAR DE OLHO", "emojis": "🧥🔥", "detail": "Uma peça versátil para completar o visual em dias mais frios ou de vento."}
+    if any(x in n for x in ["bermuda", "shorts"]):
+        return {"headline": f"{bprefix}BERMUDA EM DESTAQUE — PREÇO BOM PARA APROVEITAR", "emojis": "🩳🔥", "detail": "Peça prática para o dia a dia, treino ou momentos de lazer."}
+    if any(x in n for x in ["calça", "calca", "jeans"]):
+        return {"headline": f"{bprefix}CALÇA/JEANS EM OFERTA — OLHA O PREÇO", "emojis": "👖🔥", "detail": "Uma peça versátil para renovar o guarda-roupa."}
+    if any(x in n for x in ["fitness", "legging", "top esportivo", "short esportivo", "roupa esportiva"]):
+        return {"headline": f"{bprefix}ROUPA FITNESS EM DESTAQUE — OFERTA PARA O TREINO", "emojis": "🏃🔥", "detail": "Peça esportiva para treinar com uma condição promocional."}
+    if any(x in n for x in ["moletom", "casaco"]):
+        return {"headline": f"{bprefix}MOLETOM/CASACO EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🧥🔥", "detail": "Peça confortável para o dia a dia com preço promocional."}
+    if any(x in n for x in ["moda feminina", "vestido", "blusa feminina", "saia", "conjunto feminino"]):
+        return {"headline": f"{bprefix}MODA FEMININA EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "👚✨", "detail": "Uma peça para renovar o visual sem perder a oportunidade de promoção."}
+    if any(x in n for x in ["polo"]):
+        return {"headline": f"{bprefix}POLO EM OFERTA — ESTILO CASUAL COM PREÇO ESPECIAL", "emojis": "👔🔥", "detail": "Uma peça versátil para looks casuais e do dia a dia."}
+    if any(x in n for x in ["biquini", "biquíni", "maiô", "maio", "sunga", "moda praia"]):
+        return {"headline": f"{bprefix}MODA PRAIA EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🏖️🔥", "detail": "Uma opção para curtir praia ou piscina aproveitando o preço."}
+    if any(x in n for x in ["boné", "bone", "bucket", "viseira", "acessório de moda"]):
+        return {"headline": f"{bprefix}ACESSÓRIO EM OFERTA — DETALHE QUE FAZ DIFERENÇA", "emojis": "🧢🔥", "detail": "Um complemento fácil para o visual do dia a dia."}
 
-    return {
-        "headline": "OFERTA EM DESTAQUE — OLHA O PREÇO DESSE PRODUTO",
-        "emojis": "🔥👀",
-        "detail": "Se estava procurando algo desse tipo, vale conferir a condição da oferta.",
-    }
+    # ============================================================
+    # TÊNIS & CALÇADOS
+    # ============================================================
+    shoe_brand = f"{brand.upper()} • " if brand else ""
+    if any(x in n for x in ["corrida", "running"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE CORRIDA EM OFERTA — OLHA ESSE PREÇO", "emojis": "🏃👟", "detail": "Uma opção para corrida e treinos, com preço promocional."}
+    if any(x in n for x in ["academia", "training", "treino"]):
+        return {"headline": f"{shoe_brand}TÊNIS PARA ACADEMIA — OFERTA EM DESTAQUE", "emojis": "🏋️👟", "detail": "Uma opção para complementar o treino com uma condição promocional."}
+    if any(x in n for x in ["chuteira", "futebol"]):
+        return {"headline": f"{shoe_brand}FUTEBOL EM OFERTA — CHUTEIRA PARA FICAR DE OLHO", "emojis": "⚽🔥", "detail": "Uma opção para quem joga e quer aproveitar um preço promocional."}
+    if any(x in n for x in ["basquete", "basketball"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE BASQUETE EM DESTAQUE", "emojis": "🏀🔥", "detail": "Uma opção para quadra ou para quem curte o estilo do basquete."}
+    if any(x in n for x in ["trilha", "adventure", "trail"]):
+        return {"headline": f"{shoe_brand}TRILHA/ADVENTURE — CALÇADO EM OFERTA", "emojis": "🥾🔥", "detail": "Uma opção para atividades ao ar livre e terrenos mais exigentes."}
+    if any(x in n for x in ["skate"]):
+        return {"headline": f"{shoe_brand}SKATE EM OFERTA — TÊNIS PARA FICAR DE OLHO", "emojis": "🛹🔥", "detail": "Uma opção casual e esportiva para quem anda de skate."}
+    if any(x in n for x in ["chinelo", "slide", "sandália"]):
+        return {"headline": f"{shoe_brand}CHINELO/SLIDE EM OFERTA — PREÇO PARA APROVEITAR", "emojis": "🏖️🔥", "detail": "Conforto para o dia a dia com uma condição promocional."}
+    if any(x in n for x in ["infantil", "kids"]):
+        return {"headline": f"{shoe_brand}TÊNIS INFANTIL EM DESTAQUE — OLHA O PREÇO", "emojis": "👟🧒", "detail": "Uma opção para os pequenos aproveitando uma condição promocional."}
+    if any(x in n for x in ["feminino", "feminina", "women"]):
+        return {"headline": f"{shoe_brand}TÊNIS FEMININO EM OFERTA — PREÇO PARA CONFERIR", "emojis": "👟✨", "detail": "Uma opção para completar o visual ou a rotina de treino."}
+    if any(x in n for x in ["masculino", "masculina", "men"]):
+        return {"headline": f"{shoe_brand}TÊNIS MASCULINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "👟🔥", "detail": "Uma opção versátil para o dia a dia ou treino."}
+    if any(x in n for x in ["tenis", "tênis", "sapatenis", "sapatênis", "calcado", "calçado"]):
+        return {"headline": f"{shoe_brand}TÊNIS EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "👟🔥", "detail": "Uma opção para uso casual ou rotina, dependendo do modelo."}
 
+    # ============================================================
+    # FALLBACK — ainda é específico o suficiente para qualquer item.
+    # ============================================================
+    if brand:
+        return {"headline": f"{brand.upper()} EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🔥👀", "detail": "Produto de marca em condição promocional para ficar no radar."}
+
+    words = [w for w in re.split(r"\s+", t) if len(w) > 2]
+    short_name = " ".join(words[:4]) if words else "produto"
+    return {"headline": f"{short_name.upper()} EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🔥👀", "detail": "Oferta encontrada pelo Caçador de Ofertas; confira preço, condições e disponibilidade."}
 
 def ad_text(o, affiliate=""):
     """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
-    marketing = _marketing_phrase(title)
+    marketing = _marketing_phrase(title, o)
 
+    # Formato aprovado pelo usuário: headline comercial específico + emojis,
+    # depois o produto. Não exibe uma segunda descrição em itálico.
     lines = [
         f"*{marketing['headline']}*",
         marketing["emojis"],
-    ]
-
-    lines += [
         "",
         f"*{title}*",
         "",
@@ -6094,40 +6345,23 @@ def whatsapp_image(filename):
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
-AUTO_WHATSAPP_LIMIT = 2  # exatamente 2 ofertas por rodada
-AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
-AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "23:30").strip()
+AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
+AUTO_WHATSAPP_START = "00:00"
+AUTO_WHATSAPP_END = "23:59"
+# Automação contínua: não existe horário de início/fim.
+AUTO_WHATSAPP_ALWAYS_ON = True
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 def _auto_whatsapp_horario_atual():
-    """Retorna se a automação está dentro da janela diária configurada."""
+    """Automação contínua: sempre ativa, sem horário de início ou parada."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-
-    def _parse_hhmm(value, default):
-        try:
-            h, m = str(value).split(":", 1)
-            h, m = int(h), int(m)
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                return h * 60 + m
-        except Exception:
-            pass
-        return default
-
-    start = _parse_hhmm(AUTO_WHATSAPP_START, 8 * 60 + 30)
-    end = _parse_hhmm(AUTO_WHATSAPP_END, 23 * 60 + 30)
-    current = now.hour * 60 + now.minute
-
-    # Janela normal no mesmo dia.
-    if start <= end:
-        return start <= current <= end, now, start, end
-    # Também suporta, caso configurado no futuro, uma janela que atravesse meia-noite.
-    return current >= start or current <= end, now, start, end
+    return True, now, 0, 24 * 60 - 1
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -6325,20 +6559,15 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] Ativo: {AUTO_WHATSAPP_START} às {AUTO_WHATSAPP_END}, "
+            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
             f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
             f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
             f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            ativo, now, start, end = _auto_whatsapp_horario_atual()
-            if ativo:
-                executar_caca_automatica()
-                # A partir de uma execução, aguarda o intervalo configurado.
-                time.sleep(AUTO_WHATSAPP_INTERVAL)
-            else:
-                # Fora do horário, verifica novamente em no máximo 60 segundos.
-                time.sleep(60)
+            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
+            executar_caca_automatica()
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
