@@ -352,6 +352,9 @@ CATALOG = {'📱 Tecnologia': ['📱 Celulares',
             'camiseta Fila',
             'camiseta New Balance',
             'camiseta Under Armour',
+            'camiseta Reebok',
+            'camiseta Jordan',
+            'camiseta Levi’s',
             'camiseta Hering',
             '🏀 Camisas Esportivas/Futebol',
             'camisas esportivas futebol',
@@ -6091,12 +6094,43 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers = final_offers
 
-    # Exclusão final global: não deixar passar lubrificantes de esteira.
-    offers = [o for o in offers if not any(term in norm(o.get("title") or "") for term in (
+    # EXCLUSÃO FINAL DE PRODUTOS SEM INTERESSE / RESULTADOS ENGANOSOS.
+    # "Tênis pé" em talco/antisséptico não é tênis; bolas também não fazem
+    # parte do objetivo principal do projeto de moda/calçados.
+    junk_terms = (
         "lubrificante de silicone", "silispeed", "silicone liquido para esteira",
         "silicone líquido para esteira", "lubrificante para esteira",
         "lubrificante de esteira", "oleo de silicone para esteira", "óleo de silicone para esteira",
-    ))]
+        "talco para os pes", "talco para os pés", "tenys pe", "tenys pé",
+        "antisseptico para os pes", "antisséptico para os pés", "desodorante para os pes",
+        "desodorante para os pés", "creme para os pes", "creme para os pés",
+        "palmilha", "cadarco", "cadarço", "kit limpeza tenis", "kit limpeza tênis",
+        "bola de futebol", "bolas de futebol", "bola society", "bola futsal",
+        "bola de basquete", "bola de volei", "bola de vôlei", "bola de tenis",
+        "bola de tênis", "bola de handebol", "bola esportiva", "bomba para bola",
+        "agulha para bola", "rede de futebol", "rede para gol",
+    )
+    offers = [o for o in offers if not any(term in norm(o.get("title") or "") for term in junk_terms)]
+
+    # A categoria de tênis precisa conter um calçado real, não só a palavra
+    # "pé" ou uma marca no título. Exclui produtos de higiene/acessórios.
+    shoe_categories = {"👟 Tênis & Calçados", "👟 Tênis", "Calçados"}
+    shoe_core_terms = (
+        "tenis", "tênis", "sapatilha", "sapato", "sapatênis", "sapatenis",
+        "bota", "coturno", "chinelo", "sandalia", "sandália", "slide", "mocassim",
+    )
+    shoe_bad_terms = (
+        "talco", "antisseptico", "antisséptico", "desodorante", "lubrificante",
+        "creme", "spray para os pes", "spray para os pés", "palmilha", "cadarco", "cadarço",
+        "meia", "meias", "limpa tenis", "limpa tênis", "escova para tenis", "escova para tênis",
+    )
+    offers = [o for o in offers if not (
+        (o.get("category_name") in shoe_categories)
+        and (
+            any(term in norm(o.get("title") or "") for term in shoe_bad_terms)
+            or not any(term in norm(o.get("title") or "") for term in shoe_core_terms)
+        )
+    )]
 
     # Academia: limita bicicletas ergométricas/spinning a no máximo 1 oferta,
     # para não ocupar espaço que deve ser distribuído por outras categorias.
@@ -6173,9 +6207,28 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         grouped.setdefault(o["category_name"], []).append(o)
 
     flat = []
+    major_brands = (
+        "nike", "adidas", "asics", "mizuno", "new balance", "puma", "fila",
+        "reebok", "skechers", "under armour", "vans", "converse", "jordan",
+        "olympikus", "lacoste", "tommy hilfiger", "calvin klein", "levi's",
+        "levis", "levi", "reebok", "hering", "reserva", "lululemon",
+        "zara", "polo ralph lauren", "ralph lauren", "guess", "columbia",
+        "salomon", "timberland", "oakley", "umbro", "new era",
+    )
     for cat in categories:
         arr = grouped.get(cat, [])
-        arr.sort(key=_display_demand_key)
+        if cat in ("👟 Tênis & Calçados", "👟 Tênis", "Calçados", "👕 Moda"):
+            def _brand_priority(o):
+                title = norm(o.get("title") or "")
+                for i, brand in enumerate(major_brands):
+                    if norm(brand) in title:
+                        return (0, i, _display_demand_key(o))
+                # Mantém produto genérico apenas depois das marcas principais;
+                # marcas desconhecidas ficam no fim, sem dominar o resultado.
+                return (1, len(major_brands), _display_demand_key(o))
+            arr.sort(key=_brand_priority)
+        else:
+            arr.sort(key=_display_demand_key)
         # Em uma categoria isolada, podemos entregar até 250 ofertas.
         # No modo "todas", mantemos 50 por categoria para preservar velocidade
         # e permitir passar de 230 ofertas somando as categorias.
@@ -6401,7 +6454,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V48: tênis ampliados por marca/modelo/ocasião; moda expandida; lubrificantes de esteira excluídos; máximo 1 bicicleta ergométrica; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V49: remove bolas e produtos de cuidado dos pés confundidos com tênis; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; lubrificantes de esteira excluídos; máximo 1 bicicleta ergométrica; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
