@@ -134,11 +134,11 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 90
-SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 140
-SEARCH_RAW_POOL_PER_CATEGORY = 160
-SEARCH_SEEDS_FAST_PER_CATEGORY = 22
-SEARCH_RESULTS_PER_QUERY_FAST = 40
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 300
+SEARCH_RAW_POOL_PER_CATEGORY = 350
+SEARCH_SEEDS_FAST_PER_CATEGORY = 30
+SEARCH_RESULTS_PER_QUERY_FAST = 50
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -4994,7 +4994,21 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     price = sale
                     if sale_original is not None:
                         original = sale_original
-            # REGRA PRINCIPAL: o preço mínimo de produto é R$ 69,90.
+            # Se o buy box/catalogo não trouxe preço original, consulta a
+            # venda atual do ITEM. O Mercado Livre pode guardar o preço cheio
+            # em /items/{id}/sale_price; sem essa recuperação o filtro antigo
+            # descartava quase todos os produtos.
+            if item.get("item_id") and (original is None or original <= price):
+                try:
+                    sale_price, sale_original = get_current_sale_price(item.get("item_id"))
+                    if sale_price is not None and sale_price > 0:
+                        price = sale_price
+                    if sale_original is not None and sale_original > price:
+                        original = sale_original
+                except Exception as exc:
+                    print("[SALE PRICE] falha", item.get("item_id"), repr(exc))
+
+            # REGRA PRINCIPAL: o preço mínimo de produto é o valor configurado em MIN_PRODUCT_PRICE.
             # O valor precisa ser filtrado aqui, depois de resolver o preço
             # real da publicação, e não apenas na descoberta do catálogo.
             # Isso impede que produtos de R$ 15,99, R$ 22,99 etc. cheguem
@@ -5095,20 +5109,19 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # REGRA ATUAL: somente produtos com DESCONTO REAL.
-    # Loja Oficial NÃO é mais exigida. O desconto precisa ser comprovado
-    # por preço atual menor que o preço original.
+    # BUSCA AMPLA: não eliminamos um produto somente porque o catálogo
+    # não informou preço original. Isso era o principal gargalo que fazia
+    # centenas de candidatos virarem 1 única oferta.
+    # Quando há preço original, o desconto real continua sendo calculado e
+    # usado no ranking. Quando não há, a oferta continua válida pelo preço
+    # atual, imagem e coerência do nicho. Cupons entram depois.
     before_discount_filter = len(offers)
-    discounted_offers = []
     for o in offers:
-        if not _discount_is_real(o.get("price"), o.get("original_price")):
-            continue
-        o["discount"] = discount(o.get("price"), o.get("original_price"))
-        if float(o.get("discount") or 0) <= 0:
-            continue
-        discounted_offers.append(o)
-    offers = discounted_offers
-    print(f"[FILTRO DESCONTO REAL] {before_discount_filter} -> {len(offers)} ofertas")
+        if _discount_is_real(o.get("price"), o.get("original_price")):
+            o["discount"] = discount(o.get("price"), o.get("original_price"))
+        else:
+            o["discount"] = 0.0
+    print(f"[BUSCA AMPLA] {before_discount_filter} ofertas após filtros básicos; desconto real usado no ranking")
 
     # Perfumes: mostra somente perfumes/fragrâncias individuais,
     # incluindo Body Splash e Body Mist, sem kits/combos.
@@ -5297,13 +5310,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        # As duas categorias de perfumes têm espaço próprio. A quantidade
-        # final depende dos anúncios reais encontrados, preço, imagem e
-        # filtros; não cortamos cedo em 15/20.
-        if cat == "🌙 Perfumes Árabes":
-            limit = 50
-        elif cat == "🌸 Perfumes":
-            limit = 50
+        # Em uma categoria isolada, podemos entregar até 250 ofertas.
+        # No modo "todas", mantemos 50 por categoria para preservar velocidade
+        # e permitir passar de 230 ofertas somando as categorias.
+        if len(categories) == 1:
+            limit = 250
         else:
             limit = 50
         flat.extend(arr[:limit])
@@ -5524,7 +5535,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
+        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; desconto real priorizado",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
