@@ -123,7 +123,7 @@ AFFILIATE_COUPON_BLOCKLIST_TERMS = (
 
 AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
 AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
-MIN_PRODUCT_PRICE = 29.90
+MIN_PRODUCT_PRICE = 69.90
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
@@ -139,6 +139,13 @@ SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 300
 SEARCH_RAW_POOL_PER_CATEGORY = 350
 SEARCH_SEEDS_FAST_PER_CATEGORY = 30
 SEARCH_RESULTS_PER_QUERY_FAST = 50
+# V42: fonte primária de anúncios reais para categorias comuns.
+# Em uma categoria isolada, consultamos uma amostra ampla dos micro-nichos
+# diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
+# depender somente do catálogo /products/search.
+SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
+SEARCH_REAL_ITEM_QUERIES_ALL = 8
+SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -3980,6 +3987,126 @@ def _search_public_real_item_ids(q, limit=18):
     return ids[:lim]
 
 
+def _search_real_item_listings_api(q, limit=50, offset=0):
+    """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
+
+    Diferente de /products/search, /sites/MLB/search devolve publicações ITEM
+    (MLBxxxxxxxx) com preço, vendedor, frete e permalink. Essa é a fonte
+    principal da V42 para categorias comuns. Se a API retornar 403/erro,
+    devolvemos [] e o scanner continua usando as fontes anteriores.
+    """
+    query = str(q or "").strip()
+    if not query:
+        return []
+    try:
+        lim = max(1, min(int(limit or 50), 50))
+        off = max(0, int(offset or 0))
+    except Exception:
+        lim, off = 50, 0
+
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
+        "q": query,
+        "limit": lim,
+        "offset": off,
+        "sort": "relevance",
+    })
+    if status != 200 or not isinstance(data, dict):
+        print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
+        return []
+
+    rows = data.get("results") or []
+    out = []
+    for pos, row in enumerate(rows, start=off + 1):
+        if not isinstance(row, dict):
+            continue
+        iid = str(row.get("id") or "").strip().upper()
+        title = str(row.get("title") or "").strip()
+        if not re.fullmatch(r"MLB\d+", iid) or not title:
+            continue
+        out.append({
+            "id": iid,
+            "item_id": iid,
+            "title": title,
+            "name": title,
+            "source_type": "ITEM",
+            "permalink": row.get("permalink"),
+            "thumbnail": row.get("thumbnail"),
+            "pictures": row.get("pictures") or [],
+            "price": row.get("price"),
+            "original_price": row.get("original_price"),
+            "seller_id": (row.get("seller") or {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+            "seller": row.get("seller"),
+            "shipping": row.get("shipping") or {},
+            "condition": row.get("condition") or "new",
+            "sold_quantity": row.get("sold_quantity") or 0,
+            "listing_type_id": row.get("listing_type_id"),
+            "highlight_position": pos,
+        })
+    print(f"[BUSCA ITEMS API] {query} -> {len(out)} anúncios reais")
+    return out
+
+
+def _category_real_item_seed_queries(cat, fast=False):
+    """Retorna sementes limpas para a busca de anúncios reais.
+
+    Não usamos todos os 117 termos de uma vez: isso seria lento e aumentaria
+    o risco de 429. A lista mantém diversidade por subnicho e usa uma amostra
+    grande na busca manual de uma categoria.
+    """
+    seeds = []
+    for seed in CATALOG.get(cat, []):
+        clean = str(seed or "").strip()
+        if not clean or clean == cat:
+            continue
+        clean = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+", "", clean).strip()
+        if not clean or clean.lower() in {"e", "ou"}:
+            continue
+        if clean not in seeds:
+            seeds.append(clean)
+
+    # Prioriza consultas mais específicas e mantém uma consulta ampla no início.
+    priority = []
+    for x in seeds:
+        n = norm(x)
+        if cat == "👟 Tênis & Calçados" and any(k in n for k in (
+            "tenis", "corrida", "casual", "futebol", "chuteira", "basquete",
+            "trilha", "skate", "feminino", "masculino", "infantil", "nike",
+            "adidas", "asics", "mizuno", "olympikus", "fila", "puma",
+        )):
+            priority.append(x)
+        elif cat == "📱 Tecnologia" and any(k in n for k in (
+            "iphone", "samsung", "motorola", "xiaomi", "celular", "smartphone",
+            "notebook", "tablet", "fone", "smartwatch", "teclado", "mouse",
+        )):
+            priority.append(x)
+        elif cat == "💪 Academia & Fitness" and any(k in n for k in (
+            "creatina", "whey", "halter", "anilha", "barra", "esteira", "banco",
+            "suplement", "academia", "fitness",
+        )):
+            priority.append(x)
+        elif cat == "🏠 Casa e Organização" and any(k in n for k in (
+            "guarda", "armario", "organizador", "cozinha", "air fryer", "cafeteira",
+            "aspirador", "estante", "prateleira", "mesa", "cadeira", "cama",
+        )):
+            priority.append(x)
+        elif cat == "👕 Moda" and any(k in n for k in (
+            "camiseta", "camisa", "bermuda", "short", "calca", "jeans", "moletom",
+            "jaqueta", "polo", "vestido", "nike", "adidas", "puma",
+        )):
+            priority.append(x)
+        elif cat == "💇 Saúde & Beleza" and any(k in n for k in (
+            "shampoo", "cabelo", "skincare", "protetor", "hidratante", "barbeador",
+            "aparador", "maquiagem", "esmalte", "secador", "chapinha",
+        )):
+            priority.append(x)
+
+    merged=[]
+    for x in priority + seeds:
+        if x not in merged:
+            merged.append(x)
+    return merged[:(SEARCH_REAL_ITEM_QUERIES_ALL if fast else SEARCH_REAL_ITEM_QUERIES_SINGLE)]
+
+
 def _search_category(cat, fast=False):
     """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
     if cat == "🌙 Perfumes Árabes":
@@ -4124,6 +4251,32 @@ def _search_category(cat, fast=False):
     out = []
     seen = set()
 
+    # V42: PRIMEIRO procura anúncios reais (ITEM) diretamente na busca do ML.
+    # Isso corrige o gargalo observado: 184 catálogos -> apenas 4 ofertas.
+    # Os resultados ITEM entram no mesmo pipeline de imagem/preço/coerência.
+    real_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(350, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    real_queries = _category_real_item_seed_queries(cat, fast=fast)
+    real_added = 0
+    for q in real_queries:
+        if len(out) >= real_target:
+            break
+        try:
+            rows = _search_real_item_listings_api(q, limit=SEARCH_REAL_ITEM_RESULTS_PER_QUERY)
+        except Exception as exc:
+            print("[BUSCA ITEMS API]", cat, q, repr(exc))
+            rows = []
+        for row in rows:
+            iid = str(row.get("id") or "").strip().upper()
+            if not iid or iid in seen:
+                continue
+            seen.add(iid)
+            out.append((row, cat))
+            real_added += 1
+            if len(out) >= real_target:
+                break
+
+    print(f"[V42 ITEMS REAIS] {cat}: +{real_added} | pool inicial={len(out)}")
+
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
         try:
@@ -4207,7 +4360,7 @@ def _search_category(cat, fast=False):
         if len(out) >= (SEARCH_RAW_POOL_PER_CATEGORY if fast else 180):
             break
 
-    # CORREÇÃO V41: o /products/search forma um pool grande de CATÁLOGOS,
+    # COMPLEMENTO: o /products/search forma um pool grande de CATÁLOGOS,
     # mas a etapa de enriquecimento pode converter apenas poucos deles em
     # publicações reais. Isso era exatamente o que fazia 184 candidatos
     # virarem 4 ofertas.
@@ -4932,8 +5085,8 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para perfumes, a descoberta usa /products/search, que foi validada
-    funcionando para esta aplicação; /sites/MLB/search não é usado.
+    Para categorias comuns, a V42 prioriza anúncios ITEM reais de /sites/MLB/search
+    e usa /products/search apenas como complemento. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
@@ -5649,7 +5802,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; desconto real priorizado",
+        "modo": f"V42: anúncios ITEM reais primeiro; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; desconto real priorizado",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
