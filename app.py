@@ -32,7 +32,7 @@ app = Flask(__name__)
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 # A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
 # completo no mesmo arquivo para reativação posterior.
-TESTE_SOMENTE_PERFUMES = True
+TESTE_SOMENTE_PERFUMES = False
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -660,14 +660,12 @@ CATALOG = {'📱 Tecnologia': ['celulares',
                        'Emir Celestial']}
 
 # ============================================================
-# MODO DE TESTE — SOMENTE PERFUMES
+# MODO COMPLETO — TODAS AS CATEGORIAS ATIVAS
 # ============================================================
 # Mantemos TODO o restante do projeto no arquivo, mas durante este teste
-# somente as duas categorias de perfumes ficam ativas no catálogo usado
-# pelo scanner, pela busca manual, pelos botões e pelo fluxo automático.
-# Assim conseguimos testar a descoberta dos perfumes sem que as outras
-# categorias gerem chamadas, resultados ou interferências.
-# Para reativar todas as categorias depois, basta trocar para False.
+# todas as categorias do catálogo ficam ativas no scanner, na busca manual,
+# nos botões e no fluxo automático. O modo de teste exclusivo de perfumes
+# fica desativado para que as demais categorias apareçam normalmente.
 
 CATALOG_COMPLETO = dict(CATALOG)
 
