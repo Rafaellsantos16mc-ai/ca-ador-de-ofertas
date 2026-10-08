@@ -2005,43 +2005,144 @@ def choose_best_coupon(title, price, public_cards=None, item_id=None, permalink=
     return x
 
 def detect_cash_discount(item, price):
-    """Só aceita desconto à vista/Pix quando o próprio dado da API o informa.
-    Não assume que todo Pix tem desconto e não soma com cupom sem indicação de cumulatividade.
+    """Detecta desconto explícito para Pix/à vista sem inventar desconto.
+
+    A API do Mercado Livre nem sempre expõe o preço Pix para um afiliado.
+    Por isso só aceitamos um desconto quando ele aparece de forma explícita
+    nos dados recebidos do item, nos métodos de pagamento ou em estruturas de
+    preço já retornadas pela API.
     """
     if not isinstance(item, dict):
-        return 0, None
-    p = float(price or 0)
+        return 0.0, None
+    try:
+        p = float(price or 0)
+    except Exception:
+        p = 0.0
     if p <= 0:
-        return 0, None
+        return 0.0, None
 
-    explicit = []
-    for key in ("pix_discount", "cash_discount", "discount_pix", "payment_discount", "cashback_discount"):
-        v = item.get(key)
-        if isinstance(v, (int,float)) and float(v) > 0:
-            explicit.append(float(v))
+    discounts = []
 
+    def add_discount(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return
+        if 0 < value < p:
+            discounts.append(value)
+
+    def add_price(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return
+        if 0 < value < p:
+            discounts.append(p - value)
+
+    # Campos diretos que algumas respostas/integrações podem fornecer.
+    for key in ("pix_discount", "cash_discount", "discount_pix", "payment_discount"):
+        add_discount(item.get(key))
     for key in ("pix_price", "cash_price", "price_pix", "price_cash"):
-        v = item.get(key)
-        if isinstance(v, (int,float)) and 0 < float(v) < p:
-            explicit.append(p - float(v))
+        add_price(item.get(key))
 
+    # Estruturas de pagamento.
     payments = item.get("payment_methods") or item.get("payments") or {}
     if isinstance(payments, dict):
-        for k, v in payments.items():
-            if "pix" not in str(k).lower() and "avista" not in norm(k):
-                continue
-            if isinstance(v, dict):
-                for key in ("discount", "discount_amount", "amount_discount"):
-                    n = v.get(key)
-                    if isinstance(n,(int,float)) and float(n)>0:
-                        explicit.append(float(n))
-                for key in ("price", "final_price"):
-                    n = v.get(key)
-                    if isinstance(n,(int,float)) and 0 < float(n) < p:
-                        explicit.append(p-float(n))
+        iterable = payments.items()
+    elif isinstance(payments, list):
+        iterable = []
+        for entry in payments:
+            if isinstance(entry, dict):
+                iterable.append((entry.get("method") or entry.get("type") or entry.get("name") or "", entry))
+    else:
+        iterable = []
 
-    d = round(max(explicit, default=0),2)
+    for method, value in iterable:
+        method_text = norm(method)
+        if "pix" not in method_text and "avista" not in method_text and "cash" not in method_text:
+            continue
+        if isinstance(value, dict):
+            for key in ("discount", "discount_amount", "amount_discount"):
+                add_discount(value.get(key))
+            for key in ("price", "final_price", "amount", "pix_price"):
+                add_price(value.get(key))
+
+    # Algumas respostas podem trazer preços/promotions embutidos.
+    for container_key in ("prices", "sale_prices", "payment_prices", "price_options"):
+        arr = item.get(container_key)
+        if not isinstance(arr, list):
+            continue
+        for entry in arr:
+            if not isinstance(entry, dict):
+                continue
+            context = norm(str(entry.get("context") or entry.get("payment_method") or entry.get("method") or entry.get("type") or ""))
+            if "pix" not in context and "avista" not in context and "cash" not in context:
+                continue
+            for key in ("discount", "discount_amount", "amount_discount"):
+                add_discount(entry.get(key))
+            for key in ("price", "amount", "final_price", "sale_price"):
+                add_price(entry.get(key))
+
+    d = round(max(discounts, default=0.0), 2)
     return d, ("Pix/à vista" if d > 0 else None)
+
+
+def detect_pix_discount_from_page(url, price):
+    """Tenta confirmar um preço Pix na página pública do anúncio.
+
+    É uma tentativa complementar e conservadora. Se a página não trouxer
+    evidência clara, retorna zero e o anúncio permanece como estava.
+    """
+    url = str(url or "").strip()
+    if not url or not re.match(r"^https?://", url, re.I):
+        return 0.0, None
+    try:
+        base = float(price or 0)
+    except (TypeError, ValueError):
+        return 0.0, None
+    if base <= 0:
+        return 0.0, None
+
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            },
+            timeout=12,
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return 0.0, None
+        html = html_lib.unescape(r.text or "")
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\\s+", " ", text)
+
+        # Procura um valor monetário próximo de termos explícitos de Pix.
+        money = re.compile(r"R\\$\\s*([0-9]{1,3}(?:\\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2}|[0-9]+(?:\\.[0-9]{2})?)", re.I)
+        candidates = []
+        for m in re.finditer(r".{0,180}pix.{0,220}", text, re.I):
+            block = m.group(0)
+            for pm in money.finditer(block):
+                raw = pm.group(1).replace(".", "").replace(",", ".")
+                try:
+                    value = float(raw)
+                except ValueError:
+                    continue
+                if 0 < value < base:
+                    candidates.append(value)
+
+        if not candidates:
+            return 0.0, None
+        pix_price = min(candidates)
+        discount_value = round(base - pix_price, 2)
+        if discount_value <= 0:
+            return 0.0, None
+        return discount_value, "Pix"
+    except Exception as exc:
+        print("[PIX] consulta pública falhou:", repr(exc))
+        return 0.0, None
 
 # ============================================================
 # CAÇADOR
@@ -5370,7 +5471,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 o.get("title") or "",
                 o.get("price") or 0,
                 public_cards,
-            )
+            )[:2]
+            # Mantemos no máximo 2 candidatos por produto: se o primeiro
+            # não for aplicável, o segundo pode ser usado. Nunca enviamos
+            # os dois cupons juntos.
+            o["cupons_candidatos"] = candidates_for_offer
             offer_key = str(o.get("item_id") or o.get("product_id") or id(o))
             offer_coupon_candidates[offer_key] = candidates_for_offer
             for cup in candidates_for_offer:
@@ -5753,6 +5858,14 @@ def ad_text(o, affiliate=""):
 
     # Preço atual separado do preço antigo para ficar visualmente limpo.
     lines.append(f"Por *{brl(o['price'])}*")
+
+    try:
+        pix_price = float(o.get("preco_pix") or 0)
+    except (TypeError, ValueError):
+        pix_price = 0.0
+    if pix_price > 0 and pix_price < float(o.get("price") or 0):
+        pix_label = o.get("tipo_desconto_pix") or "Pix"
+        lines.append(f"💳 *{pix_label}: {brl(pix_price)}*")
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
@@ -6802,6 +6915,24 @@ def _whatsapp_publish_scan(result):
                 print(f"[AUTO AFILIADO] Falha em {product_id}: {exc}")
                 skipped += 1
                 continue
+
+        # Confirma eventual desconto Pix somente depois que a oferta foi
+        # escolhida para publicação. Assim não aumentamos desnecessariamente
+        # o número de consultas durante a caça.
+        if not offer.get("desconto_pix"):
+            pix_discount, pix_label = detect_cash_discount(offer, price)
+            if pix_discount <= 0:
+                pix_discount, pix_label = detect_pix_discount_from_page(
+                    offer.get("permalink") or "", price
+                )
+            if pix_discount > 0:
+                offer["desconto_pix"] = round(pix_discount, 2)
+                offer["preco_pix"] = round(price - pix_discount, 2)
+                offer["tipo_desconto_pix"] = pix_label or "Pix"
+                print(
+                    f"[PIX] {product_id}: {offer['tipo_desconto_pix']} "
+                    f"R$ {offer['preco_pix']:.2f} (desconto R$ {pix_discount:.2f})"
+                )
 
         # Gera o mesmo anúncio usado pelo fluxo manual, agora com o
         # meli.la recém-criado, e só então envia ao WhatsApp.
