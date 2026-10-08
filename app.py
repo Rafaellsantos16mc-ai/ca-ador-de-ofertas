@@ -864,6 +864,20 @@ def init_db():
             last_published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS whatsapp_diversidade (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            ofertas_desde_ultimo_perfume INTEGER DEFAULT 0,
+            total_ofertas_regra INTEGER DEFAULT 0,
+            ultimo_perfume_at TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        INSERT OR IGNORE INTO whatsapp_diversidade
+            (id, ofertas_desde_ultimo_perfume, total_ofertas_regra)
+        VALUES (1, 0, 0)
+    """)
+
     # Compatibilidade com bancos criados pelas versões anteriores.
     try:
         conn.execute("ALTER TABLE cupons ADD COLUMN fixed_discount REAL DEFAULT 0")
@@ -1020,9 +1034,14 @@ def is_requested_product(title, query, category=None):
             []
         ),
         "💪 Academia & Fitness": (
-            ["academia", "halter", "anilha", "barra", "banco", "kettlebell", "treino", "fitness", "elastico",
-             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida", "roupa fitness",
-             "tênis academia", "tênis corrida", "garrafa fitness", "coqueteleira"],
+            ["academia", "halter", "halteres", "anilha", "barra", "banco", "kettlebell", "treino", "fitness",
+             "musculacao", "musculação", "crossfit", "elastico", "elástico", "faixa elastica", "faixa elástica",
+             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida",
+             "roupa fitness", "roupas fitness", "roupa esportiva", "roupas esportivas", "legging", "top fitness",
+             "short fitness", "camiseta dry fit", "regata esportiva", "conjunto fitness", "whey", "creatina",
+             "pre treino", "pré treino", "hipercalorico", "hipercalórico", "proteina", "proteína", "suplemento",
+             "suplementos", "bcaa", "aminoacido", "aminoácido", "vitamina esportiva", "isotonico", "isotônico",
+             "garrafa fitness", "coqueteleira", "shaker", "squeeze", "marmita fitness", "bolsa academia"],
             []
         ),
         "💇 Saúde & Beleza": (
@@ -4101,15 +4120,56 @@ def _search_category(cat, fast=False):
         if clean_seed and clean_seed not in seed_queries:
             seed_queries.append(clean_seed)
 
-    # No modo "todas", não pegamos simplesmente os primeiros 28 termos.
-    # Distribuímos as consultas ao longo de TODA a lista da categoria para
-    # representar os vários nichos (ex.: feminino, futebol, praia, fitness,
-    # informática etc.) em vez de deixar o início da lista dominar a busca.
+    # No modo "todas", não pegamos simplesmente os primeiros termos.
+    # Primeiro garantimos âncoras dos nichos que mais estavam ficando sem
+    # representação e depois completamos o restante distribuindo as consultas
+    # por TODA a lista.
     if fast and len(seed_queries) > SEARCH_SEEDS_FAST_PER_CATEGORY:
-        total_seeds = len(seed_queries)
+        priority_by_category = {
+            "💪 Academia & Fitness": [
+                "whey protein", "creatina", "pré treino", "hipercalórico",
+                "roupas fitness", "legging", "top fitness", "camiseta dry fit",
+                "halteres", "esteira", "coqueteleira",
+            ],
+            "👕 Moda": [
+                "camiseta Nike", "camiseta Adidas", "camisetas de marcas",
+                "camisas esportivas futebol", "jaqueta Nike", "bermuda Nike",
+                "roupas fitness", "legging", "top fitness", "conjunto fitness",
+                "moda feminina", "moda praia", "bonés",
+            ],
+            "👟 Tênis & Calçados": [
+                "tênis de corrida", "tênis para academia", "tênis casual",
+                "chuteiras", "tênis de basquete", "tênis trilha",
+                "tênis feminino", "tênis masculino", "Nike tênis", "Adidas tênis",
+                "Asics tênis", "New Balance tênis",
+            ],
+            "💇 Saúde & Beleza": [
+                "shampoo", "kit shampoo", "skincare", "protetor solar facial",
+                "unhas e manicure", "barbeador elétrico", "hidratante corporal",
+            ],
+            "🏠 Casa e Organização": [
+                "air fryer", "cafeteira", "aspirador de pó", "organizador",
+                "jogo de cama", "lâmpadas LED", "fita LED",
+            ],
+            "📱 Tecnologia": [
+                "iPhone", "Samsung Galaxy", "Motorola Moto G", "celular",
+                "fone bluetooth", "notebook", "smartwatch",
+            ],
+        }
+        priority = [q for q in priority_by_category.get(cat, []) if q in seed_queries]
+        remaining = [q for q in seed_queries if q not in priority]
         count = SEARCH_SEEDS_FAST_PER_CATEGORY
-        positions = [round(i * (total_seeds - 1) / (count - 1)) for i in range(count)]
-        seed_queries = [seed_queries[i] for i in positions]
+        slots = max(0, count - len(priority))
+        if slots and remaining:
+            total_remaining = len(remaining)
+            if slots >= total_remaining:
+                selected_remaining = remaining
+            else:
+                positions = [round(i * (total_remaining - 1) / max(1, slots - 1)) for i in range(slots)]
+                selected_remaining = [remaining[i] for i in positions]
+        else:
+            selected_remaining = []
+        seed_queries = priority + selected_remaining
 
     for q in seed_queries:
         try:
@@ -4790,17 +4850,32 @@ def _title_matches_scan_category(category, title):
         ))
 
     if cat == "💪 Academia & Fitness":
+        # Tênis continuam na categoria própria de calçados; o restante dos
+        # subnichos de Academia precisa ser aceito aqui para não perder
+        # roupas fitness, suplementação e acessórios.
         if fragrance or shoe:
             return False
         return any(x in n for x in (
+            # Suplementação
             "creatina", "whey", "proteina", "proteína", "pre treino", "pré treino",
-            "hipercalorico", "hipercalórico", "bcaa", "isotonico", "isotônico",
-            "halter", "anilha", "barra musculacao", "barra musculação", "rack",
-            "estacao de musculacao", "estação de musculação", "aparelho de academia",
+            "hipercalorico", "hipercalórico", "bcaa", "aminoacido", "aminoácido",
+            "isotonico", "isotônico", "suplemento", "suplementos", "vitamina esportiva",
+            # Equipamentos / cardio
+            "halter", "halteres", "anilha", "barra musculacao", "barra musculação",
+            "rack", "estacao de musculacao", "estação de musculação", "aparelho de academia",
             "maquina de musculacao", "máquina de musculação", "esteira",
-            "bicicleta ergometrica", "bicicleta ergométrica", "spinning",
-            "eliptico", "elíptico", "step", "banco de treino", "academia",
-            "fitness", "musculacao", "musculação", "crossfit",
+            "bicicleta ergometrica", "bicicleta ergométrica", "spinning", "eliptico", "elíptico",
+            "step", "stepper", "banco de treino", "academia", "fitness", "musculacao",
+            "musculação", "crossfit", "kettlebell",
+            # Roupas / treino
+            "roupa fitness", "roupas fitness", "roupa esportiva", "roupas esportivas",
+            "legging", "top fitness", "short fitness", "camiseta dry fit", "regata esportiva",
+            "conjunto fitness", "short de academia", "bermuda fitness",
+            # Acessórios fitness
+            "faixa elastica", "faixa elástica", "elastico de resistencia", "elástico de resistência",
+            "garrafa fitness", "coqueteleira", "shaker", "squeeze", "marmita fitness",
+            "bolsa academia", "corda de pular", "tapete yoga", "tapete de yoga",
+            "yoga", "pilates", "alongamento",
         ))
 
     if cat == "💇 Saúde & Beleza":
@@ -5641,8 +5716,7 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque
-    - nome do produto
+    - frase de destaque (já identifica o produto)
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -5654,10 +5728,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
+    # A chamada já identifica o produto. Não repetimos o título abaixo,
+    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
-        "",
-        f"*{title}*",
         "",
     ]
 
@@ -5947,8 +6021,7 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque
-    - nome do produto
+    - frase de destaque (já identifica o produto)
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -5960,10 +6033,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
+    # A chamada já identifica o produto. Não repetimos o título abaixo,
+    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
-        "",
-        f"*{title}*",
         "",
     ]
 
@@ -5997,14 +6070,11 @@ def ad_text(o, affiliate=""):
 
 
 def _marketing_phrase(title, offer=None):
-    """Cria chamadas curtas, naturais e específicas para CADA anúncio.
+    """Cria uma chamada curta e neutra, sem repetir o nome do produto.
 
-    A versão anterior repetia fórmulas como "EM DESTAQUE", "OLHA ESSE
-    PREÇO" e "PREÇO PARA CONFERIR". Aqui a chamada usa o nome/modelo real,
-    características que aparecem no título e um conjunto de variações
-    determinísticas. Assim o mesmo anúncio não recebe uma frase aleatória
-    diferente a cada execução, mas anúncios diferentes não ficam com a mesma
-    chamada o tempo todo.
+    O nome completo do produto aparece logo abaixo no anúncio. A chamada
+    serve apenas como um gancho comercial curto, variando por tipo de oferta
+    para não ficar repetitiva.
     """
     t = re.sub(r"\s+", " ", str(title or "Produto").strip())
     n = norm(t)
@@ -6024,301 +6094,174 @@ def _marketing_phrase(title, offer=None):
         return values[seed % len(values)] if values else ""
 
     def result(headline, emojis):
-        return {"headline": re.sub(r"\s+", " ", headline).strip(), "emojis": emojis, "detail": ""}
+        return {
+            "headline": re.sub(r"\s+", " ", headline).strip(),
+            "emojis": emojis,
+            "detail": "",
+        }
 
-    def first_match(values):
-        for value in values:
-            if value in n:
-                return value
-        return ""
+    # PERFUMES ÁRABES — não cita marca/modelo na chamada.
+    arabic_terms = (
+        "lattafa", "maison alhambra", "afnan", "armaf", "rasasi",
+        "al haramain", "al wataniah", "french avenue", "fragrance world",
+        "paris corner", "rayhaan", "khadlaj", "zimaya", "ajmal",
+        "swiss arabian", "ard al zaafaran", "ahmed al maghribi",
+        "orientica", "al rehab", "emir", "perfume arabe", "perfume árabe",
+        "arabic perfume", "oud", "attar"
+    )
+    if any(x in n for x in arabic_terms):
+        return result(pick([
+            "ESSE ÁRABE VAI TE SURPREENDER",
+            "OLHA ESSE ÁRABE QUE APARECEU",
+            "ESSE ÁRABE MERECE SUA ATENÇÃO",
+            "ACHADO ÁRABE PARA FICAR DE OLHO",
+            "SE VOCÊ CURTE PERFUME ÁRABE, OLHA ESSE",
+            "ESSA FRAGRÂNCIA ÁRABE PODE TE SURPREENDER",
+            "UM ÁRABE DESSES NÃO APARECE TODA HORA",
+            "OLHA O ACHADO ÁRABE DE HOJE",
+        ]), pick(["🔥✨", "🖤🔥", "✨🔥", "🌙🔥"]))
 
-    # ------------------------------------------------------------
-    # Utilidades para deixar a chamada baseada no produto real.
-    # ------------------------------------------------------------
-    brand_map = [
-        ("apple", "APPLE"), ("samsung", "SAMSUNG"), ("xiaomi", "XIAOMI"),
-        ("motorola", "MOTOROLA"), ("realme", "REALME"), ("poco", "POCO"),
-        ("redmi", "REDMI"), ("nike", "NIKE"), ("adidas", "ADIDAS"),
-        ("puma", "PUMA"), ("asics", "ASICS"), ("new balance", "NEW BALANCE"),
-        ("mizuno", "MIZUNO"), ("olympikus", "OLYMPIKUS"), ("fila", "FILA"),
-        ("reebok", "REEBOK"), ("vans", "VANS"), ("converse", "CONVERSE"),
-        ("under armour", "UNDER ARMOUR"), ("skechers", "SKECHERS"),
-        ("oakley", "OAKLEY"), ("lacoste", "LACOSTE"), ("jbl", "JBL"),
-        ("sony", "SONY"), ("lenovo", "LENOVO"), ("dell", "DELL"),
-        ("acer", "ACER"), ("hugo boss", "HUGO BOSS"), ("lattafa", "LATTAFA"),
-        ("maison alhambra", "MAISON ALHAMBRA"), ("afnan", "AFNAN"),
-        ("armaf", "ARMAF"), ("rasasi", "RASASI"), ("al haramain", "AL HARAMAIN"),
-        ("al wataniah", "AL WATANIAH"), ("french avenue", "FRENCH AVENUE"),
-        ("fragrance world", "FRAGRANCE WORLD"), ("paris corner", "PARIS CORNER"),
-        ("rayhaan", "RAYHAAN"), ("khadlaj", "KHADLAJ"), ("zimaya", "ZIMAYA"),
-    ]
-    brand = ""
-    for needle, label in brand_map:
-        if needle in n:
-            brand = label
-            break
+    # PERFUMES EM GERAL.
+    if any(x in n for x in (
+        "perfume", "parfum", "fragrance", "eau de parfum", "eau de toilette",
+        "eau de cologne", "body splash", "body mist", "colonia", "colônia",
+        "deo colonia", "deo colônia", "desodorante colonia", "desodorante colônia"
+    )):
+        return result(pick([
+            "ESSA FRAGRÂNCIA MERECE SUA ATENÇÃO",
+            "OLHA ESSE ACHADO DE PERFUMARIA",
+            "ESSA FRAGRÂNCIA PODE TE SURPREENDER",
+            "ACHADO DE PERFUMARIA PARA FICAR DE OLHO",
+            "SE VOCÊ GOSTA DE PERFUME, OLHA ESSE",
+            "ESSA OFERTA DE PERFUMARIA VALE CONFERIR",
+            "OLHA O ACHADO QUE APARECEU HOJE",
+        ]), pick(["✨🔥", "🌸🔥", "🔥👀", "💫🔥"]))
 
-    def extract_storage():
-        m = re.search(r"\b(64|128|256|512|1\s*tb)\s*(?:gb|g|tb)\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
+    # CELULARES / TECNOLOGIA.
+    if any(x in n for x in ("iphone", "smartphone", "celular", "telefone", "galaxy", "redmi", "poco", "moto g")):
+        return result(pick([
+            "OLHA ESSA OPORTUNIDADE PARA TROCAR DE CELULAR",
+            "ESSE CELULAR MERECE ENTRAR NO RADAR",
+            "ACHADO TECH QUE VALE CONFERIR",
+            "OLHA O PREÇO QUE APARECEU HOJE",
+            "ESSA OFERTA DE CELULAR PODE TE SURPREENDER",
+            "SE ESTAVA PENSANDO EM TROCAR, OLHA ESSA",
+        ]), pick(["📱🔥", "📱👀", "⚡📱", "🔥📱"]))
 
-    def extract_ram():
-        m = re.search(r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)\s*ram\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
+    if any(x in n for x in ("fone", "headset", "airpods", "caixa de som", "soundbar", "bluetooth", "jbl")):
+        return result(pick([
+            "OLHA ESSE ACHADO DE ÁUDIO",
+            "ESSA OFERTA DE ÁUDIO MERECE ATENÇÃO",
+            "ACHADO TECH PARA FICAR DE OLHO",
+            "OLHA O PREÇO QUE APARECEU",
+            "ESSE AQUI PODE VALER A PENA",
+        ]), pick(["🎧🔥", "🔊🔥", "👀🔥"]))
 
-    def extract_volume():
-        m = re.search(r"\b(30|40|50|60|75|80|90|100|105|110|120|125|150|200|250|300)\s*ml\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
+    if any(x in n for x in ("notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora")):
+        return result(pick([
+            "ACHADO DE INFORMÁTICA PARA FICAR DE OLHO",
+            "OLHA ESSA OPORTUNIDADE PARA O SETUP",
+            "ESSA OFERTA DE INFORMÁTICA MERECE ATENÇÃO",
+            "OLHA O QUE APARECEU PARA QUEM CURTE TECH",
+            "ESSE ACHADO PODE VALER A PENA",
+        ]), pick(["💻🔥", "🖥️🔥", "⚡🔥"]))
 
-    def perfume_core():
-        x = re.sub(r"\b(perfume|parfum|fragrance|eau de parfum|eau de toilette|eau de cologne|edt|edp)\b", " ", t, flags=re.I)
-        x = re.sub(r"\b(original|importado|importada|masculino|masculina|feminino|feminina|unissex|unisex|tester|arabe|árabe)\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*ml\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*oz\b", " ", x, flags=re.I)
-        x = re.sub(r"\b(kit|combo|duo|trio|conjunto|pack)\b.*$", " ", x, flags=re.I)
-        x = re.sub(r"\s+", " ", x).strip(" -–—|/")
-        words = x.split()
-        # Remove ruído comercial no fim e não transforma o headline em um
-        # título gigante.
-        stop = {"com", "de", "para", "por", "ml", "100ml", "50ml", "original"}
-        words = [w for w in words if w.lower() not in stop]
-        return " ".join(words[:6]).strip() or "PERFUME"
+    # TÊNIS / CALÇADOS.
+    if any(x in n for x in ("tênis", "tenis", "sapatênis", "sapatenis", "chuteira", "calçado", "calcado", "slide", "chinelo")):
+        return result(pick([
+            "ESSE AQUI MERECE ENTRAR NO RADAR",
+            "OLHA ESSE ACHADO DE CALÇADOS",
+            "ESSA OFERTA DE TÊNIS VALE CONFERIR",
+            "OLHA O PREÇO QUE APARECEU",
+            "ESSE MODELO PODE TE SURPREENDER",
+            "ACHADO DE CALÇADOS PARA FICAR DE OLHO",
+        ]), pick(["👟🔥", "🔥👟", "👀👟"]))
 
-    def phone_core():
-        x = re.sub(r"\b(smartphone|celular|telefone|mobile)\b", " ", t, flags=re.I)
-        x = re.sub(r"\b(original|novo|lacrado|global|nacional)\b", " ", x, flags=re.I)
-        # Remove RAM antes do armazenamento para não transformar "4GB RAM"
-        # em um pedaço solto do nome do aparelho.
-        x = re.sub(r"\b\d+\s*gb\s*ram\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*(?:gb|g|tb)\b", " ", x, flags=re.I)
-        x = re.sub(r"[+|]+", " ", x)
-        x = re.sub(r"\s+", " ", x).strip(" -–—|/")
-        words = x.split()
-        return " ".join(words[:6]).strip() or (brand or "CELULAR")
+    # MODA.
+    if any(x in n for x in (
+        "camiseta", "t-shirt", "tee", "camisa de futebol", "camisa esportiva",
+        "jersey", "jaqueta", "corta vento", "corta-vento", "bermuda", "short",
+        "calça", "calca", "jeans", "moletom", "casaco", "polo", "boné", "bone"
+    )):
+        return result(pick([
+            "OLHA ESSE ACHADO DE MODA",
+            "ESSA PEÇA MERECE SUA ATENÇÃO",
+            "OLHA O QUE APARECEU HOJE",
+            "ESSA OFERTA DE MODA PODE TE SURPREENDER",
+            "ACHADO PARA QUEM GOSTA DE SE VESTIR BEM",
+            "ESSA AQUI VALE ENTRAR NO RADAR",
+        ]), pick(["👕🔥", "🔥👕", "👀✨"]))
 
-    # ============================================================
-    # PERFUMES — chamadas por modelo, não por categoria genérica.
-    # ============================================================
-    is_perfume = any(x in n for x in [
-        "perfume", "parfum", "eau de ", "fragrance", "colonia", "colônia",
-        "body splash", "body mist", "deo colonia", "deo colônia",
-        "desodorante colonia", "desodorante colônia",
-    ]) or str(offer.get("category_name") or "") in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
+    # CASA.
+    if any(x in n for x in (
+        "air fryer", "cafeteira", "liquidificador", "aspirador", "panela",
+        "mixer", "cozinha", "pote", "organizador", "estante", "sapateira",
+        "varal", "casa", "decoração", "decoracao", "cama", "mesa", "banho"
+    )):
+        return result(pick([
+            "OLHA ESSE ACHADO PARA CASA",
+            "ESSE AQUI PODE FACILITAR MUITO A ROTINA",
+            "ACHADO PARA CASA QUE VALE CONFERIR",
+            "OLHA O QUE APARECEU PARA A CASA",
+            "ESSA OFERTA MERECE FICAR NO RADAR",
+        ]), pick(["🏠🔥", "🏡✨", "🔥🏠"]))
 
-    if is_perfume:
-        core = perfume_core()
-        volume = extract_volume()
-        label = f"{core.upper()} {volume}".strip()
+    # FERRAMENTAS.
+    if any(x in n for x in ("furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete")):
+        return result(pick([
+            "OLHA ESSE ACHADO DE FERRAMENTAS",
+            "ESSA OFERTA DE FERRAMENTA MERECE ATENÇÃO",
+            "ACHADO PARA QUEM GOSTA DE TER FERRAMENTA BOA",
+            "OLHA O PREÇO QUE APARECEU",
+            "ESSA AQUI PODE VALER A PENA",
+        ]), pick(["🔧🔥", "🛠️🔥", "🔥🔧"]))
 
-        perfume_profiles = [
-            ("fakhar rose", "FEMININO, FLORAL E ELEGANTE", "🌸✨"),
-            ("fakhar black", "MASCULINO E FRESCO, COM PRESENÇA", "🖤🔥"),
-            ("fakhar extrait", "ESPECIADO E MARCANTE", "🔥✨"),
-            ("asad", "INTENSO E ESPECIADO", "🖤🔥"),
-            ("khamrah qahwa", "DOCE, ESPECIADO E COM CAFÉ", "☕🔥"),
-            ("khamrah", "DOCE, QUENTE E GOURMAND", "🍂🔥"),
-            ("oud for glory", "OUD INTENSO E MARCANTE", "🖤🔥"),
-            ("club de nuit intense", "MARCANTE E SOFISTICADO", "🔥🖤"),
-            ("club de nuit woman", "FEMININO E ELEGANTE", "🌹✨"),
-            ("club de nuit women", "FEMININO E ELEGANTE", "🌹✨"),
-            ("9pm", "DOCE E ENVOLVENTE", "🌙🔥"),
-            ("qaed al fursan", "FRUTADO E MARCANTE", "🍍🔥"),
-            ("yara moi", "CREMOSO, FEMININO E DELICADO", "🤍✨"),
-            ("yara tous", "FRUTADO, FEMININO E VIBRANTE", "🥭✨"),
-            ("yara candy", "DOCE, FEMININO E JOVEM", "🍬💗"),
-            ("yara", "DOCE, FEMININO E DELICADO", "🎀✨"),
-            ("delilah", "FLORAL, FEMININO E ELEGANTE", "🌸✨"),
-            ("khair pistachio", "CREMOSO E GOURMAND", "💚✨"),
-            ("nebras", "DOCE, CREMOSO E ENVOLVENTE", "🍫✨"),
-            ("liam grey", "ESPECIADO E SOFISTICADO", "🩶🔥"),
-            ("liquid brun", "QUENTE E MARCANTE", "🤎🔥"),
-            ("maahir black", "INTENSO E MARCANTE", "🖤🔥"),
-            ("najdia", "FRESCO E VIBRANTE", "💙🔥"),
-            ("teriaq", "DOCE E ENVOLVENTE", "🍯🔥"),
-            ("infini oud", "OUD MARCANTE E ELEGANTE", "🖤✨"),
-            ("bottled", "ELEGANTE E VERSÁTIL", "🖤✨"),
-        ]
-        profile = next((p for term, *p in perfume_profiles if term in n), None)
+    # FITNESS / ACADEMIA.
+    if any(x in n for x in (
+        "esteira", "bicicleta ergométrica", "spinning", "elíptico", "eliptico",
+        "step", "corda", "halter", "anilha", "banco de musculação", "academia",
+        "whey", "creatina", "pré-treino", "pre-treino", "hipercalórico", "hipercalorico",
+        "coqueteleira", "shaker", "garrafa fitness"
+    )):
+        return result(pick([
+            "ESSE ACHADO FITNESS MERECE SUA ATENÇÃO",
+            "OLHA ESSA OPORTUNIDADE PARA O TREINO",
+            "ACHADO FITNESS PARA FICAR DE OLHO",
+            "ESSA OFERTA PODE AJUDAR NO SEU TREINO",
+            "OLHA O QUE APARECEU PARA QUEM TREINA",
+        ]), pick(["💪🔥", "🏋️🔥", "🔥💪"]))
 
-        if profile:
-            descriptor, emojis = profile
-            brand_text = f" DA {brand}" if brand else ""
-            variants = [
-                f"{label} — {descriptor}",
-                f"{label} — A PEGADA {descriptor}",
-                f"{label} — {descriptor}{brand_text}",
-                f"{label} — PARA QUEM CURTE UM PERFIL {descriptor}",
-            ]
-            return result(pick(variants), emojis)
+    # SAÚDE & BELEZA.
+    if any(x in n for x in (
+        "shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador",
+        "chapinha", "skincare", "protetor solar", "hidratante", "serum", "sérum",
+        "esmalte", "manicure", "barbeador", "aparador", "trimmer", "creme corporal"
+    )):
+        return result(pick([
+            "OLHA ESSE ACHADO DE BELEZA",
+            "ESSA OFERTA MERECE FICAR NO RADAR",
+            "ACHADO DE BELEZA QUE VALE CONFERIR",
+            "OLHA O QUE APARECEU HOJE",
+            "ESSA AQUI PODE TE SURPREENDER",
+        ]), pick(["✨🔥", "💄🔥", "🧴✨"]))
 
-        # Perfume sem modelo conhecido: ainda usa o nome real e evita
-        # "perfume em destaque / olha o preço".
-        if "body splash" in n:
-            variants = [
-                f"{label} — BODY SPLASH PARA A ROTINA",
-                f"{label} — FRAGRÂNCIA LEVE PARA REAPLICAR",
-                f"{label} — UMA OPÇÃO LEVE PARA O DIA A DIA",
-            ]
-            return result(pick(variants), "🌸💦")
-        if "body mist" in n:
-            variants = [
-                f"{label} — BODY MIST PARA DEIXAR NA ROTINA",
-                f"{label} — FRAGRÂNCIA LEVE PARA REAPLICAR",
-                f"{label} — PRÁTICO PARA A ROTINA E PARA LEVAR NA BOLSA",
-            ]
-            return result(pick(variants), "✨💦")
+    # FALLBACK neutro: nunca usa o nome do produto.
+    return result(pick([
+        "OLHA ESSE ACHADO QUE APARECEU",
+        "ESSA OFERTA MERECE SUA ATENÇÃO",
+        "OLHA O QUE APARECEU HOJE",
+        "ESSE AQUI PODE TE SURPREENDER",
+        "ACHADO PARA FICAR DE OLHO",
+        "ESSA OPORTUNIDADE VALE CONFERIR",
+        "OLHA ESSA CONDIÇÃO",
+    ]), pick(["🔥👀", "✨🔥", "👀🔥", "🔥"]))
 
-        gender = "FEMININO" if any(x in n for x in ["feminino", "feminina", "women", "woman"]) else "MASCULINO" if any(x in n for x in ["masculino", "masculina", "men", "man"]) else ""
-        if "oud" in n:
-            descriptor = "OUD E PERFIL MARCANTE"
-        elif any(x in n for x in ["rose", "floral", "flor"]):
-            descriptor = "PERFIL FLORAL"
-        elif any(x in n for x in ["vanilla", "baunilha", "vanille"]):
-            descriptor = "PERFIL ADOCICADO"
-        elif any(x in n for x in ["fresh", "aqua", "water", "blue"]):
-            descriptor = "PERFIL FRESCO"
-        else:
-            descriptor = "UMA FRAGRÂNCIA PARA COLOCAR NO RADAR"
-        gender_part = f" • {gender}" if gender else ""
-        variants = [
-            f"{label}{gender_part} — {descriptor}",
-            f"{label} — {descriptor}",
-            f"{brand + ' • ' if brand else ''}{label} — UMA FRAGRÂNCIA QUE CHAMA ATENÇÃO",
-        ]
-        return result(pick(variants), "✨🔥")
-
-    # ============================================================
-    # CELULARES — usa modelo + armazenamento/RAM/5G quando existem.
-    # ============================================================
-    is_phone = any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"])
-    if is_phone:
-        core = phone_core().upper()
-        storage = extract_storage()
-        ram_matches = re.findall(r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)\s*ram\b", n, re.I)
-        ram = extract_ram() if len(set(ram_matches)) == 1 else ""
-        fiveg = "5G" if re.search(r"\b5g\b", n) else ""
-        specs = " + ".join(x for x in [fiveg, storage, ram] if x)
-        suffix = f" — {specs}" if specs else ""
-        short_core = core.replace("MOTOROLA ", "").replace("SAMSUNG ", "").replace("APPLE ", "")
-        variants = [
-            f"{core}{suffix} — PARA QUEM QUER TROCAR DE CELULAR",
-            f"{short_core}{suffix} — 5G + {storage} PARA A ROTINA" if fiveg and storage else f"{core}{suffix} — CONFIGURAÇÃO PARA O DIA A DIA",
-            f"{core}{suffix} — UMA VERSÃO QUE MERECE ATENÇÃO",
-            f"{short_core}{suffix} — SE VOCÊ JÁ ESTAVA DE OLHO NESSE MODELO",
-        ]
-        return result(pick(variants), "📱🔥")
-
-    # ============================================================
-    # ÁUDIO / INFORMÁTICA
-    # ============================================================
-    if any(x in n for x in ["airpods", "fone", "headset", "caixa de som", "jbl", "soundbar", "bluetooth"]):
-        core = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{core[:62].upper()} — ÁUDIO PARA A ROTINA 🎧",
-            f"{core[:62].upper()} — PARA QUEM QUER MELHORAR O SOM",
-            f"{core[:62].upper()} — OLHA ESSE MODELO DE ÁUDIO",
-        ]
-        return result(pick(variants), "🎧🔥")
-
-    if any(x in n for x in ["notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora", "webcam"]):
-        core = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{core[:64].upper()} — PARA ATUALIZAR O SETUP",
-            f"{core[:64].upper()} — UM UPGRADE PARA FICAR DE OLHO",
-            f"{core[:64].upper()} — CONFIGURAÇÃO QUE MERECE ATENÇÃO",
-        ]
-        return result(pick(variants), "💻🔥")
-
-    # ============================================================
-    # CASA / FERRAMENTAS
-    # ============================================================
-    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:62].upper()} — UM ITEM QUE FAZ DIFERENÇA NA COZINHA",
-            f"{product[:62].upper()} — PARA FACILITAR A ROTINA EM CASA",
-            f"{product[:62].upper()} — AQUELE TIPO DE ACHADO PARA A CASA",
-        ]
-        return result(pick(variants), "🏠🔥")
-
-    if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PARA OFICINA, MANUTENÇÃO OU PROJETO",
-            f"{product[:64].upper()} — FERRAMENTA PARA TER À MÃO",
-            f"{product[:64].upper()} — UM ACHADO PARA QUEM ESTÁ EQUIPANDO A OFICINA",
-        ]
-        return result(pick(variants), "🔧🔥")
-
-    # ============================================================
-    # ACADEMIA / FITNESS
-    # ============================================================
-    if any(x in n for x in ["whey", "creatina", "pre treino", "pré treino", "hipercalorico", "hipercalórico", "barra proteica", "pasta de amendoim"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PARA A ROTINA DE TREINO",
-            f"{product[:64].upper()} — SUPLEMENTAÇÃO PARA COLOCAR NO RADAR",
-            f"{product[:64].upper()} — OPÇÃO PARA QUEM JÁ USA ESSE PRODUTO",
-        ]
-        return result(pick(variants), "💪🔥")
-
-    if any(x in n for x in ["esteira", "bicicleta ergométrica", "spinning", "elíptico", "step", "corda de pular"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — TREINO EM CASA SEM COMPLICAÇÃO",
-            f"{product[:64].upper()} — EQUIPAMENTO PARA A ROTINA FITNESS",
-            f"{product[:64].upper()} — PARA MONTAR O ESPAÇO DE TREINO",
-        ]
-        return result(pick(variants), "🏃🔥")
-
-    # ============================================================
-    # MODA / TÊNIS
-    # ============================================================
-    if any(x in n for x in ["corrida", "running", "tênis", "tenis", "sneaker", "air max", "air force", "air jordan", "jordan", "dunk", "ultraboost", "superstar", "pegasus", "vomero", "novablast", "gel kayano", "gel nimbus", "fresh foam", "1080"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        if "corrida" in n or "running" in n or any(x in n for x in ["pegasus", "vomero", "novablast", "gel kayano", "gel nimbus", "fresh foam", "1080"]):
-            variants = [
-                f"{product[:64].upper()} — PARA CORRIDA E TREINOS",
-                f"{product[:64].upper()} — FOCO EM CORRIDA, OLHA ESSA VERSÃO",
-                f"{product[:64].upper()} — UM MODELO PARA QUEM CORRE",
-            ]
-            return result(pick(variants), "🏃👟")
-        variants = [
-            f"{product[:64].upper()} — MODELO PARA USAR NO DIA A DIA",
-            f"{product[:64].upper()} — UM TÊNIS QUE CHAMA ATENÇÃO",
-            f"{product[:64].upper()} — PARA QUEM JÁ ESTAVA DE OLHO NESSE MODELO",
-        ]
-        return result(pick(variants), "👟🔥")
-
-    if any(x in n for x in ["camiseta", "t-shirt", "tee", "polo", "moletom", "jaqueta", "bermuda", "shorts", "jeans", "calça", "calca"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PEÇA PARA O DIA A DIA",
-            f"{product[:64].upper()} — PARA RENOVAR O GUARDA-ROUPA",
-            f"{product[:64].upper()} — UM MODELO PARA FICAR DE OLHO",
-        ]
-        return result(pick(variants), "👕🔥")
-
-    # ============================================================
-    # FALLBACK — usa o próprio nome, sem frases genéricas de categoria.
-    # ============================================================
-    product = re.sub(r"\s+", " ", t).strip()
-    if len(product) > 70:
-        product = product[:70].rsplit(" ", 1)[0]
-    variants = [
-        f"{product.upper()} — OLHA O PREÇO DE HOJE",
-        f"{product.upper()} — ACHADO QUE ENTROU NO RADAR",
-        f"{product.upper()} — ESSA CONDIÇÃO MERECE UMA OLHADA",
-        f"{product.upper()} — OFERTA ENCONTRADA AGORA",
-    ]
-    return result(pick(variants), "🔥👀")
 def ad_text(o, affiliate=""):
-    """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
+    """Monta o anúncio com chamada neutra e nome do produto separado."""
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # Formato aprovado pelo usuário: headline comercial específico + emojis,
-    # depois o produto. Não exibe uma segunda descrição em itálico.
+    # A chamada não repete o produto. O nome completo fica logo abaixo.
     lines = [
         f"*{marketing['headline']}*",
         marketing["emojis"],
@@ -6328,7 +6271,6 @@ def ad_text(o, affiliate=""):
     ]
 
     if o.get("original_price"):
-        # Tachado real do WhatsApp.
         lines.append(f"~De {brl(o['original_price'])}~")
 
     if o.get("cupom"):
@@ -6342,9 +6284,7 @@ def ad_text(o, affiliate=""):
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    # A chama fica DEPOIS de PROMOÇÃO.
     lines += ["", "*PEGAR PROMOÇÃO 🔥:* " + link]
-
     return "\n".join(lines)
 
 # ============================================================
@@ -6584,8 +6524,8 @@ def whatsapp_image(filename):
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
 AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
-AUTO_WHATSAPP_START = "00:00"
-AUTO_WHATSAPP_END = "23:59"
+AUTO_WHATSAPP_START = "08:30"
+AUTO_WHATSAPP_END = "22:30"
 # Automação contínua: não existe horário de início/fim.
 AUTO_WHATSAPP_ALWAYS_ON = True
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
@@ -6719,13 +6659,90 @@ def _whatsapp_mark_published(offer):
     conn.close()
 
 
+def _whatsapp_diversidade_estado():
+    """Retorna quantas ofertas foram publicadas desde o último perfume.
+
+    Regra: 1 perfume a cada 20 ofertas publicadas. O contador é salvo no
+    SQLite para não reiniciar quando o Railway reiniciar o processo.
+    """
+    conn = get_db()
+    row = conn.execute("""
+        SELECT ofertas_desde_ultimo_perfume, total_ofertas_regra
+        FROM whatsapp_diversidade
+        WHERE id = 1
+    """).fetchone()
+    conn.close()
+    if not row:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+def _whatsapp_diversidade_registrar(offer):
+    """Atualiza a contagem da regra depois de uma publicação confirmada."""
+    cat = str(offer.get("category_name") or "").strip()
+    is_perfume = cat in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
+    conn = get_db()
+    if is_perfume:
+        conn.execute("""
+            UPDATE whatsapp_diversidade
+            SET ofertas_desde_ultimo_perfume = 0,
+                total_ofertas_regra = total_ofertas_regra + 1,
+                ultimo_perfume_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+        """)
+    else:
+        conn.execute("""
+            UPDATE whatsapp_diversidade
+            SET ofertas_desde_ultimo_perfume = ofertas_desde_ultimo_perfume + 1,
+                total_ofertas_regra = total_ofertas_regra + 1
+            WHERE id = 1
+        """)
+    conn.commit()
+    conn.close()
+
+
+def _whatsapp_diversidade_reordenar(offers):
+    """Ordena a fila para cumprir 1 perfume a cada 20 publicações.
+
+    O contador considera somente publicações realmente confirmadas. Assim um
+    anúncio repetido, sem afiliado ou que falhar no WhatsApp não consome uma
+    posição da regra.
+    """
+    perfumes = [
+        o for o in offers
+        if str(o.get("category_name") or "").strip() in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
+    ]
+    outros = [
+        o for o in offers
+        if str(o.get("category_name") or "").strip() not in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
+    ]
+
+    desde_perfume, _total = _whatsapp_diversidade_estado()
+    # A 20ª oferta é perfume. Portanto, com 19 ofertas não-perfume desde o
+    # último perfume, o próximo candidato prioritário deve ser perfume.
+    if desde_perfume >= 19:
+        return perfumes + outros
+    return outros + perfumes
+
+
 def _whatsapp_publish_scan(result):
     """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
 
-    Se o WhatsApp falhar, a rodada é interrompida imediatamente e os produtos
-    que ainda não foram enviados permanecem disponíveis para a próxima rodada.
+    Mantém a regra de 1 perfume a cada 20 ofertas publicadas, persistida no
+    SQLite, e distribui as demais categorias para evitar concentração.
     """
     offers = list((result or {}).get("ofertas") or [])
+
+    # ========================================================
+    # DIVERSIDADE DO GRUPO
+    # ========================================================
+    # Regra fixa: 1 perfume (normal ou árabe) a cada 20 ofertas PUBLICADAS.
+    # As outras 19 ofertas são distribuídas entre Academia, Tênis, Moda,
+    # Saúde/Beleza, Casa e Tecnologia. O contador é persistente no SQLite.
+    # A fila abaixo só define a prioridade; o contador só avança depois que
+    # o WhatsApp confirma o envio.
+    offers = _whatsapp_diversidade_reordenar(offers)
+
     sent = 0
     skipped = 0
 
@@ -6801,6 +6818,7 @@ def _whatsapp_publish_scan(result):
             return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
 
         _whatsapp_mark_published(offer)
+        _whatsapp_diversidade_registrar(offer)
         sent += 1
         print(f"[AUTO WHATSAPP] Oferta {publication_key} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
 
