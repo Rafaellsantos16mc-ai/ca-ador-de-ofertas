@@ -6234,7 +6234,7 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
         print("[IMAGEM ESTILO WHATSAPP] Pillow não instalado; usando original.")
         return source
 
-    cache_key = "v26-whatsapp-square-white:" + source
+    cache_key = "v34-whatsapp-smart-fit:" + source
     cached = _WHATSAPP_IMAGE_ENHANCE_CACHE.get(cache_key)
     if cached:
         return cached
@@ -6285,17 +6285,45 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
             img = ImageEnhance.Sharpness(img).enhance(1.10)
             img = img.filter(ImageFilter.UnsharpMask(radius=0.7, percent=70, threshold=2))
 
-            # CANVAS APROVADO: quadrado branco, com margem. A foto inteira
-            # entra dentro dele proporcionalmente, sem nenhum corte.
+            # V34: encaixe inteligente. O problema anterior era a margem de 90px
+            # somada ao fundo inteiro da foto, fazendo o produto parecer pequeno.
+            # Em fotos com fundo branco, removemos apenas o excesso de borda branca
+            # antes de encaixar; em fotos reais/lifestyle não fazemos crop agressivo.
+            try:
+                from PIL import ImageChops
+                bg = Image.new("RGB", img.size, img.getpixel((0, 0)))
+                diff = ImageChops.difference(img, bg)
+                diff = ImageChops.autocontrast(diff)
+                bbox = diff.getbbox()
+                corner_samples = [
+                    img.getpixel((0, 0)),
+                    img.getpixel((img.width - 1, 0)),
+                    img.getpixel((0, img.height - 1)),
+                    img.getpixel((img.width - 1, img.height - 1)),
+                ]
+                near_white = sum(1 for px in corner_samples if min(px) >= 235 and max(px) >= 245) >= 3
+                if near_white and bbox:
+                    left, top, right, bottom = bbox
+                    pad = max(18, int(min(img.width, img.height) * 0.025))
+                    left = max(0, left - pad)
+                    top = max(0, top - pad)
+                    right = min(img.width, right + pad)
+                    bottom = min(img.height, bottom + pad)
+                    if right - left >= img.width * 0.45 and bottom - top >= img.height * 0.45:
+                        img = img.crop((left, top, right, bottom))
+                        print("[IMAGEM V34] excesso de fundo branco removido:", (left, top, right, bottom))
+            except Exception:
+                pass
+
             CANVAS = 1080
-            MARGIN = 90
+            MARGIN = 28
             max_w = CANVAS - (MARGIN * 2)
             max_h = CANVAS - (MARGIN * 2)
-            scale = min(max_w / img.width, max_h / img.height, 1.0)
-            if scale < 1.0:
-                fit = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.Resampling.LANCZOS)
-            else:
-                fit = img
+            scale = min(max_w / img.width, max_h / img.height)
+            fit = img.resize(
+                (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
 
             canvas = Image.new("RGB", (CANVAS, CANVAS), (255, 255, 255))
             x = (CANVAS - fit.width) // 2
@@ -6317,7 +6345,7 @@ def gerar_imagem_natural_whatsapp(image_url, offer_text=""):
         print(
             "[IMAGEM ESTILO WHATSAPP] OK:",
             f"{original_width}x{original_height} -> {CANVAS}x{CANVAS}",
-            "sem crop, com margem branca, fonte:", used_source[:120],
+            "encaixe inteligente, margem 28px, fonte:", used_source[:120],
         )
         return prepared_url
 
