@@ -3904,6 +3904,82 @@ def _search_arabic_perfumes(fast=False):
     print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios candidatos")
     return out
 
+_PUBLIC_GENERIC_CACHE = {}
+_PUBLIC_GENERIC_CACHE_LOCK = threading.Lock()
+
+
+def _search_public_real_item_ids(q, limit=18):
+    """Descobre IDs MLB reais diretamente na busca pública do Mercado Livre.
+
+    A busca por /products/search retorna muitos IDs de catálogo. Esses IDs
+    podem formar um pool grande, mas depois quase todos falham na conversão
+    para uma publicação real. Para categorias comuns, a fonte mais útil para
+    a etapa final é a página pública, que contém IDs MLB de anúncios.
+
+    Aqui NÃO consultamos /items ainda. Só descobrimos os IDs; o enriquecimento
+    existente (_fetch_product_fast) faz a leitura da publicação real uma única
+    vez por ID. Isso evita duplicar chamadas e mantém o fluxo atual.
+    """
+    query = str(q or '').strip()
+    if not query:
+        return []
+    lim = max(1, min(int(limit or 18), 30))
+    key = norm(query)
+    with _PUBLIC_GENERIC_CACHE_LOCK:
+        cached = _PUBLIC_GENERIC_CACHE.get(key)
+    if cached is not None:
+        return list(cached)[:lim]
+
+    url = 'https://lista.mercadolivre.com.br/' + quote(query.replace(' ', '-'))
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Cache-Control': 'no-cache',
+    }
+    page = ''
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if r.status_code == 429:
+                time.sleep(min(2.0, max(0.4, float(r.headers.get('Retry-After') or 0.8))))
+                continue
+            if r.status_code != 200:
+                print('[BUSCA PUBLICA REAL] HTTP', r.status_code, query)
+                break
+            page = r.text or ''
+            break
+        except Exception as exc:
+            print('[BUSCA PUBLICA REAL] erro', query, repr(exc))
+            if attempt == 0:
+                time.sleep(0.4)
+
+    ids = []
+    seen_ids = set()
+    if page:
+        patterns = (
+            r'(?:MLB[-_]?)(\d{6,})',
+            r'(?:wid|item_id|itemId|item-id)["\'=:\s]+(?:MLB[-_]?)(\d{6,})',
+            r'/MLB[-_]?(\d{6,})(?:[/?#"\'])',
+        )
+        for pattern in patterns:
+            for m in re.finditer(pattern, page, re.I):
+                iid = 'MLB' + m.group(1)
+                if iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+                ids.append(iid)
+                if len(ids) >= lim:
+                    break
+            if len(ids) >= lim:
+                break
+
+    with _PUBLIC_GENERIC_CACHE_LOCK:
+        _PUBLIC_GENERIC_CACHE[key] = list(ids)
+    print(f'[BUSCA PUBLICA REAL] {query} -> {len(ids)} ITEMs')
+    return ids[:lim]
+
+
 def _search_category(cat, fast=False):
     """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
     if cat == "🌙 Perfumes Árabes":
@@ -4130,6 +4206,44 @@ def _search_category(cat, fast=False):
         rank_base += SEARCH_RESULTS_PER_QUERY_FAST if fast else 50
         if len(out) >= (SEARCH_RAW_POOL_PER_CATEGORY if fast else 180):
             break
+
+    # CORREÇÃO V41: o /products/search forma um pool grande de CATÁLOGOS,
+    # mas a etapa de enriquecimento pode converter apenas poucos deles em
+    # publicações reais. Isso era exatamente o que fazia 184 candidatos
+    # virarem 4 ofertas.
+    #
+    # Complementamos a descoberta com a busca pública, que entrega IDs MLB
+    # de anúncios reais. Esses IDs entram como source_type=ITEM e seguem o
+    # mesmo enriquecimento/validação já existente. Não alteramos os filtros
+    # de coerência, preço ou imagem.
+    public_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(350, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    if len(out) < public_target:
+        public_queries = seed_queries[:8] if fast else seed_queries[:14]
+        public_added = 0
+        for q in public_queries:
+            try:
+                real_ids = _search_public_real_item_ids(q, limit=18 if fast else 22)
+            except Exception as exc:
+                print('[BUSCA PUBLICA COMPLEMENTAR]', cat, q, repr(exc))
+                continue
+            for iid in real_ids:
+                if any(str(row.get('id') or '') == iid for row, _ in out):
+                    continue
+                out.append(({
+                    'id': iid,
+                    'name': iid,
+                    'title': iid,
+                    'source_type': 'ITEM',
+                    'highlight_position': 10000 + public_added,
+                    'highlight_category_id': category_id,
+                    'public_query': q,
+                }, cat))
+                public_added += 1
+                if len(out) >= public_target:
+                    break
+            if len(out) >= public_target:
+                break
+        print(f'[BUSCA PUBLICA COMPLEMENTAR] {cat}: +{public_added} ITEMs reais | total bruto={len(out)}')
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
     return out
