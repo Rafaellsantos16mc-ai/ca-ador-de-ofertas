@@ -145,7 +145,7 @@ SEARCH_RESULTS_PER_QUERY_FAST = 50
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 8
+SEARCH_REAL_ITEM_QUERIES_ALL = 12
 SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
@@ -438,7 +438,20 @@ CATALOG = {'📱 Tecnologia': ['📱 Celulares',
             'óculos de sol',
             'mochila',
             'carteira',
-            'cinto'],
+            'cinto',
+            'camiseta oversized',
+            'camiseta básica premium',
+            'camisa de time original',
+            'camisa seleção brasileira',
+            'calça cargo masculina',
+            'calça jogger',
+            'jaqueta puffer',
+            'roupa feminina casual',
+            'vestido casual feminino',
+            'roupa plus size feminina',
+            'roupa plus size masculina',
+            'short fitness feminino',
+            'top fitness feminino'],
  '👟 Tênis & Calçados': ['🏃 Tênis de Corrida',
                         'tênis de corrida',
                         'Nike tênis corrida',
@@ -4152,15 +4165,24 @@ def _shoe_diverse_queries(fast=False):
             "Mizuno tênis corrida", "New Balance tênis corrida", "Olympikus tênis corrida",
             "Fila tênis corrida", "Puma tênis corrida", "Reebok tênis corrida",
             "Under Armour tênis corrida", "Skechers tênis corrida", "Hoka tênis corrida",
+            "Adidas Duramo", "Adidas Runfalcon", "Nike Revolution", "Nike Downshifter",
+            "Asics Gel Excite", "Mizuno Wave Rider", "Olympikus Corre Max", "Fila Racer",
+            "New Balance Fresh Foam", "Puma Flyer Runner", "Reebok Floatride",
         ],
         [
             "Nike tênis casual", "Adidas tênis casual", "Puma tênis casual",
             "Vans tênis casual", "Converse tênis casual", "New Balance 574",
             "Fila tênis casual", "Lacoste tênis casual", "Skechers tênis casual",
+            "Nike Court Vision", "Nike Dunk", "Adidas Grand Court", "Adidas Forum",
+            "Puma Suede", "Puma Caven", "New Balance 327", "New Balance 9060",
+            "Vans Old Skool", "Converse Chuck Taylor", "Reebok Club C", "Fila Disruptor",
         ],
         [
             "Nike tênis caminhada", "Adidas tênis caminhada", "Skechers caminhada",
             "New Balance caminhada", "Fila tênis confortável", "Puma tênis confortável",
+            "tênis confortável feminino", "tênis confortável masculino",
+            "tênis casual feminino", "tênis casual masculino", "tênis branco casual",
+            "tênis preto casual", "tênis plataforma feminino", "sapatênis masculino",
         ],
         [
             "Nike basquete", "Jordan tênis", "Nike LeBron", "Adidas Harden",
@@ -4181,17 +4203,25 @@ def _shoe_diverse_queries(fast=False):
             "Nike tênis feminino", "Adidas tênis feminino", "Puma tênis feminino",
             "Asics tênis feminino", "New Balance tênis feminino", "Mizuno tênis feminino",
             "Olympikus tênis feminino", "Fila tênis feminino", "Skechers tênis feminino",
+            "Reebok tênis feminino", "Under Armour tênis feminino", "Hoka tênis feminino",
+            "tênis feminino casual branco", "tênis feminino plataforma", "tênis feminino academia",
         ],
         [
             "Nike tênis masculino", "Adidas tênis masculino", "Puma tênis masculino",
             "Asics tênis masculino", "New Balance tênis masculino", "Mizuno tênis masculino",
             "Olympikus tênis masculino", "Fila tênis masculino", "Reebok tênis masculino",
-            "Skechers tênis masculino",
+            "Skechers tênis masculino", "Under Armour tênis masculino", "Hoka tênis masculino",
+            "tênis masculino casual branco", "tênis masculino academia", "tênis masculino caminhada",
         ],
         [
             "Nike Air Force 1", "Nike Air Max", "Adidas Superstar", "Adidas Ultraboost",
             "Puma Caven", "Asics Gel Nimbus", "Mizuno Wave", "New Balance 9060",
             "Olympikus Corre", "Fila Float", "Vans Old Skool", "Converse Chuck Taylor",
+        ],
+        [
+            "tênis infantil masculino", "tênis infantil feminino", "tênis para trabalho",
+            "tênis para ficar em pé", "tênis leve confortável", "tênis para viagem",
+            "tênis retrô casual", "tênis skate casual", "tênis minimalista",
         ],
     ]
 
@@ -4213,14 +4243,14 @@ def _shoe_diverse_queries(fast=False):
 
     # No modo geral também fazemos mais consultas: a rota anterior consultava
     # poucas marcas e podia produzir menos de 20 candidatos para toda a categoria.
-    limit = 30 if fast else 36
+    limit = 42 if fast else 70
     return merged[:limit]
 
 
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
-    per_query = 12 if fast else 16
+    per_query = 16 if fast else 22
     rows_by_query = []
 
     for q in queries:
@@ -5517,6 +5547,17 @@ def _title_matches_scan_category(category, title):
     if not n:
         return False
 
+    # Exclusões globais de produtos claramente fora do mix de ofertas.
+    # O anúncio do lubrificante Silispeed para esteira apareceu por engano.
+    global_excluded = (
+        "lubrificante de silicone", "silispeed", "silicone liquido para esteira",
+        "silicone líquido para esteira", "lubrificante para esteira",
+        "lubrificante de esteira", "oleo de silicone para esteira",
+        "óleo de silicone para esteira",
+    )
+    if any(term in n for term in global_excluded):
+        return False
+
     # Bloqueios universais para evitar cruzamento óbvio entre categorias.
     fragrance = any(x in n for x in (
         "perfume", "parfum", "eau de", "edt", "edp", "fragrance",
@@ -6050,6 +6091,31 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers = final_offers
 
+    # Exclusão final global: não deixar passar lubrificantes de esteira.
+    offers = [o for o in offers if not any(term in norm(o.get("title") or "") for term in (
+        "lubrificante de silicone", "silispeed", "silicone liquido para esteira",
+        "silicone líquido para esteira", "lubrificante para esteira",
+        "lubrificante de esteira", "oleo de silicone para esteira", "óleo de silicone para esteira",
+    ))]
+
+    # Academia: limita bicicletas ergométricas/spinning a no máximo 1 oferta,
+    # para não ocupar espaço que deve ser distribuído por outras categorias.
+    fitness_bikes = 0
+    balanced_offers = []
+    for offer in offers:
+        title_norm = norm(offer.get("title") or "")
+        cat_name = offer.get("category_name") or ""
+        is_bike = any(term in title_norm for term in (
+            "bicicleta ergometrica", "bicicleta ergométrica", "bike spinning",
+            "bicicleta spinning", "bicicleta de spinning", "bicicleta indoor",
+        ))
+        if cat_name == "💪 Academia & Fitness" and is_bike:
+            if fitness_bikes >= 1:
+                continue
+            fitness_bikes += 1
+        balanced_offers.append(offer)
+    offers = balanced_offers
+
     def _display_demand_key(o):
         cat = o.get("category_name") or ""
         # O desconto real da publicação passa a ser um dos principais
@@ -6335,7 +6401,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V47: tênis por marcas/modelos/subnichos com busca ITEM real + catálogo; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V48: tênis ampliados por marca/modelo/ocasião; moda expandida; lubrificantes de esteira excluídos; máximo 1 bicicleta ergométrica; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
