@@ -6164,15 +6164,26 @@ def ad_text(o, affiliate=""):
         "",
     ]
 
-    # Preço antigo no estilo do anúncio de referência: ~De R$222,83~
-    # Só mostramos o valor riscado quando ele realmente existe.
+    # Em queda de preço, o preço antigo deve ser o último preço publicado
+    # anteriormente no grupo. Nas ofertas normais, usamos o preço original
+    # do anúncio, quando disponível.
+    previous_price = o.get("_price_drop_from")
+    try:
+        previous_price = float(previous_price) if previous_price not in (None, "") else None
+        current_price = float(o.get("price") or 0)
+    except (TypeError, ValueError):
+        previous_price = None
+        current_price = 0.0
+    is_price_drop = previous_price is not None and current_price > 0 and current_price < previous_price - 0.01
+
     original = o.get("original_price")
     try:
         original_value = float(original) if original not in (None, "") else 0.0
     except (TypeError, ValueError):
         original_value = 0.0
 
-    if original_value > 0:
+    # Evita mostrar dois preços antigos diferentes no anúncio de queda.
+    if not is_price_drop and original_value > 0:
         lines.append(f"~De {brl(original_value)}~")
 
     if o.get("cupom"):
@@ -6180,7 +6191,10 @@ def ad_text(o, affiliate=""):
         label = c.get("code") or c.get("label") or "Cupom disponível"
         lines.append(f"🎟️ Cupom: *{label}*")
 
-    # Preço atual separado do preço antigo para ficar visualmente limpo.
+    # Na queda, exibe explicitamente o último preço enviado e o preço atual.
+    if is_price_drop:
+        lines[0] = "🚨 *VOLTOU MAIS BARATO! PREÇO REDUZIDO* 🚨"
+        lines.append(f"~Antes: {brl(previous_price)}~")
     lines.append(f"Por *{brl(o['price'])}*")
 
     link = str(affiliate or "").strip()
@@ -7054,18 +7068,27 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
-def _whatsapp_should_publish(product_id, price):
-    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
+def _whatsapp_previous_price(product_id):
+    """Retorna o último preço publicado para o anúncio, se já existir."""
     conn = get_db()
-    row = conn.execute(
-        "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
-        (str(product_id),),
-    ).fetchone()
-    conn.close()
-    if not row:
+    try:
+        row = conn.execute(
+            "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
+            (str(product_id),),
+        ).fetchone()
+        return float(row["last_price"]) if row and row["last_price"] is not None else None
+    except (TypeError, ValueError, sqlite3.Error):
+        return None
+    finally:
+        conn.close()
+
+
+def _whatsapp_should_publish(product_id, price):
+    """Novo produto publica; repetição só é permitida quando o preço caiu."""
+    old_price = _whatsapp_previous_price(product_id)
+    if old_price is None:
         return True
     try:
-        old_price = float(row["last_price"])
         new_price = float(price)
     except (TypeError, ValueError):
         return False
@@ -7139,9 +7162,16 @@ def _whatsapp_publish_scan(result):
         if price <= 0:
             continue
 
-        if not _whatsapp_should_publish(product_id, price):
+        previous_price = _whatsapp_previous_price(product_id)
+        if previous_price is not None and price >= previous_price - 0.01:
+            # Não repete a mesma oferta no mesmo preço nem se o preço subir.
             skipped += 1
             continue
+        if previous_price is not None:
+            # O gerador de anúncio usa estes campos para avisar que voltou
+            # mais barato e mostrar a comparação com o preço anteriormente enviado.
+            offer["_price_drop_from"] = previous_price
+            offer["_price_drop_amount"] = round(previous_price - price, 2)
 
         # ========================================================
         # LINK AFILIADO AUTOMÁTICO
