@@ -145,7 +145,7 @@ SEARCH_RESULTS_PER_QUERY_FAST = 50
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 18
+SEARCH_REAL_ITEM_QUERIES_ALL = 28
 SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
@@ -1064,11 +1064,16 @@ def is_requested_product(title, query, category=None):
              "camisa social manga longa", "social manga longa", "social de manga longa"]
         ),
         "👟 Tênis & Calçados": (
-            ["tênis", "tenis", "chuteira", "calçado", "nike", "adidas", "puma", "asics", "new balance", "mizuno",
-             "olympikus", "fila", "reebok", "vans", "converse", "under armour", "skechers", "oakley", "lacoste",
-             "corrida", "academia", "casual", "futebol", "basquete", "trilha", "adventure", "skate", "premium",
-             "chinelo", "slide"],
-            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha"]
+            ["tênis", "tenis", "calçado", "calcado", "sapato", "sapatênis", "sapatenis", "mocassim",
+             "bota", "coturno", "sandália", "sandalia", "chinelo", "slide", "crocs", "nike", "adidas",
+             "puma", "asics", "new balance", "mizuno", "olympikus", "fila", "reebok", "vans", "converse",
+             "under armour", "skechers", "oakley", "lacoste", "brooks", "saucony", "hoka", "salomon",
+             "columbia", "timberland", "democrata", "ferracini", "pegada", "freeway", "west coast",
+             "kildare", "moleca", "vizzano", "beira rio", "modare", "anacapri", "arezzo", "schutz",
+             "bottero", "dakota", "via marte", "ramarim", "usaflex", "corrida", "academia", "casual",
+             "basquete", "trilha", "adventure", "skate", "premium"],
+            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
+             "chuteira", "trava society", "trava campo", "bola de futebol", "bola de basquete", "bola de vôlei"]
         ),
         "🌙 Perfumes Árabes": (
             list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
@@ -4246,6 +4251,49 @@ def _shoe_diverse_queries(fast=False):
             "tênis para ficar em pé", "tênis leve confortável", "tênis para viagem",
             "tênis retrô casual", "tênis skate casual", "tênis minimalista",
         ],
+        [
+            # Mais marcas esportivas e modelos específicos
+            "Brooks tênis corrida", "Saucony tênis corrida", "Asics Gel Kayano",
+            "Asics Gel Nimbus", "Asics Gel Pulse", "Mizuno Wave Rider",
+            "Mizuno Wave Prophecy", "Nike Pegasus", "Nike Vomero",
+            "Adidas Adizero", "Adidas Supernova", "New Balance 1080",
+            "New Balance 880", "Hoka Clifton", "Hoka Bondi", "Skechers Go Walk",
+        ],
+        [
+            # Modelos urbanos/casuais conhecidos
+            "Nike Air Max feminino", "Nike Air Max masculino", "Nike Air Force 1 branco",
+            "Adidas Samba", "Adidas Gazelle", "Adidas Campus 00s", "Adidas Stan Smith",
+            "Puma Palermo", "Puma Suede Classic", "Puma RS-X", "Reebok Classic Leather",
+            "Reebok Nano", "Fila Racer Curve", "Fila Float Maxxi", "New Balance 530",
+            "New Balance 550", "New Balance 2002R", "Converse All Star cano alto",
+        ],
+        [
+            # Calçados casuais e sapatos além de tênis esportivo
+            "sapato casual masculino", "sapato casual feminino", "sapatênis masculino couro",
+            "sapatênis feminino", "mocassim masculino", "mocassim feminino",
+            "bota casual masculina", "bota casual feminina", "coturno casual",
+            "sapato confortável para trabalho", "sapato feminino confortável",
+            "sapato masculino confortável", "sandália feminina confortável",
+            "sandália masculina casual", "Crocs clog", "Melissa tênis feminino",
+        ],
+        [
+            # Marcas brasileiras e calçados de uso diário
+            "Democrata sapato casual", "Ferracini sapato masculino", "Pegada sapato masculino",
+            "Freeway sapato masculino", "West Coast bota masculina", "Kildare sapato masculino",
+            "Moleca tênis feminino", "Vizzano tênis feminino", "Beira Rio tênis feminino",
+            "Modare tênis feminino", "Anacapri tênis feminino", "Arezzo tênis casual",
+            "Schutz tênis feminino", "Bottero bota feminina", "Dakota tênis feminino",
+            "Via Marte tênis feminino", "Ramarim tênis feminino", "Usaflex sapato confortável",
+        ],
+        [
+            # Variação por uso, cor e público para reduzir repetição de marcas
+            "tênis branco feminino casual", "tênis preto feminino casual",
+            "tênis branco masculino casual", "tênis preto masculino casual",
+            "tênis plataforma feminino casual", "tênis retrô masculino",
+            "tênis couro casual masculino", "tênis casual couro feminino",
+            "tênis para caminhada longa", "tênis para ficar muitas horas em pé",
+            "tênis leve para academia", "tênis confortável para viagem",
+        ],
     ]
 
     # Intercala uma consulta de cada bloco para que o modo "todas" não fique
@@ -4266,23 +4314,33 @@ def _shoe_diverse_queries(fast=False):
 
     # No modo geral também fazemos mais consultas: a rota anterior consultava
     # poucas marcas e podia produzir menos de 20 candidatos para toda a categoria.
-    limit = 42 if fast else 70
+    limit = 56 if fast else 100
     return merged[:limit]
 
 
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
-    per_query = 22 if fast else 28
+    per_query = 24 if fast else 30
     rows_by_query = []
 
-    for q in queries:
+    # Busca várias consultas em paralelo, mantendo a ordem original para que
+    # a montagem round-robin continue priorizando diversidade entre marcas.
+    def _run_shoe_query(q):
         try:
-            rows = _search_shoes_real_listings(q, limit=per_query)
+            return _search_shoes_real_listings(q, limit=per_query)
         except Exception as exc:
             print("[TENIS BUSCA]", q, repr(exc))
-            rows = []
-        rows_by_query.append((q, rows))
+            return []
+
+    with _ThreadPoolExecutor(max_workers=min(5, max(1, len(queries)))) as pool:
+        future_by_query = {q: pool.submit(_run_shoe_query, q) for q in queries}
+        for q in queries:
+            try:
+                rows_by_query.append((q, future_by_query[q].result()))
+            except Exception as exc:
+                print("[TENIS BUSCA RESULTADO]", q, repr(exc))
+                rows_by_query.append((q, []))
 
     # Round-robin entre consultas: primeiro entra 1 produto de cada marca,
     # depois o segundo de cada marca. Assim Nike/Puma/Fila não ocupam toda a
