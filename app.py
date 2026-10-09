@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V66_BUSCA_DIVERSIFICADA_DIAGNOSTICO"
+VERSAO_CACADOR = "V67_AFILIADO_FALLBACK_E_LIMITES"
 import random
 import os
 import sqlite3
@@ -8373,6 +8373,57 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
+        is_url_not_allowed = (
+            r.status_code == 400
+            and ("URL not allowed in affiliates program" in detail
+                 or '"error_code":111' in detail
+                 or '"error_code": 111' in detail)
+        )
+        if is_url_not_allowed:
+            print("[AFILIADO FALLBACK] URL recusada; procurando publicação alternativa compatível.")
+            alternative_url = resolve_by_search()
+            if alternative_url and alternative_url.rstrip("/") != product_url.rstrip("/"):
+                try:
+                    alt_page = requests.get(
+                        alternative_url,
+                        headers={"Cookie": cookie_header, "User-Agent": ua},
+                        timeout=ML_AFFILIATE_TIMEOUT,
+                        allow_redirects=True,
+                    )
+                    alt_csrf = csrf
+                    if alt_page.ok:
+                        m = re.search(r'csrfToken[^\"]*"([^\"]+)"', alt_page.text)
+                        if not m:
+                            m = re.search(r'name="csrf-token"\s+content="([^\"]+)"', alt_page.text)
+                        if m:
+                            alt_csrf = m.group(1)
+                    alt_host = (urlparse(alternative_url).netloc or "").lower()
+                    alt_origin = ("https://www.mercadolivre.com.br"
+                                  if "mercadolivre.com.br" in alt_host and not alt_host.startswith("produto.")
+                                  else "https://produto.mercadolivre.com.br")
+                    alt_headers = dict(headers)
+                    alt_headers.update({"X-CSRF-Token": alt_csrf, "Referer": alternative_url, "Origin": alt_origin})
+                    alt_response = requests.post(
+                        ML_AFFILIATE_URL,
+                        headers=alt_headers,
+                        json={"url": alternative_url.rstrip("/"), "tag": ML_AFFILIATE_TAG},
+                        timeout=ML_AFFILIATE_TIMEOUT,
+                        allow_redirects=True,
+                    )
+                    if alt_response.ok:
+                        alt_data = alt_response.json()
+                        alt_short_url = str(alt_data.get("short_url") or "").strip()
+                        if alt_short_url:
+                            print("[AFILIADO FALLBACK] publicação alternativa aceita.")
+                            return alt_short_url
+                        print("[AFILIADO FALLBACK] resposta alternativa sem short_url.")
+                    else:
+                        print("[AFILIADO FALLBACK] alternativa recusada: HTTP", alt_response.status_code,
+                              alt_response.text[:400].replace("\n", " "))
+                except Exception as alt_exc:
+                    print("[AFILIADO FALLBACK] erro na alternativa:", repr(alt_exc))
+            else:
+                print("[AFILIADO FALLBACK] nenhuma publicação alternativa compatível encontrada.")
         raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}")
 
     try:
