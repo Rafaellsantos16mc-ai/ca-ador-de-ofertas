@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V69_SCHEDULER_UNICO_DIAGNOSTICO"
+VERSAO_CACADOR = "V70_WHATSAPP_STARTUP_CORRIGIDO"
 import random
 import os
 import sqlite3
@@ -5200,11 +5200,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             cat = fmap[fut]
             try:
                 raw_by_cat[cat] = fut.result() or []
-                print(f"[V69 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
+                print(f"[V70 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
             except Exception as e:
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
-                print(f"[V69 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
+                print(f"[V70 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -5315,7 +5315,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Mantém exatamente o ranking por posição dentro de cada categoria.
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
-    print(f"[V69 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
+    print(f"[V70 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
     fetched = []
     enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
@@ -5963,7 +5963,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "ofertas": [o],
         })
 
-    print(f"[V69 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
+    print(f"[V70 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
     values = [o["price"] for o in flat if o.get("price") is not None]
     totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
@@ -7147,14 +7147,20 @@ def _whatsapp_publish_scan(result):
 
         product_id = str(offer.get("product_id") or "").strip()
         if not product_id:
+            skipped += 1
+            print("[AUTO WHATSAPP] Oferta ignorada: product_id vazio.")
             continue
 
         price = offer.get("price")
         try:
             price = float(price)
         except (TypeError, ValueError):
+            skipped += 1
+            print(f"[AUTO WHATSAPP] {product_id}: oferta ignorada por preço inválido ({price!r}).")
             continue
         if price <= 0:
+            skipped += 1
+            print(f"[AUTO WHATSAPP] {product_id}: oferta ignorada por preço não positivo ({price!r}).")
             continue
 
         previous_price = _whatsapp_previous_price(product_id)
@@ -7358,8 +7364,7 @@ def api_whatsapp_automacao():
     })
 
 
-# A thread começa depois que o módulo terminou de carregar as rotas e o banco.
-iniciar_automacao_whatsapp()
+# A inicialização do agendador foi movida para o fim do arquivo, após todas as funções.
 
 # ============================================================
 # JOBS DE CAÇA EM SEGUNDO PLANO
@@ -9016,6 +9021,11 @@ def teste_user_items():
             "ok": False,
             "erro": repr(exc),
         }), 500
+
+# Inicia a automação somente depois que TODO o módulo foi carregado.
+# Isso evita a primeira rodada correr antes de _affiliate_csrf_and_link e
+# outras funções auxiliares estarem definidas durante o import do Gunicorn.
+iniciar_automacao_whatsapp()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
