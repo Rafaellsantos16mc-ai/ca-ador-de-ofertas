@@ -6971,8 +6971,10 @@ def executar_caca_automatica():
         publish = _whatsapp_publish_scan(result)
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
-            f"ofertas={len(result.get('ofertas', []))}, "
-            f"enviadas={publish.get('enviadas', 0)}"
+            f"ofertas={len((result or {}).get('ofertas', []))}, "
+            f"enviadas={publish.get('enviadas', 0)}, "
+            f"ignoradas={publish.get('ignoradas', 0)}, "
+            f"erro={publish.get('erro') or 'nenhum'}"
         )
         return publish
     except Exception as exc:
@@ -7030,8 +7032,7 @@ def api_whatsapp_automacao():
     })
 
 
-# A thread começa depois que o módulo terminou de carregar as rotas e o banco.
-iniciar_automacao_whatsapp()
+# A automação é iniciada no final do arquivo, após todas as funções serem definidas.
 
 # ============================================================
 # JOBS DE CAÇA EM SEGUNDO PLANO
@@ -8540,6 +8541,14 @@ def teste_user_items():
             "ok": False,
             "erro": repr(exc),
         }), 500
+
+# Inicia a thread somente depois de todas as funções e rotas terem sido carregadas.
+# Em Gunicorn, cada worker pode ter sua própria thread; o lock de rodada impede
+# execuções simultâneas dentro do processo, mas produção ideal usa worker dedicado.
+try:
+    iniciar_automacao_whatsapp()
+except Exception as _startup_exc:
+    print("[AUTO WHATSAPP] Falha ao iniciar automação:", repr(_startup_exc))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
