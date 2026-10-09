@@ -135,9 +135,9 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 45
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 80
 SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
-SEARCH_RAW_POOL_PER_CATEGORY = 120
+SEARCH_RAW_POOL_PER_CATEGORY = 180
 SEARCH_SEEDS_FAST_PER_CATEGORY = 10
 SEARCH_RESULTS_PER_QUERY_FAST = 30
 # V42: fonte primária de anúncios reais para categorias comuns.
@@ -145,7 +145,7 @@ SEARCH_RESULTS_PER_QUERY_FAST = 30
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 5
+SEARCH_REAL_ITEM_QUERIES_ALL = 12
 SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 30
 
 # ============================================================
@@ -2257,7 +2257,7 @@ def search_products_direct(q, limit=40):
     return results
 
 
-PUBLIC_SEARCH_FILTERS = "_OrderId_TRADES_SHIPPING_COST_FREE_ITEM_CONDITION_NEW_SHIPPING_ORIGIN_LOCAL"
+PUBLIC_SEARCH_FILTERS = ""  # sem obrigar frete grátis, produto novo ou origem local
 
 def public_search_url(query):
     """Monta o link público equivalente ao teste enviado pelo usuário.
@@ -2265,7 +2265,7 @@ def public_search_url(query):
     O app continua usando a API do Mercado Livre para coletar os anúncios;
     este link serve como referência da busca pública/ordenação proposta.
     """
-    clean_query = f"{str(query or '').strip()} -decant".strip()
+    clean_query = str(query or "").strip()  # não restringe os resultados da busca por filtros extras
     encoded = quote(clean_query)
     return f"https://lista.mercadolivre.com.br/{encoded}{PUBLIC_SEARCH_FILTERS}_NoIndex_True"
 
@@ -4165,7 +4165,7 @@ def _search_category(cat, fast=False):
                 real_added += 1
                 if len(out) >= real_target:
                     break
-        print(f"[V59 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+        print(f"[V61 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
@@ -4977,9 +4977,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
                     or ""
                 ).strip()
 
-    if not image:
-        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
-        return None
+    # Não descartar perfume válido apenas porque a API omitiu a foto.
 
     seller = row.get("seller") or {}
     seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
@@ -5224,7 +5222,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
         print(f"[PERFUMES CANDIDATOS BRUTOS] {len(perfume_raw)}")
         seen_perfume_items = set()
-        direct_limit = 45 if FAST_ALL_CATEGORIES and len(categories) > 1 else 120
+        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 180
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5244,7 +5242,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         print(f"[ARABES CANDIDATOS BRUTOS] {len(arabic_raw)}")
         seen_arabic_items = set()
-        direct_limit = 45 if FAST_ALL_CATEGORIES and len(categories) > 1 else 120
+        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 180
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5425,10 +5423,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 print(f"[COERÊNCIA] descartado fora do nicho: {cat} -> {title[:120]}")
                 continue
 
+            # Imagem opcional: não elimina um subnicho inteiro quando a API omite a foto.
             image = _resolve_offer_image(p, item, base, item.get("item_id"))
-            if not image:
-                print("[IMAGEM] oferta descartada sem imagem:", pid, title[:80])
-                continue
 
             offers.append({
                 "product_id": pid,
@@ -5994,7 +5990,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V59: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V63: busca ampliada e filtros de frete grátis/produto novo/origem local removidos; imagens opcionais; rodízio de categorias no WhatsApp; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -7105,6 +7101,25 @@ def _whatsapp_publish_scan(result):
     que ainda não foram enviados permanecem disponíveis para a próxima rodada.
     """
     offers = list((result or {}).get("ofertas") or [])
+    # Rodízio entre categorias: evita que as 3 vagas da rodada sejam ocupadas
+    # por produtos do mesmo nicho quando há ofertas de outras categorias.
+    by_category = {}
+    for offer in offers:
+        category = str(offer.get("category_name") or "Outros")
+        by_category.setdefault(category, []).append(offer)
+    diversified = []
+    category_order = list(by_category)
+    random.shuffle(category_order)
+    while category_order:
+        remaining_categories = []
+        for category in category_order:
+            bucket = by_category.get(category) or []
+            if bucket:
+                diversified.append(bucket.pop(0))
+            if bucket:
+                remaining_categories.append(category)
+        category_order = remaining_categories
+    offers = diversified
     sent = 0
     skipped = 0
 
@@ -7207,7 +7222,7 @@ def executar_caca_automatica():
             print(
                 "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
                 "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
-                "[BUSCA ITEMS API], [V59 API ITEMS] e os retornos de product_items."
+                "[BUSCA ITEMS API], [V61 API ITEMS] e os retornos de product_items."
             )
         publish = _whatsapp_publish_scan(result)
         print(
@@ -7233,13 +7248,31 @@ def iniciar_automacao_whatsapp():
     def worker():
         print(
             f"[AUTO WHATSAPP] Automação contínua ativa 24/7; "
-            f"intervalo={AUTO_WHATSAPP_INTERVAL}s, até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
+            f"intervalo-alvo={AUTO_WHATSAPP_INTERVAL}s ({AUTO_WHATSAPP_INTERVAL // 60} min), "
+            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
             f"fuso de referência={AUTO_WHATSAPP_TZ}. Sem horário de início/parada."
         )
         while True:
+            rodada_inicio = time.monotonic()
             try:
-                executar_caca_automatica()
-                time.sleep(AUTO_WHATSAPP_INTERVAL)
+                resultado = executar_caca_automatica() or {}
+                duracao = max(0.0, time.monotonic() - rodada_inicio)
+                # O intervalo é medido entre INÍCIOS das rodadas, não após
+                # terminar a busca. Assim uma rodada de 7 minutos não vira
+                # um ciclo de 22 minutos. Rodadas longas não se sobrepõem.
+                espera = max(0.0, AUTO_WHATSAPP_INTERVAL - duracao)
+                print(
+                    f"[AUTO WHATSAPP] Ciclo: duração={duracao:.1f}s; "
+                    f"próxima rodada em {espera:.1f}s; "
+                    f"enviadas nesta rodada={resultado.get('enviadas', 0)}."
+                )
+                if espera > 0:
+                    time.sleep(espera)
+                else:
+                    print(
+                        "[AUTO WHATSAPP] A rodada demorou mais que o intervalo; "
+                        "a próxima começa agora, sem sobrepor a anterior."
+                    )
             except Exception as exc:
                 print("[AUTO WHATSAPP] Erro no agendador:", repr(exc))
                 time.sleep(30)
