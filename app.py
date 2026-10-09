@@ -7937,23 +7937,42 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
     )
     cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
     csrf = cookies.get("_csrf", "")
+    page_status = None
+    page_final_url = ""
+    page_csrf_found = False
 
-    # O token da página pode ser mais atual que o cookie.
+    # Diagnóstico seguro: nunca registra valores de cookies.
     try:
         page = requests.get(
             product_url,
-            headers={"Cookie": cookie_header, "User-Agent": ua},
+            headers={
+                "Cookie": cookie_header,
+                "User-Agent": ua,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
             timeout=ML_AFFILIATE_TIMEOUT,
             allow_redirects=True,
         )
+        page_status = page.status_code
+        page_final_url = str(page.url or "")
         if page.ok:
-            m = re.search(r'csrfToken[^\"]*"([^"]+)"', page.text)
+            m = re.search(r'csrfToken[^\\"]*"([^"]+)"', page.text)
             if not m:
-                m = re.search(r'name="csrf-token"\s+content="([^"]+)"', page.text)
+                m = re.search(r'name="csrf-token"\\s+content="([^"]+)"', page.text)
             if m:
                 csrf = m.group(1)
-    except Exception:
-        pass
+                page_csrf_found = True
+    except requests.RequestException as exc:
+        print("[AFILIADO DIAGNOSTICO] GET produto falhou:", type(exc).__name__)
+
+    print(
+        "[AFILIADO DIAGNOSTICO] cookies_presentes=", bool(cookies),
+        "cookie_names=", ",".join(sorted(cookies.keys())),
+        "csrf_cookie=", bool(cookies.get("_csrf")),
+        "page_status=", page_status,
+        "page_redirect_login=", bool(re.search(r"/jms/mlb/lgz/login|loginType=explicit", page_final_url, re.I)),
+        "page_csrf_found=", page_csrf_found,
+    )
 
     try:
         parsed_product = urlparse(product_url)
@@ -7986,7 +8005,21 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
     )
 
     if not r.ok:
-        detail = r.text[:800].replace("\n", " ").strip()
+        detail = r.text[:800].replace("\\n", " ").strip()
+        login_redirect = bool(
+            re.search(r"/jms/mlb/lgz/login|loginType=explicit", str(r.url or "") + " " + detail, re.I)
+        )
+        if r.status_code == 401 or login_redirect:
+            safe_diag = (
+                f" Diagnóstico seguro: cookies_configurados={bool(cookies)};"
+                f" nomes_cookies={','.join(sorted(cookies.keys()))};"
+                f" csrf_cookie={bool(cookies.get('_csrf'))};"
+                f" página_produto_http={page_status};"
+                f" página_redirecionou_login={bool(re.search(r'/jms/mlb/lgz/login|loginType=explicit', page_final_url, re.I))};"
+                f" csrf_extraído_da_página={page_csrf_found}."
+                " Valores dos cookies não foram registrados."
+            )
+            raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}{safe_diag}")
         raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}")
 
     try:
