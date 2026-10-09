@@ -135,18 +135,18 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 160
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 45
 SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
-SEARCH_RAW_POOL_PER_CATEGORY = 350
-SEARCH_SEEDS_FAST_PER_CATEGORY = 30
-SEARCH_RESULTS_PER_QUERY_FAST = 50
+SEARCH_RAW_POOL_PER_CATEGORY = 120
+SEARCH_SEEDS_FAST_PER_CATEGORY = 10
+SEARCH_RESULTS_PER_QUERY_FAST = 30
 # V42: fonte primária de anúncios reais para categorias comuns.
 # Em uma categoria isolada, consultamos uma amostra ampla dos micro-nichos
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 28
-SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
+SEARCH_REAL_ITEM_QUERIES_ALL = 5
+SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 30
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -3973,7 +3973,7 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:60]
+        queries = queries[:12]
     for q in queries:
         try:
             rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
@@ -4387,6 +4387,10 @@ def _shoe_diverse_queries(fast=False):
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
+    # Buscar todas as categorias não pode disparar dezenas de consultas só de
+    # calçados. A busca individual continua usando a lista ampla completa.
+    if fast:
+        queries = queries[:12]
     per_query = 24 if fast else 30
     rows_by_query = []
 
@@ -4660,7 +4664,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Mantemos 40 consultas no modo rápido, mas agora as primeiras
             # consultas são majoritariamente importadas e masculinas.
-            perfume_queries = perfume_queries[:90]
+            perfume_queries = perfume_queries[:12]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -4787,7 +4791,7 @@ def _search_category(cat, fast=False):
             if len(out) >= real_target:
                 break
 
-    print(f"[V56 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+    print(f"[V57 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
 
     # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
     # a busca pública; se devolver 403, não impede a primeira fonte.
@@ -4811,7 +4815,7 @@ def _search_category(cat, fast=False):
                 real_added += 1
                 if len(out) >= real_target:
                     break
-        print(f"[V44 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+        print(f"[V57 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
@@ -5839,7 +5843,7 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V56 prioriza IDs ITEM reais descobertos na página pública
+    Para categorias comuns, a V57 prioriza IDs ITEM reais descobertos na página pública
     e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
@@ -8011,6 +8015,36 @@ def run_caca_job(job_id, category=None):
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
 
+
+
+def run_manual_search_job(job_id, q):
+    """Executa busca manual em segundo plano e devolve erro explícito à interface."""
+    try:
+        update_job(job_id, status="running", progress=5, message="🔎 Preparando busca manual...")
+        category, category_queries = _manual_queries_for_category(q)
+        queries = category_queries if category and category_queries else [q]
+        update_job(
+            job_id, progress=15,
+            message=f"🛒 Consultando {category or q} ({len(queries)} termos)..."
+        )
+        result = scan_queries(queries, apply_coupons=True)
+        result.setdefault("stats", {})["busca_manual"] = category or q
+        result["stats"]["nichos_pesquisados"] = len(queries)
+        update_job(job_id, progress=96, message="📊 Organizando ofertas...")
+        offers_count = result.get("stats", {}).get("ofertas", 0)
+        update_job(
+            job_id, status="done", progress=100,
+            message=f"✅ Busca concluída: {offers_count} ofertas.",
+            result=json_safe(result)
+        )
+    except Exception as exc:
+        print("[ERRO BUSCA MANUAL]", repr(exc))
+        update_job(
+            job_id, status="error", progress=100,
+            message="❌ A busca manual falhou.",
+            error=str(exc)
+        )
+
 # ============================================================
 # RESOLUÇÃO DA BUSCA MANUAL POR CATEGORIA
 # ============================================================
@@ -8108,6 +8142,20 @@ def api_buscar():
     resultado["stats"]["nichos_pesquisados"] = len(queries)
 
     return jsonify(json_safe(resultado))
+
+@app.route("/api/buscar/job")
+def api_buscar_job():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"erro": "Informe uma busca."}), 400
+    job_id = create_job()
+    thread = threading.Thread(
+        target=run_manual_search_job, args=(job_id, q),
+        name="manual-search-" + job_id[:8], daemon=True
+    )
+    thread.start()
+    return jsonify({"ok": True, "job_id": job_id, "status": "queued"})
+
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -9107,10 +9155,20 @@ async function acompanharCaca(jobId){
  }
 }
 async function buscar(){
- const q=document.getElementById('q').value.trim(); if(!q)return;
- document.getElementById('status').textContent='🔄 Procurando...';
- const r=await fetch('/api/buscar?q='+encodeURIComponent(q)); const data=await r.json(); render(data);
- document.getElementById('status').textContent='✅ Busca atualizada agora.';
+ const q=document.getElementById('q').value.trim();
+ if(!q)return;
+ const status=document.getElementById('status');
+ status.textContent='🔄 Busca iniciada. Consultando o Mercado Livre...';
+ document.getElementById('results').innerHTML='<p>🔎 Buscando ofertas em segundo plano. O resultado aparecerá aqui quando terminar.</p>';
+ if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
+ try{
+  const r=await fetch('/api/buscar/job?q='+encodeURIComponent(q),{cache:'no-store'});
+  const start=await r.json();
+  if(!r.ok || !start.job_id) throw new Error(start.erro||'Não foi possível iniciar a busca.');
+  acompanharCaca(start.job_id);
+ }catch(e){
+  status.textContent='❌ Erro ao iniciar a busca: '+e.message;
+ }
 }
 function render(data){
  document.getElementById('stats').innerHTML=Object.entries(data.stats||{}).map(([k,v])=>`<div class="stat">${k}<b>${v}</b></div>`).join('');
