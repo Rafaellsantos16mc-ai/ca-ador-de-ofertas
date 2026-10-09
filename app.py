@@ -1256,20 +1256,63 @@ def access_token():
         return t["access_token"]
     return refresh() or t.get("access_token")
 
+# Limitador GLOBAL das chamadas à API do Mercado Livre.
+# As buscas de categorias podem rodar em paralelo; sem este bloqueio, várias
+# threads disparam requisições simultâneas e provocam HTTP 429.
+_ML_API_REQUEST_LOCK = threading.RLock()
+_ML_API_LAST_REQUEST_AT = 0.0
+_ML_API_MIN_INTERVAL = 0.35
+_ML_API_429_COOLDOWN = 0.0
+
+
 def ml_get(path, params=None):
+    """GET autenticado com espaçamento global e retentativa controlada no 429."""
+    global _ML_API_LAST_REQUEST_AT, _ML_API_429_COOLDOWN
     token = access_token()
     if not token:
         return {}, 401, {}
     url = path if path.startswith("http") else ML_API + path
-    try:
-        r = requests.get(url, headers={"Authorization":f"Bearer {token}","Accept":"application/json"}, params=params, timeout=30)
-        try:
-            data = r.json()
-        except Exception:
-            data = {"message": r.text}
-        return data, r.status_code, dict(r.headers)
-    except requests.RequestException as e:
-        return {"error":str(e)}, 500, {}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    # Mantém uma única fila para todas as categorias, inclusive quando os
+    # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
+    with _ML_API_REQUEST_LOCK:
+        for attempt in range(4):
+            now = time.monotonic()
+            wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
+                       _ML_API_429_COOLDOWN - now, 0.0)
+            if wait > 0:
+                time.sleep(wait)
+            _ML_API_LAST_REQUEST_AT = time.monotonic()
+            try:
+                r = requests.get(url, headers=headers, params=params, timeout=30)
+            except requests.RequestException as exc:
+                return {"error": str(exc)}, 500, {}
+
+            response_headers = dict(r.headers)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"message": r.text[:2000]}
+
+            if r.status_code != 429:
+                _ML_API_429_COOLDOWN = 0.0
+                return data, r.status_code, response_headers
+
+            # Honra Retry-After quando válido. Se ausente/inválido, usa espera
+            # exponencial crescente e partilhada por todas as threads.
+            retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
+            try:
+                delay = float(retry_after) if retry_after is not None else (1.5 * (2 ** attempt))
+            except (TypeError, ValueError):
+                delay = 1.5 * (2 ** attempt)
+            delay = max(1.0, min(delay, 20.0))
+            _ML_API_429_COOLDOWN = time.monotonic() + delay
+            print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/4; aguardando {delay:.1f}s")
+            if attempt == 3:
+                return data, 429, response_headers
+
+    return {}, 429, {}
 
 # ============================================================
 # LOGIN
@@ -2744,20 +2787,37 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
+_PRODUCT_SEARCH_CACHE = {}
+_PRODUCT_SEARCH_CACHE_LOCK = threading.Lock()
+_PRODUCT_SEARCH_CACHE_TTL = 900  # 15 minutos; reduz chamadas repetidas por categoria.
+
+
 def search_products_direct(q, limit=40):
-    """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
+    """Busca candidatos com cache curto e proteção global contra HTTP 429."""
+    query = str(q or "").strip()
+    lim = min(int(limit or 40), 50)
+    cache_key = (norm(query), lim)
+    now = time.time()
+    with _PRODUCT_SEARCH_CACHE_LOCK:
+        cached = _PRODUCT_SEARCH_CACHE.get(cache_key)
+        if cached and now - cached[0] < _PRODUCT_SEARCH_CACHE_TTL:
+            print(f"[BUSCA CACHE] {query} -> {len(cached[1])} candidatos")
+            return list(cached[1])
+
     data, status, _ = ml_get("/products/search", {
         "site_id": SITE_ID,
-        "q": q,
+        "q": query,
         "status": "active",
-        "limit": min(int(limit or 40), 50),
+        "limit": lim,
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA] {q} -> HTTP {status}")
+        print(f"[BUSCA] {query} -> HTTP {status}")
         return []
     results = data.get("results") or []
-    print(f"[BUSCA] {q} -> {len(results)} candidatos")
+    with _PRODUCT_SEARCH_CACHE_LOCK:
+        _PRODUCT_SEARCH_CACHE[cache_key] = (time.time(), list(results))
+    print(f"[BUSCA] {query} -> {len(results)} candidatos")
     return results
 
 
@@ -4381,9 +4441,8 @@ def _search_shoes_category(cat, fast=False):
     print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
     return out
 
-# Circuit breaker compartilhado: o endpoint /sites/MLB/search está retornando
-# HTTP 403 neste app. Uma vez confirmado, não repetimos dezenas de chamadas
-# idênticas para cada categoria/termo; seguimos com a busca pública alternativa.
+# Circuit breaker compartilhado: não insistimos num endpoint que devolva 403.
+# O HTTP 429 é tratado pelo limitador global ml_get, com espera e retentativas.
 _REAL_ITEM_SEARCH_API_BLOCKED = False
 _REAL_ITEM_SEARCH_API_BLOCKED_LOCK = threading.Lock()
 _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
@@ -4392,9 +4451,9 @@ _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
 def _search_real_item_listings_api(q, limit=50, offset=0):
     """Fonte complementar de anúncios reais; não é obrigatória para a busca.
 
-    Se /sites/MLB/search retornar 403, o bloqueio é lembrado durante a execução
-    para não desperdiçar tempo em todas as categorias. A busca pública de IDs
-    que roda antes desta função continua sendo a fonte alternativa principal.
+    Se /sites/MLB/search retornar 403, o bloqueio é lembrado durante a execução.
+    Respostas 429 são espaçadas e retentadas por ml_get antes de desistir. A
+    busca pública de IDs continua disponível como fonte alternativa.
     """
     global _REAL_ITEM_SEARCH_API_BLOCKED, _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
     query = str(q or "").strip()
@@ -4416,13 +4475,13 @@ def _search_real_item_listings_api(q, limit=50, offset=0):
         "sort": "relevance",
     })
     if status != 200 or not isinstance(data, dict):
-        if status == 403:
+        if status in (403, 429):
             with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
                 _REAL_ITEM_SEARCH_API_BLOCKED = True
                 should_log = not _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
                 _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = True
             if should_log:
-                print("[BUSCA ITEMS API] HTTP 403: endpoint bloqueado para esta aplicação; desativando novas tentativas e usando a busca pública alternativa em TODAS as categorias.")
+                print(f"[BUSCA ITEMS API] HTTP {status}: pausando novas tentativas neste endpoint e usando a busca alternativa em todas as categorias.")
         else:
             print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
         return []
@@ -5665,8 +5724,16 @@ def _title_matches_scan_category(category, title):
     ))
     shoe = any(x in n for x in (
         "tenis", "tênis", "sneaker", "sneakers", "sapatenis", "sapatênis",
-        "calcado", "calçado", "chuteira", "chinelo", "slide", "sandalia",
-        "sandália", "running shoe", "running shoes",
+        "calcado", "calçado", "sapato", "sapatos", "mocassim", "mocassins",
+        "oxford", "loafer", "sapatilha", "scarpin", "bota masculina",
+        "bota feminina", "botina", "ankle boot", "social masculino",
+        "sapato social", "chinelo", "slide", "sandalia", "sandália",
+        "running shoe", "running shoes",
+        # Marcas de calçados reconhecidas no catálogo do projeto; ajudam quando
+        # o anúncio omite a palavra "sapato" no título (ex.: Ferracini Blady).
+        "ferracini", "pegada", "democrata", "west coast", "freeway",
+        "kildare", "sandro moscoloni", "moleca", "modare", "beira rio",
+        "via marte", "comfortflex", "piccadilly", " dakota ",
         # modelos/linhas muito característicos de tênis
         "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
         "ultraboost", "superstar", "adizero", "pegasus", "vomero",
