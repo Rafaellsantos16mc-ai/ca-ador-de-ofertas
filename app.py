@@ -135,18 +135,18 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 80
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 160
 SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
-SEARCH_RAW_POOL_PER_CATEGORY = 180
-SEARCH_SEEDS_FAST_PER_CATEGORY = 10
-SEARCH_RESULTS_PER_QUERY_FAST = 30
+SEARCH_RAW_POOL_PER_CATEGORY = 350
+SEARCH_SEEDS_FAST_PER_CATEGORY = 30
+SEARCH_RESULTS_PER_QUERY_FAST = 50
 # V42: fonte primária de anúncios reais para categorias comuns.
 # Em uma categoria isolada, consultamos uma amostra ampla dos micro-nichos
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 12
-SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 30
+SEARCH_REAL_ITEM_QUERIES_ALL = 18
+SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -169,77 +169,645 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # CATÁLOGO AUTOMÁTICO
 # ============================================================
 
-CATALOG = {
-    "📱 Tecnologia": [
-        "iPhone 15", "iPhone 16", "iPhone 17", "iPhone 15 Pro", "iPhone 16 Pro", "iPhone 17 Pro",
-        "Samsung Galaxy S", "Samsung Galaxy A", "Samsung Galaxy M",
-        "Motorola Edge", "Motorola Moto G", "Xiaomi Redmi", "Xiaomi Poco", "Realme smartphone",
-        "capas para celular", "carregador turbo", "carregador USB-C", "carregador sem fio",
-        "cabos USB-C", "power bank", "fone Bluetooth", "AirPods", "headset gamer",
-        "caixa de som JBL", "soundbar", "smartwatch", "tablet", "TV smart", "console videogame",
-        "notebook", "MacBook", "monitor", "impressora",
-    ],
-    "🏠 Casa e Organização": [
-        "guarda-roupa", "guarda roupa", "guarda-roupas", "potes herméticos", "prateleiras",
-        "utensílios de cozinha", "air fryer", "aspirador de pó", "cafeteira", "liquidificador",
-        "panelas elétricas", "lâmpadas LED", "lâmpadas inteligentes", "fitas LED", "jogos de cama",
-    ],
-    "💪 Academia & Fitness": [
-        "coqueteleira", "coqueteleira fitness", "garrafa térmica 500ml", "garrafa térmica 750ml",
-        "garrafa térmica 1 litro", "garrafa térmica até 1 litro", "whey protein", "creatina",
-        "pré-treino", "hipercalórico", "proteína esportiva", "BCAA", "vitaminas esportivas", "isotônico",
-    ],
-    "💇 Saúde & Beleza": [
-        "secador de cabelo", "chapinha", "escova secadora", "Wella", "L'Oréal", "Kérastase", "Truss", "Salon Line",
-        "esmaltes", "kit manicure", "unhas em gel", "cabine UV unhas", "cabine LED unhas", "lixa elétrica unhas", "nail art",
-        "protetor solar", "hidratante facial", "vitamina C facial", "niacinamida", "ácido hialurônico",
-        "CeraVe", "La Roche-Posay", "Principia skincare", "Neutrogena", "Vichy",
-        "barbeador", "aparador de barba", "kit barba", "hidratante corporal", "creme corporal", "esfoliante corporal",
-        "desodorante", "massageador corporal", "depilador elétrico", "óleo corporal",
-    ],
-    "👕 Moda": [
-        "camiseta Nike", "camiseta Adidas", "camiseta Puma", "camiseta Lacoste", "camiseta Calvin Klein",
-        "camiseta Tommy Hilfiger", "camiseta Reserva", "camiseta Fila", "camiseta New Balance",
-        "camiseta Hering", "camiseta Reebok", "camiseta Jordan", "camiseta Under Armour",
-        "roupa casual", "jaqueta", "corta-vento", "moletom", "casaco", "bermuda", "shorts", "calça jeans", "jeans",
-        "legging", "regata dry fit", "conjunto fitness", "vestido feminino", "blusa feminina", "cropped", "conjunto feminino",
-        "camisa polo Lacoste", "camisa polo Tommy Hilfiger", "camisa polo Ralph Lauren", "camisa polo Nike", "camisa polo Adidas",
-        "roupa de praia", "biquíni", "sunga", "maiô", "boné", "óculos de sol", "mochila", "carteira",
-        "camiseta oversized", "roupa plus size feminina", "roupa plus size masculina",
-    ],
-    "👟 Tênis & Calçados": [
-        "Nike tênis corrida", "Adidas tênis corrida", "Asics tênis corrida", "Mizuno tênis corrida",
-        "Olympikus tênis corrida", "New Balance tênis corrida", "Fila tênis corrida", "Puma tênis corrida",
-        "Nike tênis casual", "Adidas tênis casual", "Vans tênis casual", "Converse tênis casual",
-        "Lacoste tênis casual", "Puma tênis casual", "Skechers tênis casual", "Nike LeBron", "Jordan tênis basquete",
-        "Adidas Harden", "Under Armour Curry", "Vans skate", "Converse skate", "Nike SB", "DC Shoes skate",
-        "Lacoste tênis premium", "Oakley tênis", "New Balance premium", "Converse premium",
-        "Nike slide", "Adidas slide", "Puma slide", "Havaianas", "Rider", "Ipanema",
-        "tênis feminino", "tênis masculino", "tênis infantil",
-    ],
-    "🌸 Perfumes": [
-        "Natura Kaiak", "Natura Essencial", "Natura Luna", "Natura Homem", "Natura Una", "Natura Humor",
-        "O Boticário Malbec", "Boticário Egeo", "Boticário Lily", "Boticário Coffee", "Boticário Quasar", "Boticário Zaad",
-        "Eudora Club 6", "Eudora La Victorie", "Eudora Rouge", "Eudora Impression",
-        "Dior Sauvage", "Dior Homme", "Carolina Herrera Good Girl", "Carolina Herrera 212 VIP",
-        "Chanel perfume", "Yves Saint Laurent perfume", "Giorgio Armani perfume", "Versace Eros",
-        "Paco Rabanne Invictus", "Paco Rabanne 1 Million", "Jean Paul Gaultier perfume", "Prada perfume",
-        "Gucci perfume", "Valentino perfume", "Givenchy perfume", "Lancôme perfume", "Hugo Boss perfume",
-        "Montblanc perfume", "Azzaro perfume", "Bvlgari perfume", "Burberry perfume", "Calvin Klein perfume", "Kenzo perfume",
-        "perfume masculino", "perfume feminino", "perfume nacional", "perfume importado", "perfumes mais vendidos",
-    ],
-    "🌙 Perfumes Árabes": [
-        "Lattafa Asad", "Lattafa Asad Zanzibar", "Lattafa Yara", "Lattafa Khamrah", "Lattafa Oud for Glory",
-        "Lattafa Fakhar", "Lattafa Raghba", "Lattafa Najdia", "Lattafa Nebras", "Lattafa Teriaq",
-        "Afnan 9PM", "Afnan Supremacy", "Afnan Turathi Blue", "Armaf Club de Nuit", "Armaf Odyssey",
-        "Rasasi Hawas", "Rasasi Hawas Ice", "Rasasi Fattan", "Al Haramain Amber Oud", "Al Haramain L'Aventure",
-        "Al Wataniah Sabah Al Ward", "Al Wataniah Kayaan Classic", "Maison Alhambra Detour Noir",
-        "Maison Alhambra Kismet", "Maison Alhambra Porto Neroli", "Fragrance World perfume", "Paris Corner perfume",
-        "French Avenue perfume", "Khadlaj perfume", "Zimaya perfume", "Ajmal perfume", "Swiss Arabian perfume",
-        "Ard Al Zaafaran perfume", "Ahmed Al Maghribi perfume", "Orientica perfume", "Al Rehab perfume",
-    ],
-}
-
+CATALOG = {'📱 Tecnologia': ['📱 Celulares',
+                  'celulares',
+                  'smartphones',
+                  'iPhone',
+                  'iPhone 13',
+                  'iPhone 14',
+                  'iPhone 15',
+                  'iPhone 16',
+                  'iPhone 17',
+                  'Samsung Galaxy S',
+                  'Samsung Galaxy A',
+                  'Samsung Galaxy M',
+                  'Motorola Edge',
+                  'Motorola Moto G',
+                  'Xiaomi Redmi',
+                  'Xiaomi Poco',
+                  'Realme',
+                  '📱 Acessórios para Celular',
+                  'acessórios para celular',
+                  'capas e cases',
+                  'carregador turbo',
+                  'carregador USB-C',
+                  'cabo USB-C',
+                  'películas',
+                  'suporte para celular',
+                  'power bank',
+                  'carregador sem fio',
+                  '🎧 Eletrônicos e Áudio',
+                  'fones bluetooth',
+                  'AirPods',
+                  'headset gamer',
+                  'caixa de som bluetooth',
+                  'JBL',
+                  'soundbar',
+                  'smartwatch',
+                  'tablet',
+                  'TV smart',
+                  'console videogame',
+                  'controle gamer',
+                  '💻 Informática',
+                  'notebook',
+                  'MacBook',
+                  'Acer Aspire',
+                  'Lenovo IdeaPad',
+                  'Dell Inspiron',
+                  'Samsung notebook',
+                  'monitor',
+                  'teclado mecânico',
+                  'mouse gamer',
+                  'impressora',
+                  'SSD',
+                  'memória RAM',
+                  'webcam'],
+ '🏠 Casa e Organização': ['🏠 Casa e Organização',
+                          'organizadores para casa',
+                          'guarda roupa organizador',
+                          'caixas organizadoras',
+                          'potes herméticos',
+                          'prateleiras',
+                          'estantes',
+                          'arara de roupas',
+                          'sapateira',
+                          'utilidades domésticas',
+                          'cozinha',
+                          'utensílios de cozinha',
+                          'air fryer',
+                          'aspirador de pó',
+                          'cafeteira',
+                          'liquidificador',
+                          'panela elétrica',
+                          'mixer',
+                          'lâmpadas LED',
+                          'lâmpadas inteligentes',
+                          'fita LED',
+                          'jogo de cama',
+                          'toalhas',
+                          'varal',
+                          'escorredor de louça'],
+ '💪 Academia & Fitness': ['🏃 Cardio e Treino em Casa',
+                          'cardio treino em casa',
+                          'esteira',
+                          'bicicleta ergométrica',
+                          'bike spinning',
+                          'elíptico',
+                          'step',
+                          'mini stepper',
+                          'banco de treino',
+                          '🏋️ Equipamentos de Academia',
+                          'halteres',
+                          'halter',
+                          'anilhas',
+                          'barra musculação',
+                          'rack de musculação',
+                          'estação de musculação',
+                          'aparelho de academia',
+                          'máquina de musculação',
+                          '🥤 Suplementação',
+                          'whey protein',
+                          'creatina',
+                          'pré treino',
+                          'pre treino',
+                          'hipercalórico',
+                          'proteína',
+                          'BCAA',
+                          'vitaminas esportivas',
+                          'isotônico'],
+ '💇 Saúde & Beleza': ['💇 Cabelos',
+                      'cabelos',
+                      'shampoo',
+                      'condicionador',
+                      'máscara capilar',
+                      'kit shampoo',
+                      'kit cabelo',
+                      'secador de cabelo',
+                      'chapinha',
+                      'modelador de cachos',
+                      'escova secadora',
+                      'finalizador cabelo',
+                      'Wella',
+                      'L’Oréal',
+                      'Kérastase',
+                      'Elseve',
+                      'Truss',
+                      'Salon Line',
+                      '💅 Unhas e Manicure',
+                      'unhas e manicure',
+                      'kit manicure',
+                      'esmalte',
+                      'cabine UV LED unhas',
+                      'lixa elétrica unhas',
+                      'alongamento de unhas',
+                      'nail art',
+                      'kit unhas',
+                      'gel para unhas',
+                      '🧴 Skincare e Cuidados Faciais',
+                      'skincare',
+                      'cuidados faciais',
+                      'protetor solar facial',
+                      'hidratante facial',
+                      'limpeza facial',
+                      'serum facial',
+                      'vitamina C facial',
+                      'niacinamida',
+                      'ácido hialurônico',
+                      'aparelho limpeza facial',
+                      'CeraVe',
+                      'La Roche Posay',
+                      'Principia',
+                      'Neutrogena',
+                      'Vichy',
+                      '🪒 Barbearia e Cuidados Masculinos',
+                      'barbearia',
+                      'barbeador elétrico',
+                      'máquina de cortar cabelo',
+                      'aparador de barba',
+                      'navalha barbearia',
+                      'kit barba',
+                      'cuidados masculinos',
+                      'Gillette',
+                      'Philips OneBlade',
+                      'Braun',
+                      '🧖 Cuidados Corporais',
+                      'cuidados corporais',
+                      'hidratante corporal',
+                      'esfoliante corporal',
+                      'body care',
+                      'massageador corporal',
+                      'depilador elétrico',
+                      'óleo corporal',
+                      'creme corporal',
+                      'desodorante'],
+ '👕 Moda': ['👕 Camisetas de Marcas',
+            'camisetas de marcas',
+            'camiseta Nike',
+            'camiseta Adidas',
+            'camiseta Puma',
+            'camiseta Lacoste',
+            'camiseta Calvin Klein',
+            'camiseta Tommy Hilfiger',
+            'camiseta Reserva',
+            'camiseta Fila',
+            'camiseta New Balance',
+            'camiseta Under Armour',
+            'camiseta Reebok',
+            'camiseta Jordan',
+            'camiseta Levi’s',
+            'camiseta Hering',
+            '🏀 Camisas Esportivas/Futebol',
+            'camisas esportivas futebol',
+            'camisa Corinthians',
+            'camisa Flamengo',
+            'camisa Real Madrid',
+            'camisa Barcelona',
+            'camisa Brasil',
+            'camisa Nike futebol',
+            'camisa Adidas futebol',
+            'camisa Palmeiras',
+            'camisa São Paulo',
+            '🧥 Jaquetas e Corta-vento',
+            'jaquetas',
+            'corta vento',
+            'jaqueta Nike',
+            'jaqueta Adidas',
+            'jaqueta Puma',
+            'jaqueta Fila',
+            'jaqueta Under Armour',
+            '🩳 Bermudas e Shorts',
+            'bermudas',
+            'shorts',
+            'bermuda Nike',
+            'bermuda Adidas',
+            'bermuda Puma',
+            'short esportivo',
+            '👖 Calças e Jeans',
+            'calça jeans',
+            'calça masculina',
+            'calça feminina',
+            'jeans Nike',
+            'jeans Levi’s',
+            'calça Adidas',
+            '🏃 Roupas Fitness/Esportivas',
+            'roupas fitness',
+            'roupas esportivas',
+            'legging',
+            'short fitness',
+            'top fitness',
+            'regata esportiva',
+            'camiseta dry fit',
+            'conjunto fitness',
+            'Nike fitness',
+            'Adidas fitness',
+            'Puma fitness',
+            '🧥 Moletons e Casacos',
+            'moletons',
+            'casacos',
+            'moletom Nike',
+            'moletom Adidas',
+            'moletom Puma',
+            'moletom Fila',
+            'moletom New Balance',
+            '👚 Moda Feminina',
+            'moda feminina',
+            'vestidos',
+            'blusas femininas',
+            'conjuntos femininos',
+            'cropped',
+            'short feminino',
+            'legging feminina',
+            '👔 Polos',
+            'polos',
+            'camisa polo Lacoste',
+            'camisa polo Tommy Hilfiger',
+            'camisa polo Ralph Lauren',
+            'camisa polo Nike',
+            'camisa polo Adidas',
+            '🩱 Moda Praia',
+            'moda praia',
+            'biquíni',
+            'sunga',
+            'maiô',
+            'short praia',
+            'saída de praia',
+            '🧢 Bonés e Acessórios',
+            'bonés',
+            'boné Nike',
+            'boné Adidas',
+            'boné Puma',
+            'boné New Era',
+            'boné Lacoste',
+            'óculos de sol',
+            'mochila',
+            'carteira',
+            'cinto',
+            'camiseta oversized',
+            'camiseta básica premium',
+            'camisa de time original',
+            'camisa seleção brasileira',
+            'calça cargo masculina',
+            'calça jogger',
+            'jaqueta puffer',
+            'roupa feminina casual',
+            'vestido casual feminino',
+            'roupa plus size feminina',
+            'roupa plus size masculina',
+            'short fitness feminino',
+            'top fitness feminino'],
+ '👟 Tênis & Calçados': ['🏃 Tênis de Corrida',
+                        'tênis de corrida',
+                        'Nike tênis corrida',
+                        'Adidas tênis corrida',
+                        'Puma tênis corrida',
+                        'Asics tênis corrida',
+                        'New Balance tênis corrida',
+                        'Mizuno tênis corrida',
+                        'Olympikus tênis corrida',
+                        'Fila tênis corrida',
+                        'Reebok tênis corrida',
+                        'Under Armour tênis corrida',
+                        'Skechers tênis corrida',
+                        '🏋️ Tênis para Academia',
+                        'tênis para academia',
+                        'Nike tênis academia',
+                        'Adidas tênis academia',
+                        'Puma tênis academia',
+                        'Asics tênis academia',
+                        'Reebok tênis academia',
+                        'Under Armour tênis academia',
+                        'Mizuno tênis academia',
+                        'Olympikus tênis academia',
+                        'Fila tênis academia',
+                        '👟 Tênis Casual',
+                        'tênis casual',
+                        'Nike tênis casual',
+                        'Adidas tênis casual',
+                        'Puma tênis casual',
+                        'Vans tênis casual',
+                        'Converse tênis casual',
+                        'Lacoste tênis casual',
+                        'New Balance tênis casual',
+                        'Fila tênis casual',
+                        'Skechers tênis casual',
+                        '🚶 Tênis para Caminhada',
+                        'tênis para caminhada',
+                        'Nike tênis caminhada',
+                        'Adidas tênis caminhada',
+                        'Skechers caminhada',
+                        'New Balance caminhada',
+                        'tênis confortável para o dia a dia',
+                        '🏀 Tênis de Basquete',
+                        'tênis basquete',
+                        'Nike LeBron',
+                        'Jordan tênis',
+                        'Adidas Harden',
+                        'Puma basquete',
+                        'Under Armour Curry',
+                        'New Balance basquete',
+                        '🥾 Trilha/Adventure',
+                        'tênis trilha',
+                        'calçado trilha',
+                        'tênis adventure',
+                        'bota trilha',
+                        'Salomon',
+                        'Columbia',
+                        'Timberland',
+                        'Oakley adventure',
+                        '🛹 Skate',
+                        'tênis skate',
+                        'Vans skate',
+                        'Converse skate',
+                        'Nike SB',
+                        'Adidas Skateboarding',
+                        'DC Shoes',
+                        'Puma skate',
+                        '👞 Casual Premium',
+                        'casual premium',
+                        'Lacoste tênis',
+                        'Oakley tênis',
+                        'New Balance premium',
+                        'Vans premium',
+                        'Converse premium',
+                        '🏖️ Chinelos e Slides',
+                        'chinelos',
+                        'slides',
+                        'Nike slide',
+                        'Adidas slide',
+                        'Puma slide',
+                        'Havaianas',
+                        'Rider',
+                        'Ipanema',
+                        '👟 Tênis Feminino',
+                        'tênis feminino',
+                        'Nike tênis feminino',
+                        'Adidas tênis feminino',
+                        'Puma tênis feminino',
+                        'Asics tênis feminino',
+                        'New Balance tênis feminino',
+                        'Mizuno tênis feminino',
+                        'Olympikus tênis feminino',
+                        'Fila tênis feminino',
+                        'Skechers tênis feminino',
+                        '👟 Tênis Masculino',
+                        'tênis masculino',
+                        'Nike tênis masculino',
+                        'Adidas tênis masculino',
+                        'Puma tênis masculino',
+                        'Asics tênis masculino',
+                        'New Balance tênis masculino',
+                        'Mizuno tênis masculino',
+                        'Olympikus tênis masculino',
+                        'Fila tênis masculino',
+                        'Reebok tênis masculino',
+                        'Skechers tênis masculino',
+                        '👟 Tênis Infantil',
+                        'tênis infantil',
+                        'Nike tênis infantil',
+                        'Adidas tênis infantil',
+                        'Puma tênis infantil',
+                        'Fila tênis infantil',
+                        'Olympikus tênis infantil',
+                        'Vans infantil'],
+ '🌸 Perfumes': ['Natura perfume',
+                'Natura Kaiak',
+                'Natura Essencial',
+                'Natura Luna',
+                'Natura Homem',
+                'Natura Una',
+                'Natura Humor',
+                'Natura Biografia',
+                'Natura Ilía',
+                'Natura Kriska',
+                'Natura Águas',
+                'O Boticário perfume',
+                'Boticário Malbec',
+                'Boticário Malbec Gold',
+                'Boticário Malbec Black',
+                'Boticário Malbec Bleu',
+                'Boticário Egeo',
+                'Boticário Egeo Bomb Caramelo',
+                'Boticário Lily',
+                'Boticário Coffee',
+                'Boticário Coffee Woman',
+                'Boticário Coffee Man',
+                'Boticário Quasar',
+                'Boticário The Blend',
+                'Boticário Zaad',
+                'Boticário Floratta',
+                'Boticário Glamour',
+                'Boticário Botica 214',
+                'Eudora perfume',
+                'Eudora Club 6',
+                'Eudora La Victorie',
+                'Eudora Lyra',
+                'Eudora Rouge',
+                'Eudora Impression',
+                'Eudora Instance',
+                'Eudora Velvet Cristal',
+                'Carolina Herrera Good Girl',
+                'Carolina Herrera 212 VIP',
+                'Carolina Herrera 212 Men',
+                'Carolina Herrera 212 Heroes',
+                'Carolina Herrera CH Men',
+                'Dior Sauvage',
+                'Dior Homme',
+                'Dior Miss Dior',
+                "Dior J'adore",
+                'Chanel Bleu de Chanel',
+                'Chanel Coco Mademoiselle',
+                'Chanel Chance',
+                'Chanel Allure',
+                'Yves Saint Laurent Libre',
+                'Yves Saint Laurent Y',
+                'Yves Saint Laurent Black Opium',
+                "Yves Saint Laurent La Nuit de L'Homme",
+                'Giorgio Armani Acqua di Gio',
+                'Armani Code',
+                'Armani My Way',
+                'Armani Stronger With You',
+                'Versace Eros',
+                'Versace Dylan Blue',
+                'Versace Bright Crystal',
+                'Dolce Gabbana Light Blue',
+                'Dolce Gabbana The One',
+                'Dolce Gabbana K',
+                'Paco Rabanne 1 Million',
+                'Paco Rabanne Invictus',
+                'Paco Rabanne Phantom',
+                'Paco Rabanne Olympea',
+                'Rabanne 1 Million',
+                'Rabanne Invictus',
+                'Jean Paul Gaultier Le Male',
+                'Jean Paul Gaultier Ultra Male',
+                'Jean Paul Gaultier Scandal',
+                'Jean Paul Gaultier La Belle',
+                'Prada Paradoxe',
+                'Prada Luna Rossa',
+                "Prada L'Homme",
+                'Gucci Guilty',
+                'Gucci Bloom',
+                'Gucci Flora',
+                'Valentino Born in Roma',
+                'Valentino Donna',
+                'Givenchy Gentleman',
+                "Givenchy L'Interdit",
+                'Lancôme La Vie Est Belle',
+                'Lancôme Idôle',
+                'Hugo Boss Bottled',
+                'Hugo Boss The Scent',
+                'Montblanc Explorer',
+                'Montblanc Legend',
+                'Narciso Rodriguez For Her',
+                'Narciso Rodriguez Bleu Noir',
+                'Azzaro Wanted',
+                'Azzaro The Most Wanted',
+                'Azzaro Chrome',
+                'Bvlgari Man in Black',
+                'Bvlgari Aqva',
+                'Mugler Alien',
+                'Mugler Angel',
+                'Burberry Her',
+                'Burberry London',
+                'Calvin Klein One',
+                'Calvin Klein Euphoria',
+                'Kenzo Flower',
+                "Issey Miyake L'Eau d'Issey",
+                'JPG perfume',
+                'perfume importado',
+                'perfume nacional',
+                'perfumes mais vendidos'],
+ '🌙 Perfumes Árabes': ['Lattafa Asad',
+                       'Lattafa Asad Zanzibar',
+                       'Lattafa Asad Bourbon',
+                       'Lattafa Yara',
+                       'Lattafa Yara Moi',
+                       'Lattafa Yara Tous',
+                       'Lattafa Khamrah',
+                       'Lattafa Khamrah Qahwa',
+                       'Lattafa Khamrah Dukhan',
+                       'Lattafa Oud for Glory',
+                       "Lattafa Bade'e Al Oud Amethyst",
+                       "Lattafa Bade'e Al Oud Honor & Glory",
+                       'Lattafa Fakhar Black',
+                       'Lattafa Fakhar Rose',
+                       'Lattafa Raghba',
+                       'Lattafa Raghba Wood Intense',
+                       'Lattafa Ana Abiyedh',
+                       'Lattafa Ana Abiyedh Rouge',
+                       'Lattafa Ana Abiyedh Poudree',
+                       'Lattafa Qaed Al Fursan',
+                       'Lattafa Najdia',
+                       'Lattafa Najdia Tribute',
+                       'Lattafa Haya',
+                       'Lattafa Hayaati',
+                       'Lattafa Hayaati Gold Elixir',
+                       'Lattafa Maahir Legacy',
+                       'Lattafa Maahir Black',
+                       'Lattafa Maahir Gold',
+                       'Lattafa Emeer',
+                       'Lattafa Liam Grey',
+                       'Lattafa Liam Blue Shine',
+                       'Lattafa Nebras',
+                       'Lattafa Nebras Elixir',
+                       'Lattafa Ameer Al Oudh Intense Oud',
+                       'Lattafa Al Nashama Caprice',
+                       'Lattafa Al Nashama',
+                       'Lattafa Vintage Radio',
+                       'Lattafa Honor & Glory',
+                       'Lattafa Teriaq',
+                       'Lattafa Teriaq Intense',
+                       'Lattafa Mayar',
+                       'Lattafa Mayar Cherry',
+                       'Lattafa Mayar Natural Intense',
+                       'Lattafa Musamam',
+                       'Lattafa Musamam White Intense',
+                       'Lattafa Badee Al Oud Sublime',
+                       'Afnan 9PM',
+                       'Afnan 9PM Rebel',
+                       'Afnan 9PM Elixir',
+                       'Afnan Supremacy Not Only Intense',
+                       'Afnan Supremacy Silver',
+                       'Afnan Turathi Blue',
+                       'Afnan Turathi Brown',
+                       'Afnan Modest Une',
+                       'Afnan Rare Carbon',
+                       'Afnan Historic Olmeda',
+                       'Afnan Mirsaal With Love',
+                       'Armaf Club de Nuit Intense Man',
+                       'Armaf Club de Nuit Woman',
+                       'Armaf Club de Nuit Untold',
+                       'Armaf Club de Nuit Milestone',
+                       'Armaf Club de Nuit Sillage',
+                       'Armaf Club de Nuit Iconic',
+                       'Armaf Odyssey Homme',
+                       'Armaf Odyssey Mandarin Sky',
+                       'Armaf Tres Nuit',
+                       'Rasasi Hawas',
+                       'Rasasi Hawas Ice',
+                       'Rasasi Hawas for Her',
+                       'Rasasi Daarej',
+                       'Rasasi La Yuqawam',
+                       'Rasasi Fattan',
+                       "Al Haramain L'Aventure",
+                       'Al Haramain Amber Oud Gold Edition',
+                       'Al Haramain Amber Oud Tobacco Edition',
+                       'Al Haramain Detour Noir',
+                       'Al Wataniah Sabah Al Ward',
+                       'Al Wataniah Kayaan Classic',
+                       'Al Wataniah Attar Al Wesal',
+                       'Al Wataniah Shagaf Al Ward',
+                       'Maison Alhambra Detour Noir',
+                       'Maison Alhambra Kismet Angel',
+                       'Maison Alhambra Kismet Magic',
+                       'Maison Alhambra Porto Neroli',
+                       'Maison Alhambra Bright Peach',
+                       'Maison Alhambra Tobacco Touch',
+                       'Maison Alhambra Amber & Leather',
+                       'Maison Alhambra Lovely Cherie',
+                       'Maison Alhambra Delilah',
+                       'Maison Alhambra Perseus',
+                       'Maison Alhambra The Tux',
+                       'Maison Alhambra Barakkat Rouge 540',
+                       'Maison Alhambra Woody Oud',
+                       'Maison Alhambra Fabulo Intense',
+                       'Maison Alhambra Glacier Ultra',
+                       'Maison Alhambra Glacier Bold',
+                       'Maison Alhambra Yeah!',
+                       'Fragrance World Suits',
+                       'Fragrance World Imperium',
+                       'Fragrance World Cocktail Intense',
+                       'Paris Corner Emir Cedrat Essence',
+                       'Paris Corner Emir Voux Elegante',
+                       'Paris Corner Emir Vibrant Vetiver',
+                       'Paris Corner Khair Pistachio',
+                       'Paris Corner Khair Fusion',
+                       'Paris Corner Qissa Delicious',
+                       'French Avenue Liquid Brun',
+                       'French Avenue After Effect',
+                       'French Avenue Aether',
+                       'French Avenue Spectre Ghost',
+                       'Khadlaj Island',
+                       'Khadlaj Hareem Al Sultan',
+                       'Khadlaj Shiyaaka',
+                       'Zimaya Sharaf Blend',
+                       'Zimaya Sharaf The Club',
+                       'Zimaya Fatima',
+                       'Ajmal Evoke Gold',
+                       'Ajmal Aristocrat',
+                       'Ajmal Amber Wood',
+                       'Swiss Arabian Shaghaf Oud',
+                       'Swiss Arabian Shaghaf Oud Azraq',
+                       'Swiss Arabian Casablanca',
+                       'Ard Al Zaafaran Dirham',
+                       'Ard Al Zaafaran Oud 24 Hours',
+                       'Ard Al Zaafaran Al Dirgham',
+                       'Ahmed Al Maghribi Kaaf',
+                       'Ahmed Al Maghribi Bin Shaikh',
+                       'Orientica Royal Amber',
+                       'Orientica Oud Saffron',
+                       'Al Rehab Choco Musk',
+                       'Emir Celestial']}
 
 # ============================================================
 # MODO COMPLETO# ============================================================
@@ -470,13 +1038,15 @@ def is_requested_product(title, query, category=None):
             []
         ),
         "🏠 Casa e Organização": (
-            ["guarda roupa", "guarda-roupa", "pote", "prateleira", "utensilio", "air fryer", "aspirador",
-             "cafeteira", "liquidificador", "panela eletrica", "lampada", "fita led", "jogo de cama"],
+            ["casa", "organizador", "pote", "air fryer", "aspirador", "cafeteira", "liquidificador", "utensilio",
+             "lâmpada", "fita led", "furadeira", "parafusadeira", "esmerilhadeira", "serra", "ferramenta",
+             "lavadora", "compressor"],
             []
         ),
         "💪 Academia & Fitness": (
-            ["coqueteleira", "garrafa termica", "garrafa térmica", "whey", "creatina", "pre treino", "hipercalorico",
-             "proteina", "bcaa", "vitamina esportiva", "isotonico", "isotônico", "suplemento"],
+            ["academia", "halter", "anilha", "barra", "banco", "kettlebell", "treino", "fitness", "elastico",
+             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida", "roupa fitness",
+             "tênis academia", "tênis corrida", "garrafa fitness", "coqueteleira"],
             []
         ),
         "💇 Saúde & Beleza": (
@@ -494,16 +1064,11 @@ def is_requested_product(title, query, category=None):
              "camisa social manga longa", "social manga longa", "social de manga longa"]
         ),
         "👟 Tênis & Calçados": (
-            ["tênis", "tenis", "calçado", "calcado", "sapato", "sapatênis", "sapatenis", "mocassim",
-             "bota", "coturno", "sandália", "sandalia", "chinelo", "slide", "crocs", "nike", "adidas",
-             "puma", "asics", "new balance", "mizuno", "olympikus", "fila", "reebok", "vans", "converse",
-             "under armour", "skechers", "oakley", "lacoste", "brooks", "saucony", "hoka", "salomon",
-             "columbia", "timberland", "democrata", "ferracini", "pegada", "freeway", "west coast",
-             "kildare", "moleca", "vizzano", "beira rio", "modare", "anacapri", "arezzo", "schutz",
-             "bottero", "dakota", "via marte", "ramarim", "usaflex", "corrida", "academia", "casual",
-             "basquete", "trilha", "adventure", "skate", "premium"],
-            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
-             "chuteira", "trava society", "trava campo", "bola de futebol", "bola de basquete", "bola de vôlei"]
+            ["tênis", "tenis", "chuteira", "calçado", "nike", "adidas", "puma", "asics", "new balance", "mizuno",
+             "olympikus", "fila", "reebok", "vans", "converse", "under armour", "skechers", "oakley", "lacoste",
+             "corrida", "academia", "casual", "futebol", "basquete", "trilha", "adventure", "skate", "premium",
+             "chinelo", "slide"],
+            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha"]
         ),
         "🌙 Perfumes Árabes": (
             list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
@@ -686,69 +1251,20 @@ def access_token():
         return t["access_token"]
     return refresh() or t.get("access_token")
 
-# Limitador GLOBAL das chamadas à API do Mercado Livre.
-# As buscas de categorias podem rodar em paralelo; sem este bloqueio, várias
-# threads disparam requisições simultâneas e provocam HTTP 429.
-_ML_API_REQUEST_LOCK = threading.RLock()
-_ML_API_LAST_REQUEST_AT = 0.0
-_ML_API_MIN_INTERVAL = 0.75
-_ML_API_429_COOLDOWN = 0.0
-
-
 def ml_get(path, params=None):
-    """GET autenticado com espaçamento global e retentativa controlada no 429."""
-    global _ML_API_LAST_REQUEST_AT, _ML_API_429_COOLDOWN
     token = access_token()
     if not token:
         return {}, 401, {}
     url = path if path.startswith("http") else ML_API + path
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-    # Mantém uma única fila para todas as categorias, inclusive quando os
-    # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
-    with _ML_API_REQUEST_LOCK:
-        # Se outra chamada acabou de receber 429, não repetimos a mesma
-        # pancada na API durante a janela de cooldown. Retornamos 429 para
-        # que a busca use cache/fontes alternativas; a própria chamada que
-        # recebeu o 429 já fez suas retentativas controladas abaixo.
-        if time.monotonic() < _ML_API_429_COOLDOWN:
-            return {"error": "rate_limit_cooldown"}, 429, {"Retry-After": str(max(1, int(_ML_API_429_COOLDOWN - time.monotonic())))}
-        for attempt in range(4):
-            now = time.monotonic()
-            wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
-                       _ML_API_429_COOLDOWN - now, 0.0)
-            if wait > 0:
-                time.sleep(wait)
-            _ML_API_LAST_REQUEST_AT = time.monotonic()
-            try:
-                r = requests.get(url, headers=headers, params=params, timeout=30)
-            except requests.RequestException as exc:
-                return {"error": str(exc)}, 500, {}
-
-            response_headers = dict(r.headers)
-            try:
-                data = r.json()
-            except Exception:
-                data = {"message": r.text[:2000]}
-
-            if r.status_code != 429:
-                _ML_API_429_COOLDOWN = 0.0
-                return data, r.status_code, response_headers
-
-            # Honra Retry-After quando válido. Se ausente/inválido, usa espera
-            # exponencial crescente e partilhada por todas as threads.
-            retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
-            try:
-                delay = float(retry_after) if retry_after is not None else (1.5 * (2 ** attempt))
-            except (TypeError, ValueError):
-                delay = 1.5 * (2 ** attempt)
-            delay = max(1.0, min(delay, 20.0))
-            _ML_API_429_COOLDOWN = time.monotonic() + delay
-            print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/4; aguardando {delay:.1f}s")
-            if attempt == 3:
-                return data, 429, response_headers
-
-    return {}, 429, {}
+    try:
+        r = requests.get(url, headers={"Authorization":f"Bearer {token}","Accept":"application/json"}, params=params, timeout=30)
+        try:
+            data = r.json()
+        except Exception:
+            data = {"message": r.text}
+        return data, r.status_code, dict(r.headers)
+    except requests.RequestException as e:
+        return {"error":str(e)}, 500, {}
 
 # ============================================================
 # LOGIN
@@ -2223,41 +2739,24 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
-_PRODUCT_SEARCH_CACHE = {}
-_PRODUCT_SEARCH_CACHE_LOCK = threading.Lock()
-_PRODUCT_SEARCH_CACHE_TTL = 900  # 15 minutos; reduz chamadas repetidas por categoria.
-
-
 def search_products_direct(q, limit=40):
-    """Busca candidatos com cache curto e proteção global contra HTTP 429."""
-    query = str(q or "").strip()
-    lim = min(int(limit or 40), 50)
-    cache_key = (norm(query), lim)
-    now = time.time()
-    with _PRODUCT_SEARCH_CACHE_LOCK:
-        cached = _PRODUCT_SEARCH_CACHE.get(cache_key)
-        if cached and now - cached[0] < _PRODUCT_SEARCH_CACHE_TTL:
-            print(f"[BUSCA CACHE] {query} -> {len(cached[1])} candidatos")
-            return list(cached[1])
-
+    """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
     data, status, _ = ml_get("/products/search", {
         "site_id": SITE_ID,
-        "q": query,
+        "q": q,
         "status": "active",
-        "limit": lim,
+        "limit": min(int(limit or 40), 50),
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA] {query} -> HTTP {status}")
+        print(f"[BUSCA] {q} -> HTTP {status}")
         return []
     results = data.get("results") or []
-    with _PRODUCT_SEARCH_CACHE_LOCK:
-        _PRODUCT_SEARCH_CACHE[cache_key] = (time.time(), list(results))
-    print(f"[BUSCA] {query} -> {len(results)} candidatos")
+    print(f"[BUSCA] {q} -> {len(results)} candidatos")
     return results
 
 
-PUBLIC_SEARCH_FILTERS = ""  # sem obrigar frete grátis, produto novo ou origem local
+PUBLIC_SEARCH_FILTERS = "_OrderId_TRADES_SHIPPING_COST_FREE_ITEM_CONDITION_NEW_SHIPPING_ORIGIN_LOCAL"
 
 def public_search_url(query):
     """Monta o link público equivalente ao teste enviado pelo usuário.
@@ -2265,7 +2764,7 @@ def public_search_url(query):
     O app continua usando a API do Mercado Livre para coletar os anúncios;
     este link serve como referência da busca pública/ordenação proposta.
     """
-    clean_query = str(query or "").strip()  # não restringe os resultados da busca por filtros extras
+    clean_query = f"{str(query or '').strip()} -decant".strip()
     encoded = quote(clean_query)
     return f"https://lista.mercadolivre.com.br/{encoded}{PUBLIC_SEARCH_FILTERS}_NoIndex_True"
 
@@ -3074,9 +3573,18 @@ def _search_arabic_real_listings(q, limit=80):
 
         # Loja Oficial NÃO é mais obrigatória.
         official_store_id = _extract_official_store_id(candidate) or _extract_official_store_id(fallback_product)
-        # Não consultar /items/{id} só para obter preço original: em alguns
-        # ambientes essa rota responde 403. Mantemos o anúncio encontrado pelo
-        # catálogo e usamos o preço original se a própria resposta o fornecer.
+        # Se ainda não houver preço original, tenta enriquecer pela publicação
+        # real. Isso ajuda o filtro de desconto sem exigir Loja Oficial.
+        if candidate.get("original_price") is None:
+            try:
+                data, status, _ = ml_get(f"/items/{iid}")
+                if status == 200 and isinstance(data, dict):
+                    if not official_store_id:
+                        official_store_id = _extract_official_store_id(data)
+                    candidate = dict(candidate)
+                    candidate["original_price"] = data.get("original_price") or data.get("base_price")
+            except Exception as exc:
+                print("[PRECO ORIGINAL] falha ao confirmar", iid, repr(exc))
 
         shipping = candidate.get("shipping") or {}
         if not isinstance(shipping, dict):
@@ -3167,9 +3675,9 @@ def _search_arabic_real_listings(q, limit=80):
         print("[ARABES CATALOGO]", query, repr(exc))
         products = []
 
-    # Processa até 8 produtos de catálogo por consulta para aumentar a diversidade,
-    # mantendo limite para não multiplicar chamadas sem controle.
-    for product_row in products[:8]:
+    # No máximo 3 produtos de catálogo por consulta. Isso evita o efeito de
+    # 35 nichos x dezenas de chamadas que estava provocando HTTP 429.
+    for product_row in products[:6]:
         if len(listings) >= limit:
             break
         if not isinstance(product_row, dict):
@@ -3394,7 +3902,7 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:5]
+        queries = queries[:60]
     for q in queries:
         try:
             rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
@@ -3673,41 +4181,75 @@ def _search_shoes_real_listings(q, limit=60):
 
 
 def _shoe_diverse_queries(fast=False):
-    """Consultas de calçados limitadas aos subnichos definidos no catálogo."""
+    """Monta consultas de tênis em ordem intercalada por marca/subnicho."""
     groups = [
         [
             "Nike tênis corrida", "Adidas tênis corrida", "Asics tênis corrida",
-            "Mizuno tênis corrida", "Olympikus tênis corrida", "New Balance tênis corrida",
-            "Fila tênis corrida", "Puma tênis corrida",
+            "Mizuno tênis corrida", "New Balance tênis corrida", "Olympikus tênis corrida",
+            "Fila tênis corrida", "Puma tênis corrida", "Reebok tênis corrida",
+            "Under Armour tênis corrida", "Skechers tênis corrida", "Hoka tênis corrida",
+            "Adidas Duramo", "Adidas Runfalcon", "Nike Revolution", "Nike Downshifter",
+            "Asics Gel Excite", "Mizuno Wave Rider", "Olympikus Corre Max", "Fila Racer",
+            "New Balance Fresh Foam", "Puma Flyer Runner", "Reebok Floatride",
         ],
         [
-            "Nike tênis casual", "Adidas tênis casual", "Vans tênis casual",
-            "Converse tênis casual", "Lacoste tênis casual", "Puma tênis casual", "Skechers tênis casual",
+            "Nike tênis casual", "Adidas tênis casual", "Puma tênis casual",
+            "Vans tênis casual", "Converse tênis casual", "New Balance 574",
+            "Fila tênis casual", "Lacoste tênis casual", "Skechers tênis casual",
+            "Nike Court Vision", "Nike Dunk", "Adidas Grand Court", "Adidas Forum",
+            "Puma Suede", "Puma Caven", "New Balance 327", "New Balance 9060",
+            "Vans Old Skool", "Converse Chuck Taylor", "Reebok Club C", "Fila Disruptor",
         ],
         [
-            "Nike LeBron", "Jordan tênis basquete", "Adidas Harden", "Under Armour Curry",
+            "Nike tênis caminhada", "Adidas tênis caminhada", "Skechers caminhada",
+            "New Balance caminhada", "Fila tênis confortável", "Puma tênis confortável",
+            "tênis confortável feminino", "tênis confortável masculino",
+            "tênis casual feminino", "tênis casual masculino", "tênis branco casual",
+            "tênis preto casual", "tênis plataforma feminino", "sapatênis masculino",
         ],
         [
-            "Vans skate", "Converse skate", "Nike SB", "DC Shoes skate",
+            "Nike basquete", "Jordan tênis", "Nike LeBron", "Adidas Harden",
+            "Under Armour Curry", "Puma basquete", "New Balance basquete",
         ],
         [
-            "Lacoste tênis premium", "Oakley tênis", "New Balance premium", "Converse premium",
+            "Salomon tênis trilha", "Columbia tênis trilha", "Timberland tênis",
+            "Oakley tênis adventure", "Mizuno tênis trilha",
+        ],
+        [
+            "Vans skate", "Nike SB", "Adidas Skateboarding", "DC Shoes skate",
+            "Converse skate", "Puma skate",
         ],
         [
             "Nike slide", "Adidas slide", "Puma slide", "Havaianas", "Rider", "Ipanema",
         ],
         [
-            "Nike tênis feminino", "Adidas tênis feminino", "Puma tênis feminino", "Asics tênis feminino",
-            "New Balance tênis feminino", "Mizuno tênis feminino", "Olympikus tênis feminino",
-            "Fila tênis feminino", "Skechers tênis feminino",
+            "Nike tênis feminino", "Adidas tênis feminino", "Puma tênis feminino",
+            "Asics tênis feminino", "New Balance tênis feminino", "Mizuno tênis feminino",
+            "Olympikus tênis feminino", "Fila tênis feminino", "Skechers tênis feminino",
+            "Reebok tênis feminino", "Under Armour tênis feminino", "Hoka tênis feminino",
+            "tênis feminino casual branco", "tênis feminino plataforma", "tênis feminino academia",
         ],
         [
-            "Nike tênis masculino", "Adidas tênis masculino", "Puma tênis masculino", "Asics tênis masculino",
-            "New Balance tênis masculino", "Mizuno tênis masculino", "Olympikus tênis masculino",
-            "Fila tênis masculino", "Reebok tênis masculino", "Skechers tênis masculino",
+            "Nike tênis masculino", "Adidas tênis masculino", "Puma tênis masculino",
+            "Asics tênis masculino", "New Balance tênis masculino", "Mizuno tênis masculino",
+            "Olympikus tênis masculino", "Fila tênis masculino", "Reebok tênis masculino",
+            "Skechers tênis masculino", "Under Armour tênis masculino", "Hoka tênis masculino",
+            "tênis masculino casual branco", "tênis masculino academia", "tênis masculino caminhada",
         ],
-        ["tênis infantil", "tênis infantil masculino", "tênis infantil feminino"],
+        [
+            "Nike Air Force 1", "Nike Air Max", "Adidas Superstar", "Adidas Ultraboost",
+            "Puma Caven", "Asics Gel Nimbus", "Mizuno Wave", "New Balance 9060",
+            "Olympikus Corre", "Fila Float", "Vans Old Skool", "Converse Chuck Taylor",
+        ],
+        [
+            "tênis infantil masculino", "tênis infantil feminino", "tênis para trabalho",
+            "tênis para ficar em pé", "tênis leve confortável", "tênis para viagem",
+            "tênis retrô casual", "tênis skate casual", "tênis minimalista",
+        ],
     ]
+
+    # Intercala uma consulta de cada bloco para que o modo "todas" não fique
+    # preso em corrida só porque ela aparece primeiro no catálogo.
     merged = []
     pos = 0
     while True:
@@ -3721,37 +4263,26 @@ def _shoe_diverse_queries(fast=False):
         if not added:
             break
         pos += 1
-    limit = 40 if fast else 60
+
+    # No modo geral também fazemos mais consultas: a rota anterior consultava
+    # poucas marcas e podia produzir menos de 20 candidatos para toda a categoria.
+    limit = 42 if fast else 70
     return merged[:limit]
 
 
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
-    # Buscar todas as categorias não pode disparar dezenas de consultas só de
-    # calçados. A busca individual continua usando a lista ampla completa.
-    if fast:
-        queries = queries[:12]
-    per_query = 24 if fast else 30
+    per_query = 22 if fast else 28
     rows_by_query = []
 
-    # Busca várias consultas em paralelo, mantendo a ordem original para que
-    # a montagem round-robin continue priorizando diversidade entre marcas.
-    def _run_shoe_query(q):
+    for q in queries:
         try:
-            return _search_shoes_real_listings(q, limit=per_query)
+            rows = _search_shoes_real_listings(q, limit=per_query)
         except Exception as exc:
             print("[TENIS BUSCA]", q, repr(exc))
-            return []
-
-    with _ThreadPoolExecutor(max_workers=min(5, max(1, len(queries)))) as pool:
-        future_by_query = {q: pool.submit(_run_shoe_query, q) for q in queries}
-        for q in queries:
-            try:
-                rows_by_query.append((q, future_by_query[q].result()))
-            except Exception as exc:
-                print("[TENIS BUSCA RESULTADO]", q, repr(exc))
-                rows_by_query.append((q, []))
+            rows = []
+        rows_by_query.append((q, rows))
 
     # Round-robin entre consultas: primeiro entra 1 produto de cada marca,
     # depois o segundo de cada marca. Assim Nike/Puma/Fila não ocupam toda a
@@ -3792,27 +4323,17 @@ def _search_shoes_category(cat, fast=False):
     print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
     return out
 
-# Circuit breaker: somente 403 bloqueia definitivamente este endpoint.
-# 429 é temporário: entra em pausa temporizada e depois pode tentar novamente.
-_REAL_ITEM_SEARCH_API_BLOCKED = False
-_REAL_ITEM_SEARCH_API_BLOCKED_LOCK = threading.Lock()
-_REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
-_REAL_ITEM_SEARCH_API_RETRY_AT = 0.0
-_REAL_ITEM_SEARCH_API_429_LOGGED = False
-
-
 def _search_real_item_listings_api(q, limit=50, offset=0):
-    """Busca anúncios reais sem desativar o endpoint permanentemente por 429."""
-    global _REAL_ITEM_SEARCH_API_BLOCKED, _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
-    global _REAL_ITEM_SEARCH_API_RETRY_AT, _REAL_ITEM_SEARCH_API_429_LOGGED
+    """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
+
+    Diferente de /products/search, /sites/MLB/search devolve publicações ITEM
+    (MLBxxxxxxxx) com preço, vendedor, frete e permalink. Essa é a fonte
+    principal da V42 para categorias comuns. Se a API retornar 403/erro,
+    devolvemos [] e o scanner continua usando as fontes anteriores.
+    """
     query = str(q or "").strip()
     if not query:
         return []
-    with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
-        if _REAL_ITEM_SEARCH_API_BLOCKED:
-            return []
-        if time.monotonic() < _REAL_ITEM_SEARCH_API_RETRY_AT:
-            return []
     try:
         lim = max(1, min(int(limit or 50), 50))
         off = max(0, int(offset or 0))
@@ -3826,22 +4347,7 @@ def _search_real_item_listings_api(q, limit=50, offset=0):
         "sort": "relevance",
     })
     if status != 200 or not isinstance(data, dict):
-        if status == 403:
-            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
-                _REAL_ITEM_SEARCH_API_BLOCKED = True
-                should_log = not _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
-                _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = True
-            if should_log:
-                print("[BUSCA ITEMS API] HTTP 403: endpoint não autorizado; usando fontes alternativas até reiniciar o processo.")
-        elif status == 429:
-            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
-                _REAL_ITEM_SEARCH_API_RETRY_AT = time.monotonic() + 120.0
-                should_log = not _REAL_ITEM_SEARCH_API_429_LOGGED
-                _REAL_ITEM_SEARCH_API_429_LOGGED = True
-            if should_log:
-                print("[BUSCA ITEMS API] HTTP 429: pausa de 120s só neste endpoint; /products/search e cache continuam ativos.")
-        else:
-            print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
+        print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
         return []
 
     rows = data.get("results") or []
@@ -4005,7 +4511,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Mantemos 40 consultas no modo rápido, mas agora as primeiras
             # consultas são majoritariamente importadas e masculinas.
-            perfume_queries = perfume_queries[:12]
+            perfume_queries = perfume_queries[:90]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -4132,7 +4638,7 @@ def _search_category(cat, fast=False):
             if len(out) >= real_target:
                 break
 
-    print(f"[V59 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+    print(f"[V44 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
 
     # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
     # a busca pública; se devolver 403, não impede a primeira fonte.
@@ -4156,7 +4662,7 @@ def _search_category(cat, fast=False):
                 real_added += 1
                 if len(out) >= real_target:
                     break
-        print(f"[V61 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+        print(f"[V44 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
@@ -4471,11 +4977,9 @@ def _scrape_public_item_page(item_id):
     if cached is not None:
         return dict(cached)
 
-    # Primeiro tenta o formato canônico de publicação; o formato antigo em
-    # www.mercadolivre.com.br costuma responder 404 e fica apenas como fallback.
     urls = [
-        f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
         f'https://www.mercadolivre.com.br/{iid.lower()}-produto',
+        f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
     ]
     headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
@@ -4970,7 +5474,9 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
                     or ""
                 ).strip()
 
-    # Não descartar perfume válido apenas porque a API omitiu a foto.
+    if not image:
+        print("[TESTE PERFUME] descartado sem imagem:", item_id, title[:90])
+        return None
 
     seller = row.get("seller") or {}
     seller_id = seller.get("id") if isinstance(seller, dict) else row.get("seller_id")
@@ -5082,16 +5588,8 @@ def _title_matches_scan_category(category, title):
     ))
     shoe = any(x in n for x in (
         "tenis", "tênis", "sneaker", "sneakers", "sapatenis", "sapatênis",
-        "calcado", "calçado", "sapato", "sapatos", "mocassim", "mocassins",
-        "oxford", "loafer", "sapatilha", "scarpin", "bota masculina",
-        "bota feminina", "botina", "ankle boot", "social masculino",
-        "sapato social", "chinelo", "slide", "sandalia", "sandália",
-        "running shoe", "running shoes",
-        # Marcas de calçados reconhecidas no catálogo do projeto; ajudam quando
-        # o anúncio omite a palavra "sapato" no título (ex.: Ferracini Blady).
-        "ferracini", "pegada", "democrata", "west coast", "freeway",
-        "kildare", "sandro moscoloni", "moleca", "modare", "beira rio",
-        "via marte", "comfortflex", "piccadilly", " dakota ",
+        "calcado", "calçado", "chuteira", "chinelo", "slide", "sandalia",
+        "sandália", "running shoe", "running shoes",
         # modelos/linhas muito característicos de tênis
         "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
         "ultraboost", "superstar", "adizero", "pegasus", "vomero",
@@ -5184,7 +5682,7 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V59 prioriza IDs ITEM reais descobertos na página pública
+    Para categorias comuns, a V45 prioriza IDs ITEM reais descobertos na página pública
     e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
@@ -5192,17 +5690,15 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
 
     raw_by_cat = {}
-    with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
+    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
         fmap = {ex.submit(_search_category, cat, FAST_ALL_CATEGORIES and len(categories) > 1): cat for cat in categories}
         for fut in as_completed(fmap):
             cat = fmap[fut]
             try:
                 raw_by_cat[cat] = fut.result() or []
-                print(f"[V66 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
             except Exception as e:
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
-                print(f"[V66 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -5215,7 +5711,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
         print(f"[PERFUMES CANDIDATOS BRUTOS] {len(perfume_raw)}")
         seen_perfume_items = set()
-        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 180
+        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5235,7 +5731,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         print(f"[ARABES CANDIDATOS BRUTOS] {len(arabic_raw)}")
         seen_arabic_items = set()
-        direct_limit = 80 if FAST_ALL_CATEGORIES and len(categories) > 1 else 180
+        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5313,9 +5809,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Mantém exatamente o ranking por posição dentro de cada categoria.
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
-    print(f"[V66 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
     fetched = []
-    enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
+    enrichment_workers = 10 if FAST_ALL_CATEGORIES and len(categories) > 1 else 14
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
@@ -5416,8 +5911,10 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                 print(f"[COERÊNCIA] descartado fora do nicho: {cat} -> {title[:120]}")
                 continue
 
-            # Imagem opcional: não elimina um subnicho inteiro quando a API omite a foto.
             image = _resolve_offer_image(p, item, base, item.get("item_id"))
+            if not image:
+                print("[IMAGEM] oferta descartada sem imagem:", pid, title[:80])
+                continue
 
             offers.append({
                 "product_id": pid,
@@ -5961,7 +6458,6 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "ofertas": [o],
         })
 
-    print(f"[V66 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
     values = [o["price"] for o in flat if o.get("price") is not None]
     totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
@@ -5983,7 +6479,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V63: busca ampliada e filtros de frete grátis/produto novo/origem local removidos; imagens opcionais; rodízio de categorias no WhatsApp; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V50: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -6157,26 +6653,15 @@ def ad_text(o, affiliate=""):
         "",
     ]
 
-    # Em queda de preço, o preço antigo deve ser o último preço publicado
-    # anteriormente no grupo. Nas ofertas normais, usamos o preço original
-    # do anúncio, quando disponível.
-    previous_price = o.get("_price_drop_from")
-    try:
-        previous_price = float(previous_price) if previous_price not in (None, "") else None
-        current_price = float(o.get("price") or 0)
-    except (TypeError, ValueError):
-        previous_price = None
-        current_price = 0.0
-    is_price_drop = previous_price is not None and current_price > 0 and current_price < previous_price - 0.01
-
+    # Preço antigo no estilo do anúncio de referência: ~De R$222,83~
+    # Só mostramos o valor riscado quando ele realmente existe.
     original = o.get("original_price")
     try:
         original_value = float(original) if original not in (None, "") else 0.0
     except (TypeError, ValueError):
         original_value = 0.0
 
-    # Evita mostrar dois preços antigos diferentes no anúncio de queda.
-    if not is_price_drop and original_value > 0:
+    if original_value > 0:
         lines.append(f"~De {brl(original_value)}~")
 
     if o.get("cupom"):
@@ -6184,10 +6669,7 @@ def ad_text(o, affiliate=""):
         label = c.get("code") or c.get("label") or "Cupom disponível"
         lines.append(f"🎟️ Cupom: *{label}*")
 
-    # Na queda, exibe explicitamente o último preço enviado e o preço atual.
-    if is_price_drop:
-        lines[0] = "🚨 *VOLTOU MAIS BARATO! PREÇO REDUZIDO* 🚨"
-        lines.append(f"~Antes: {brl(previous_price)}~")
+    # Preço atual separado do preço antigo para ficar visualmente limpo.
     lines.append(f"Por *{brl(o['price'])}*")
 
     link = str(affiliate or "").strip()
@@ -7010,21 +7492,24 @@ def whatsapp_image(filename):
 # ============================================================
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # padrão: 15 minutos
-AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
-AUTO_WHATSAPP_ALWAYS_ON = True  # sem horário de início ou parada
-AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
+AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
+AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
+AUTO_WHATSAPP_START = "00:00"
+AUTO_WHATSAPP_END = "23:59"
+# Automação contínua: não existe horário de início/fim.
+AUTO_WHATSAPP_ALWAYS_ON = True
+AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 def _auto_whatsapp_horario_atual():
-    """Compatibilidade com chamadas antigas: a automação fica liberada 24/7."""
+    """Automação contínua: sempre ativa, sem horário de início ou parada."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-    return True, now, 0, 24 * 60
+    return True, now, 0, 24 * 60 - 1
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -7061,27 +7546,18 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
-def _whatsapp_previous_price(product_id):
-    """Retorna o último preço publicado para o anúncio, se já existir."""
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
-            (str(product_id),),
-        ).fetchone()
-        return float(row["last_price"]) if row and row["last_price"] is not None else None
-    except (TypeError, ValueError, sqlite3.Error):
-        return None
-    finally:
-        conn.close()
-
-
 def _whatsapp_should_publish(product_id, price):
-    """Novo produto publica; repetição só é permitida quando o preço caiu."""
-    old_price = _whatsapp_previous_price(product_id)
-    if old_price is None:
+    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
+        (str(product_id),),
+    ).fetchone()
+    conn.close()
+    if not row:
         return True
     try:
+        old_price = float(row["last_price"])
         new_price = float(price)
     except (TypeError, ValueError):
         return False
@@ -7117,25 +7593,6 @@ def _whatsapp_publish_scan(result):
     que ainda não foram enviados permanecem disponíveis para a próxima rodada.
     """
     offers = list((result or {}).get("ofertas") or [])
-    # Rodízio entre categorias: evita que as 3 vagas da rodada sejam ocupadas
-    # por produtos do mesmo nicho quando há ofertas de outras categorias.
-    by_category = {}
-    for offer in offers:
-        category = str(offer.get("category_name") or "Outros")
-        by_category.setdefault(category, []).append(offer)
-    diversified = []
-    category_order = list(by_category)
-    random.shuffle(category_order)
-    while category_order:
-        remaining_categories = []
-        for category in category_order:
-            bucket = by_category.get(category) or []
-            if bucket:
-                diversified.append(bucket.pop(0))
-            if bucket:
-                remaining_categories.append(category)
-        category_order = remaining_categories
-    offers = diversified
     sent = 0
     skipped = 0
 
@@ -7155,16 +7612,9 @@ def _whatsapp_publish_scan(result):
         if price <= 0:
             continue
 
-        previous_price = _whatsapp_previous_price(product_id)
-        if previous_price is not None and price >= previous_price - 0.01:
-            # Não repete a mesma oferta no mesmo preço nem se o preço subir.
+        if not _whatsapp_should_publish(product_id, price):
             skipped += 1
             continue
-        if previous_price is not None:
-            # O gerador de anúncio usa estes campos para avisar que voltou
-            # mais barato e mostrar a comparação com o preço anteriormente enviado.
-            offer["_price_drop_from"] = previous_price
-            offer["_price_drop_amount"] = round(previous_price - price, 2)
 
         # ========================================================
         # LINK AFILIADO AUTOMÁTICO
@@ -7191,13 +7641,7 @@ def _whatsapp_publish_scan(result):
                 continue
 
             try:
-                affiliate_link = _affiliate_csrf_and_link(
-                    product_url,
-                    item_id=str(offer.get("item_id") or product_id).strip().upper(),
-                    product_title=str(offer.get("title") or offer.get("product_title") or "").strip(),
-                    seller_id=offer.get("seller_id"),
-                    expected_price=price,
-                )
+                affiliate_link = _affiliate_csrf_and_link(product_url)
                 offer["affiliate_link"] = affiliate_link
                 print(f"[AUTO AFILIADO] {product_id}: {affiliate_link}")
             except Exception as exc:
@@ -7217,7 +7661,6 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
-        # Não existe bloqueio por horário: publica sempre que houver oferta elegível.
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -7231,34 +7674,22 @@ def _whatsapp_publish_scan(result):
 
 
 def executar_caca_automatica():
-    """Executa uma rodada completa sem restrição de horário (24 horas por dia)."""
+    """Executa uma rodada completa de busca + publicação."""
     if not AUTO_WHATSAPP_ENABLED:
         return {"ok": True, "desativado": True, "enviadas": 0}
-    active, now, start_min, end_min = _auto_whatsapp_horario_atual()
 
     if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
         print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
         return {"ok": True, "ocupado": True, "enviadas": 0}
 
     try:
-        print(
-            f"[AUTO WHATSAPP] Iniciando nova caça automática às {now:%H:%M:%S} "
-            f"({AUTO_WHATSAPP_TZ}); categorias={len(CATALOG)}."
-        )
+        print("[AUTO WHATSAPP] Iniciando nova caça automática...")
         result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
-        offers = list((result or {}).get("ofertas") or [])
-        if not offers:
-            print(
-                "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
-                "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
-                "[BUSCA ITEMS API], [V61 API ITEMS] e os retornos de product_items."
-            )
         publish = _whatsapp_publish_scan(result)
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
-            f"ofertas_validas={len(offers)}, "
-            f"enviadas={publish.get('enviadas', 0)}, "
-            f"erro={publish.get('erro') or 'nenhum'}"
+            f"ofertas={len(result.get('ofertas', []))}, "
+            f"enviadas={publish.get('enviadas', 0)}"
         )
         return publish
     except Exception as exc:
@@ -7276,35 +7707,15 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] Automação contínua ativa 24/7; "
-            f"intervalo-alvo={AUTO_WHATSAPP_INTERVAL}s ({AUTO_WHATSAPP_INTERVAL // 60} min), "
-            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
-            f"fuso de referência={AUTO_WHATSAPP_TZ}. Sem horário de início/parada."
+            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
+            f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
+            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
+            f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            rodada_inicio = time.monotonic()
-            try:
-                resultado = executar_caca_automatica() or {}
-                duracao = max(0.0, time.monotonic() - rodada_inicio)
-                # O intervalo é medido entre INÍCIOS das rodadas, não após
-                # terminar a busca. Assim uma rodada de 7 minutos não vira
-                # um ciclo de 22 minutos. Rodadas longas não se sobrepõem.
-                espera = max(0.0, AUTO_WHATSAPP_INTERVAL - duracao)
-                print(
-                    f"[AUTO WHATSAPP] Ciclo: duração={duracao:.1f}s; "
-                    f"próxima rodada em {espera:.1f}s; "
-                    f"enviadas nesta rodada={resultado.get('enviadas', 0)}."
-                )
-                if espera > 0:
-                    time.sleep(espera)
-                else:
-                    print(
-                        "[AUTO WHATSAPP] A rodada demorou mais que o intervalo; "
-                        "a próxima começa agora, sem sobrepor a anterior."
-                    )
-            except Exception as exc:
-                print("[AUTO WHATSAPP] Erro no agendador:", repr(exc))
-                time.sleep(30)
+            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
+            executar_caca_automatica()
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
@@ -7329,10 +7740,6 @@ def api_whatsapp_automacao():
         "ativo": AUTO_WHATSAPP_ENABLED,
         "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
         "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
-        "sempre_ligado": True,
-        "restricao_horario": False,
-        "fuso_horario_referencia": AUTO_WHATSAPP_TZ,
-        "hora_local_agora": _auto_whatsapp_horario_atual()[1].isoformat(),
         "publicadas": [dict(row) for row in rows],
     })
 
@@ -7394,36 +7801,6 @@ def run_caca_job(job_id, category=None):
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
-
-
-
-def run_manual_search_job(job_id, q):
-    """Executa busca manual em segundo plano e devolve erro explícito à interface."""
-    try:
-        update_job(job_id, status="running", progress=5, message="🔎 Preparando busca manual...")
-        category, category_queries = _manual_queries_for_category(q)
-        queries = category_queries if category and category_queries else [q]
-        update_job(
-            job_id, progress=15,
-            message=f"🛒 Consultando {category or q} ({len(queries)} termos)..."
-        )
-        result = scan_queries(queries, apply_coupons=True)
-        result.setdefault("stats", {})["busca_manual"] = category or q
-        result["stats"]["nichos_pesquisados"] = len(queries)
-        update_job(job_id, progress=96, message="📊 Organizando ofertas...")
-        offers_count = result.get("stats", {}).get("ofertas", 0)
-        update_job(
-            job_id, status="done", progress=100,
-            message=f"✅ Busca concluída: {offers_count} ofertas.",
-            result=json_safe(result)
-        )
-    except Exception as exc:
-        print("[ERRO BUSCA MANUAL]", repr(exc))
-        update_job(
-            job_id, status="error", progress=100,
-            message="❌ A busca manual falhou.",
-            error=str(exc)
-        )
 
 # ============================================================
 # RESOLUÇÃO DA BUSCA MANUAL POR CATEGORIA
@@ -7522,20 +7899,6 @@ def api_buscar():
     resultado["stats"]["nichos_pesquisados"] = len(queries)
 
     return jsonify(json_safe(resultado))
-
-@app.route("/api/buscar/job")
-def api_buscar_job():
-    q = request.args.get("q", "").strip()
-    if not q:
-        return jsonify({"erro": "Informe uma busca."}), 400
-    job_id = create_job()
-    thread = threading.Thread(
-        target=run_manual_search_job, args=(job_id, q),
-        name="manual-search-" + job_id[:8], daemon=True
-    )
-    thread.start()
-    return jsonify({"ok": True, "job_id": job_id, "status": "queued"})
-
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -8380,57 +8743,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
-        is_url_not_allowed = (
-            r.status_code == 400
-            and ("URL not allowed in affiliates program" in detail
-                 or '"error_code":111' in detail
-                 or '"error_code": 111' in detail)
-        )
-        if is_url_not_allowed:
-            print("[AFILIADO FALLBACK] URL recusada; procurando publicação alternativa compatível.")
-            alternative_url = resolve_by_search()
-            if alternative_url and alternative_url.rstrip("/") != product_url.rstrip("/"):
-                try:
-                    alt_page = requests.get(
-                        alternative_url,
-                        headers={"Cookie": cookie_header, "User-Agent": ua},
-                        timeout=ML_AFFILIATE_TIMEOUT,
-                        allow_redirects=True,
-                    )
-                    alt_csrf = csrf
-                    if alt_page.ok:
-                        m = re.search(r'csrfToken[^\"]*"([^\"]+)"', alt_page.text)
-                        if not m:
-                            m = re.search(r'name="csrf-token"\s+content="([^\"]+)"', alt_page.text)
-                        if m:
-                            alt_csrf = m.group(1)
-                    alt_host = (urlparse(alternative_url).netloc or "").lower()
-                    alt_origin = ("https://www.mercadolivre.com.br"
-                                  if "mercadolivre.com.br" in alt_host and not alt_host.startswith("produto.")
-                                  else "https://produto.mercadolivre.com.br")
-                    alt_headers = dict(headers)
-                    alt_headers.update({"X-CSRF-Token": alt_csrf, "Referer": alternative_url, "Origin": alt_origin})
-                    alt_response = requests.post(
-                        ML_AFFILIATE_URL,
-                        headers=alt_headers,
-                        json={"url": alternative_url.rstrip("/"), "tag": ML_AFFILIATE_TAG},
-                        timeout=ML_AFFILIATE_TIMEOUT,
-                        allow_redirects=True,
-                    )
-                    if alt_response.ok:
-                        alt_data = alt_response.json()
-                        alt_short_url = str(alt_data.get("short_url") or "").strip()
-                        if alt_short_url:
-                            print("[AFILIADO FALLBACK] publicação alternativa aceita.")
-                            return alt_short_url
-                        print("[AFILIADO FALLBACK] resposta alternativa sem short_url.")
-                    else:
-                        print("[AFILIADO FALLBACK] alternativa recusada: HTTP", alt_response.status_code,
-                              alt_response.text[:400].replace("\n", " "))
-                except Exception as alt_exc:
-                    print("[AFILIADO FALLBACK] erro na alternativa:", repr(alt_exc))
-            else:
-                print("[AFILIADO FALLBACK] nenhuma publicação alternativa compatível encontrada.")
         raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}")
 
     try:
@@ -8586,20 +8898,10 @@ async function acompanharCaca(jobId){
  }
 }
 async function buscar(){
- const q=document.getElementById('q').value.trim();
- if(!q)return;
- const status=document.getElementById('status');
- status.textContent='🔄 Busca iniciada. Consultando o Mercado Livre...';
- document.getElementById('results').innerHTML='<p>🔎 Buscando ofertas em segundo plano. O resultado aparecerá aqui quando terminar.</p>';
- if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
- try{
-  const r=await fetch('/api/buscar/job?q='+encodeURIComponent(q),{cache:'no-store'});
-  const start=await r.json();
-  if(!r.ok || !start.job_id) throw new Error(start.erro||'Não foi possível iniciar a busca.');
-  acompanharCaca(start.job_id);
- }catch(e){
-  status.textContent='❌ Erro ao iniciar a busca: '+e.message;
- }
+ const q=document.getElementById('q').value.trim(); if(!q)return;
+ document.getElementById('status').textContent='🔄 Procurando...';
+ const r=await fetch('/api/buscar?q='+encodeURIComponent(q)); const data=await r.json(); render(data);
+ document.getElementById('status').textContent='✅ Busca atualizada agora.';
 }
 function render(data){
  document.getElementById('stats').innerHTML=Object.entries(data.stats||{}).map(([k,v])=>`<div class="stat">${k}<b>${v}</b></div>`).join('');
