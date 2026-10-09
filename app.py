@@ -4472,9 +4472,11 @@ def _scrape_public_item_page(item_id):
     if cached is not None:
         return dict(cached)
 
+    # Primeiro tenta o formato canônico de publicação; o formato antigo em
+    # www.mercadolivre.com.br costuma responder 404 e fica apenas como fallback.
     urls = [
-        f'https://www.mercadolivre.com.br/{iid.lower()}-produto',
         f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
+        f'https://www.mercadolivre.com.br/{iid.lower()}-produto',
     ]
     headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
@@ -7190,7 +7192,13 @@ def _whatsapp_publish_scan(result):
                 continue
 
             try:
-                affiliate_link = _affiliate_csrf_and_link(product_url)
+                affiliate_link = _affiliate_csrf_and_link(
+                    product_url,
+                    item_id=str(offer.get("item_id") or product_id).strip().upper(),
+                    product_title=str(offer.get("title") or offer.get("product_title") or "").strip(),
+                    seller_id=offer.get("seller_id"),
+                    expected_price=price,
+                )
                 offer["affiliate_link"] = affiliate_link
                 print(f"[AUTO AFILIADO] {product_id}: {affiliate_link}")
             except Exception as exc:
