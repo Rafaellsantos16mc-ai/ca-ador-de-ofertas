@@ -1,3 +1,4 @@
+VERSAO_CACADOR = "V66_BUSCA_DIVERSIFICADA_DIAGNOSTICO"
 import random
 import os
 import sqlite3
@@ -3074,18 +3075,9 @@ def _search_arabic_real_listings(q, limit=80):
 
         # Loja Oficial NÃO é mais obrigatória.
         official_store_id = _extract_official_store_id(candidate) or _extract_official_store_id(fallback_product)
-        # Se ainda não houver preço original, tenta enriquecer pela publicação
-        # real. Isso ajuda o filtro de desconto sem exigir Loja Oficial.
-        if candidate.get("original_price") is None:
-            try:
-                data, status, _ = ml_get(f"/items/{iid}")
-                if status == 200 and isinstance(data, dict):
-                    if not official_store_id:
-                        official_store_id = _extract_official_store_id(data)
-                    candidate = dict(candidate)
-                    candidate["original_price"] = data.get("original_price") or data.get("base_price")
-            except Exception as exc:
-                print("[PRECO ORIGINAL] falha ao confirmar", iid, repr(exc))
+        # Não consultar /items/{id} só para obter preço original: em alguns
+        # ambientes essa rota responde 403. Mantemos o anúncio encontrado pelo
+        # catálogo e usamos o preço original se a própria resposta o fornecer.
 
         shipping = candidate.get("shipping") or {}
         if not isinstance(shipping, dict):
@@ -3176,9 +3168,9 @@ def _search_arabic_real_listings(q, limit=80):
         print("[ARABES CATALOGO]", query, repr(exc))
         products = []
 
-    # No máximo 3 produtos de catálogo por consulta. Isso evita o efeito de
-    # 35 nichos x dezenas de chamadas que estava provocando HTTP 429.
-    for product_row in products[:3]:
+    # Processa até 8 produtos de catálogo por consulta para aumentar a diversidade,
+    # mantendo limite para não multiplicar chamadas sem controle.
+    for product_row in products[:8]:
         if len(listings) >= limit:
             break
         if not isinstance(product_row, dict):
@@ -5205,11 +5197,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             cat = fmap[fut]
             try:
                 raw_by_cat[cat] = fut.result() or []
-                print(f"[V59 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
+                print(f"[V66 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
             except Exception as e:
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
-                print(f"[V59 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
+                print(f"[V66 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -5320,7 +5312,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Mantém exatamente o ranking por posição dentro de cada categoria.
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
-    print(f"[V59 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
+    print(f"[V66 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
     fetched = []
     enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
@@ -5968,7 +5960,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "ofertas": [o],
         })
 
-    print(f"[V59 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
+    print(f"[V66 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
     values = [o["price"] for o in flat if o.get("price") is not None]
     totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
