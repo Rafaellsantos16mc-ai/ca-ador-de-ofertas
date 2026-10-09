@@ -4381,17 +4381,28 @@ def _search_shoes_category(cat, fast=False):
     print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
     return out
 
-def _search_real_item_listings_api(q, limit=50, offset=0):
-    """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
+# Circuit breaker compartilhado: o endpoint /sites/MLB/search está retornando
+# HTTP 403 neste app. Uma vez confirmado, não repetimos dezenas de chamadas
+# idênticas para cada categoria/termo; seguimos com a busca pública alternativa.
+_REAL_ITEM_SEARCH_API_BLOCKED = False
+_REAL_ITEM_SEARCH_API_BLOCKED_LOCK = threading.Lock()
+_REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
 
-    Diferente de /products/search, /sites/MLB/search devolve publicações ITEM
-    (MLBxxxxxxxx) com preço, vendedor, frete e permalink. Essa é a fonte
-    principal da V42 para categorias comuns. Se a API retornar 403/erro,
-    devolvemos [] e o scanner continua usando as fontes anteriores.
+
+def _search_real_item_listings_api(q, limit=50, offset=0):
+    """Fonte complementar de anúncios reais; não é obrigatória para a busca.
+
+    Se /sites/MLB/search retornar 403, o bloqueio é lembrado durante a execução
+    para não desperdiçar tempo em todas as categorias. A busca pública de IDs
+    que roda antes desta função continua sendo a fonte alternativa principal.
     """
+    global _REAL_ITEM_SEARCH_API_BLOCKED, _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
     query = str(q or "").strip()
     if not query:
         return []
+    with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+        if _REAL_ITEM_SEARCH_API_BLOCKED:
+            return []
     try:
         lim = max(1, min(int(limit or 50), 50))
         off = max(0, int(offset or 0))
@@ -4405,7 +4416,15 @@ def _search_real_item_listings_api(q, limit=50, offset=0):
         "sort": "relevance",
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
+        if status == 403:
+            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+                _REAL_ITEM_SEARCH_API_BLOCKED = True
+                should_log = not _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
+                _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = True
+            if should_log:
+                print("[BUSCA ITEMS API] HTTP 403: endpoint bloqueado para esta aplicação; desativando novas tentativas e usando a busca pública alternativa em TODAS as categorias.")
+        else:
+            print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
         return []
 
     rows = data.get("results") or []
