@@ -7956,12 +7956,21 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
         page_status = page.status_code
         page_final_url = str(page.url or "")
         if page.ok:
-            m = re.search(r'csrfToken[^\\"]*"([^"]+)"', page.text)
-            if not m:
-                m = re.search(r'name="csrf-token"\\s+content="([^"]+)"', page.text)
-            if m:
-                csrf = m.group(1)
-                page_csrf_found = True
+            # Procura o CSRF em formatos comuns de HTML/JSON sem registrar o valor.
+            csrf_patterns = (
+                r"csrfToken\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]",
+                r"\x22csrfToken\x22\s*:\s*\x22([^\x22]+)\x22",
+                r"name=[\x22\x27]csrf-token[\x22\x27]\s+content=[\x22\x27]([^\x22\x27]+)[\x22\x27]",
+                r"content=[\x22\x27]([^\x22\x27]+)[\x22\x27]\s+name=[\x22\x27]csrf-token[\x22\x27]",
+                r"<meta[^>]+name=[\x22\x27]csrf-token[\x22\x27][^>]+content=[\x22\x27]([^\x22\x27]+)[\x22\x27]",
+            )
+            page_text = page.text or ""
+            for pattern in csrf_patterns:
+                m = re.search(pattern, page_text, re.I)
+                if m:
+                    csrf = m.group(1)
+                    page_csrf_found = True
+                    break
     except requests.RequestException as exc:
         print("[AFILIADO DIAGNOSTICO] GET produto falhou:", type(exc).__name__)
 
