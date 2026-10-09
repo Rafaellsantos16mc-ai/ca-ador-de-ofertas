@@ -6479,7 +6479,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V50: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V51: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -7493,23 +7493,48 @@ def whatsapp_image(filename):
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
-AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
-AUTO_WHATSAPP_START = "00:00"
-AUTO_WHATSAPP_END = "23:59"
-# Automação contínua: não existe horário de início/fim.
-AUTO_WHATSAPP_ALWAYS_ON = True
-AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
+AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
+# Agora estes horários são lidos do Railway. Ex.: AUTO_WHATSAPP_START=08:30 e AUTO_WHATSAPP_END=22:30.
+AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
+AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "22:30").strip()
+AUTO_WHATSAPP_ALWAYS_ON = os.getenv("AUTO_WHATSAPP_ALWAYS_ON", "0").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
+def _parse_hhmm(value, fallback):
+    try:
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+        if not match:
+            return fallback
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return fallback
+        return hour * 60 + minute
+    except Exception:
+        return fallback
+
 def _auto_whatsapp_horario_atual():
-    """Automação contínua: sempre ativa, sem horário de início ou parada."""
+    """Retorna se a automação pode publicar agora, respeitando fuso e faixa horária.
+
+    Suporta janelas normais (08:00–22:00) e janelas que atravessam a meia-noite
+    (22:00–02:00). Se início e fim forem iguais, considera funcionamento contínuo.
+    """
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-    return True, now, 0, 24 * 60 - 1
+    start_min = _parse_hhmm(AUTO_WHATSAPP_START, 0)
+    end_min = _parse_hhmm(AUTO_WHATSAPP_END, 23 * 60 + 59)
+    current_min = now.hour * 60 + now.minute
+    if AUTO_WHATSAPP_ALWAYS_ON or start_min == end_min:
+        active = True
+    elif start_min < end_min:
+        active = start_min <= current_min < end_min
+    else:
+        active = current_min >= start_min or current_min < end_min
+    return active, now, start_min, end_min
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -7597,6 +7622,10 @@ def _whatsapp_publish_scan(result):
     skipped = 0
 
     for offer in offers:
+        active, now, start_min, end_min = _auto_whatsapp_horario_atual()
+        if not active:
+            print(f"[AUTO WHATSAPP] Horário de parada atingido ({AUTO_WHATSAPP_END}, fuso {AUTO_WHATSAPP_TZ}); interrompendo envios.")
+            break
         if sent >= AUTO_WHATSAPP_LIMIT:
             break
 
@@ -7661,6 +7690,11 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
+        # Revalida imediatamente antes do envio: a geração do link/anúncio pode demorar.
+        active, now, start_min, end_min = _auto_whatsapp_horario_atual()
+        if not active:
+            print(f"[AUTO WHATSAPP] Horário de parada atingido antes do envio ({AUTO_WHATSAPP_END}, {AUTO_WHATSAPP_TZ}); anúncio não enviado.")
+            break
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -7674,9 +7708,13 @@ def _whatsapp_publish_scan(result):
 
 
 def executar_caca_automatica():
-    """Executa uma rodada completa de busca + publicação."""
+    """Executa uma rodada completa somente dentro da janela configurada."""
     if not AUTO_WHATSAPP_ENABLED:
         return {"ok": True, "desativado": True, "enviadas": 0}
+    active, now, start_min, end_min = _auto_whatsapp_horario_atual()
+    if not active:
+        print(f"[AUTO WHATSAPP] Fora do horário ({AUTO_WHATSAPP_START}–{AUTO_WHATSAPP_END}, {AUTO_WHATSAPP_TZ}); rodada não iniciada. Agora: {now:%H:%M}.")
+        return {"ok": True, "fora_do_horario": True, "enviadas": 0, "agora": now.isoformat()}
 
     if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
         print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
@@ -7707,15 +7745,23 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
-            f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
-            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
-            f"Fuso: {AUTO_WHATSAPP_TZ}."
+            f"[AUTO WHATSAPP] Agendamento ativo: {AUTO_WHATSAPP_START}–{AUTO_WHATSAPP_END}; "
+            f"intervalo={AUTO_WHATSAPP_INTERVAL}s, até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
+            f"fuso={AUTO_WHATSAPP_TZ}; sempre_ligado={AUTO_WHATSAPP_ALWAYS_ON}."
         )
         while True:
-            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
-            executar_caca_automatica()
-            time.sleep(AUTO_WHATSAPP_INTERVAL)
+            try:
+                active, now, start_min, end_min = _auto_whatsapp_horario_atual()
+                if active:
+                    executar_caca_automatica()
+                    # Checa novamente em no máximo 60 segundos para não atravessar o horário de parada.
+                    time.sleep(min(AUTO_WHATSAPP_INTERVAL, 60))
+                else:
+                    # Fora da janela, aguarda pouco e reavalia sem iniciar buscas nem publicar.
+                    time.sleep(30)
+            except Exception as exc:
+                print("[AUTO WHATSAPP] Erro no agendador:", repr(exc))
+                time.sleep(30)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
@@ -7740,6 +7786,12 @@ def api_whatsapp_automacao():
         "ativo": AUTO_WHATSAPP_ENABLED,
         "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
         "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
+        "horario_inicio": AUTO_WHATSAPP_START,
+        "horario_parada": AUTO_WHATSAPP_END,
+        "fuso_horario": AUTO_WHATSAPP_TZ,
+        "sempre_ligado": AUTO_WHATSAPP_ALWAYS_ON,
+        "janela_ativa_agora": _auto_whatsapp_horario_atual()[0],
+        "hora_local_agora": _auto_whatsapp_horario_atual()[1].isoformat(),
         "publicadas": [dict(row) for row in rows],
     })
 
