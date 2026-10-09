@@ -1,4 +1,3 @@
-VERSAO_CACADOR = "V68_CORRIGE_AFILIADO_E_404"
 import random
 import os
 import sqlite3
