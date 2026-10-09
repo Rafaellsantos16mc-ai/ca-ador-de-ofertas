@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V68_CORRIGE_AFILIADO_E_404"
+VERSAO_CACADOR = "V69_SCHEDULER_UNICO_DIAGNOSTICO"
 import random
 import os
 import sqlite3
@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urlencode, quote, urlparse, parse_qs
+import fcntl
 
 import requests
 
@@ -5199,11 +5200,11 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             cat = fmap[fut]
             try:
                 raw_by_cat[cat] = fut.result() or []
-                print(f"[V68 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
+                print(f"[V69 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
             except Exception as e:
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
-                print(f"[V68 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
+                print(f"[V69 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -5314,7 +5315,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Mantém exatamente o ranking por posição dentro de cada categoria.
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
-    print(f"[V68 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
+    print(f"[V69 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
     fetched = []
     enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
@@ -5962,7 +5963,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "ofertas": [o],
         })
 
-    print(f"[V68 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
+    print(f"[V69 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
     values = [o["price"] for o in flat if o.get("price") is not None]
     totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
@@ -7199,8 +7200,12 @@ def _whatsapp_publish_scan(result):
                     seller_id=offer.get("seller_id"),
                     expected_price=price,
                 )
+                if not valid_affiliate_link(affiliate_link):
+                    raise RuntimeError(
+                        "o gerador retornou uma URL que não foi reconhecida como link de afiliado"
+                    )
                 offer["affiliate_link"] = affiliate_link
-                print(f"[AUTO AFILIADO] {product_id}: {affiliate_link}")
+                print(f"[AUTO AFILIADO] {product_id}: link de afiliado validado.")
             except Exception as exc:
                 # Não marca a oferta como publicada. Ela ficará disponível
                 # para uma próxima rodada, caso a sessão/cookie seja
@@ -7259,6 +7264,7 @@ def executar_caca_automatica():
             f"[AUTO WHATSAPP] Rodada finalizada: "
             f"ofertas_validas={len(offers)}, "
             f"enviadas={publish.get('enviadas', 0)}, "
+            f"ignoradas={publish.get('ignoradas', 0)}, "
             f"erro={publish.get('erro') or 'nenhum'}"
         )
         return publish
@@ -7276,8 +7282,22 @@ def iniciar_automacao_whatsapp():
         return
 
     def worker():
+        # Gunicorn pode importar este módulo em vários workers. Sem um lock
+        # entre processos, cada worker inicia seu próprio agendador e dispara
+        # caças duplicadas. O flock é liberado automaticamente se o processo morrer.
+        lock_path = os.getenv("AUTO_WHATSAPP_LOCK_FILE", "/tmp/cacador_whatsapp_scheduler.lock")
+        try:
+            lock_handle = open(lock_path, "w", encoding="utf-8")
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError) as exc:
+            print(f"[AUTO WHATSAPP] Agendador não iniciado neste worker: outro processo já possui o lock ({exc}).")
+            return
+
         print(
-            f"[AUTO WHATSAPP] Automação contínua ativa 24/7; "
+            f"[{VERSAO_CACADOR}] Código carregado; pid={os.getpid()}."
+        )
+        print(
+            f"[AUTO WHATSAPP] Agendador único ativo 24/7; "
             f"intervalo-alvo={AUTO_WHATSAPP_INTERVAL}s ({AUTO_WHATSAPP_INTERVAL // 60} min), "
             f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
             f"fuso de referência={AUTO_WHATSAPP_TZ}. Sem horário de início/parada."
