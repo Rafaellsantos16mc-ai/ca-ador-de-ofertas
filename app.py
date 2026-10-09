@@ -1261,7 +1261,7 @@ def access_token():
 # threads disparam requisições simultâneas e provocam HTTP 429.
 _ML_API_REQUEST_LOCK = threading.RLock()
 _ML_API_LAST_REQUEST_AT = 0.0
-_ML_API_MIN_INTERVAL = 0.35
+_ML_API_MIN_INTERVAL = 0.75
 _ML_API_429_COOLDOWN = 0.0
 
 
@@ -1277,6 +1277,12 @@ def ml_get(path, params=None):
     # Mantém uma única fila para todas as categorias, inclusive quando os
     # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
     with _ML_API_REQUEST_LOCK:
+        # Se outra chamada acabou de receber 429, não repetimos a mesma
+        # pancada na API durante a janela de cooldown. Retornamos 429 para
+        # que a busca use cache/fontes alternativas; a própria chamada que
+        # recebeu o 429 já fez suas retentativas controladas abaixo.
+        if time.monotonic() < _ML_API_429_COOLDOWN:
+            return {"error": "rate_limit_cooldown"}, 429, {"Retry-After": str(max(1, int(_ML_API_429_COOLDOWN - time.monotonic())))}
         for attempt in range(4):
             now = time.monotonic()
             wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
@@ -4441,26 +4447,26 @@ def _search_shoes_category(cat, fast=False):
     print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
     return out
 
-# Circuit breaker compartilhado: não insistimos num endpoint que devolva 403.
-# O HTTP 429 é tratado pelo limitador global ml_get, com espera e retentativas.
+# Circuit breaker: somente 403 bloqueia definitivamente este endpoint.
+# 429 é temporário: entra em pausa temporizada e depois pode tentar novamente.
 _REAL_ITEM_SEARCH_API_BLOCKED = False
 _REAL_ITEM_SEARCH_API_BLOCKED_LOCK = threading.Lock()
 _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
+_REAL_ITEM_SEARCH_API_RETRY_AT = 0.0
+_REAL_ITEM_SEARCH_API_429_LOGGED = False
 
 
 def _search_real_item_listings_api(q, limit=50, offset=0):
-    """Fonte complementar de anúncios reais; não é obrigatória para a busca.
-
-    Se /sites/MLB/search retornar 403, o bloqueio é lembrado durante a execução.
-    Respostas 429 são espaçadas e retentadas por ml_get antes de desistir. A
-    busca pública de IDs continua disponível como fonte alternativa.
-    """
+    """Busca anúncios reais sem desativar o endpoint permanentemente por 429."""
     global _REAL_ITEM_SEARCH_API_BLOCKED, _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
+    global _REAL_ITEM_SEARCH_API_RETRY_AT, _REAL_ITEM_SEARCH_API_429_LOGGED
     query = str(q or "").strip()
     if not query:
         return []
     with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
         if _REAL_ITEM_SEARCH_API_BLOCKED:
+            return []
+        if time.monotonic() < _REAL_ITEM_SEARCH_API_RETRY_AT:
             return []
     try:
         lim = max(1, min(int(limit or 50), 50))
@@ -4475,13 +4481,20 @@ def _search_real_item_listings_api(q, limit=50, offset=0):
         "sort": "relevance",
     })
     if status != 200 or not isinstance(data, dict):
-        if status in (403, 429):
+        if status == 403:
             with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
                 _REAL_ITEM_SEARCH_API_BLOCKED = True
                 should_log = not _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
                 _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = True
             if should_log:
-                print(f"[BUSCA ITEMS API] HTTP {status}: pausando novas tentativas neste endpoint e usando a busca alternativa em todas as categorias.")
+                print("[BUSCA ITEMS API] HTTP 403: endpoint não autorizado; usando fontes alternativas até reiniciar o processo.")
+        elif status == 429:
+            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+                _REAL_ITEM_SEARCH_API_RETRY_AT = time.monotonic() + 120.0
+                should_log = not _REAL_ITEM_SEARCH_API_429_LOGGED
+                _REAL_ITEM_SEARCH_API_429_LOGGED = True
+            if should_log:
+                print("[BUSCA ITEMS API] HTTP 429: pausa de 120s só neste endpoint; /products/search e cache continuam ativos.")
         else:
             print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
         return []
@@ -4774,7 +4787,7 @@ def _search_category(cat, fast=False):
             if len(out) >= real_target:
                 break
 
-    print(f"[V44 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+    print(f"[V56 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
 
     # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
     # a busca pública; se devolver 403, não impede a primeira fonte.
@@ -5826,7 +5839,7 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V45 prioriza IDs ITEM reais descobertos na página pública
+    Para categorias comuns, a V56 prioriza IDs ITEM reais descobertos na página pública
     e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
@@ -5834,7 +5847,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
 
     raw_by_cat = {}
-    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
+    with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
         fmap = {ex.submit(_search_category, cat, FAST_ALL_CATEGORIES and len(categories) > 1): cat for cat in categories}
         for fut in as_completed(fmap):
             cat = fmap[fut]
@@ -5954,7 +5967,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
     fetched = []
-    enrichment_workers = 10 if FAST_ALL_CATEGORIES and len(categories) > 1 else 14
+    enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
@@ -7641,7 +7654,7 @@ AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
 # Agora estes horários são lidos do Railway. Ex.: AUTO_WHATSAPP_START=08:30 e AUTO_WHATSAPP_END=22:30.
 AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
 AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "22:30").strip()
-AUTO_WHATSAPP_ALWAYS_ON = os.getenv("AUTO_WHATSAPP_ALWAYS_ON", "0").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_WHATSAPP_ALWAYS_ON = False  # Faixa 08:30–22:30 é obrigatória; não permitir override do Railway.
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
@@ -7672,7 +7685,7 @@ def _auto_whatsapp_horario_atual():
     start_min = _parse_hhmm(AUTO_WHATSAPP_START, 0)
     end_min = _parse_hhmm(AUTO_WHATSAPP_END, 23 * 60 + 59)
     current_min = now.hour * 60 + now.minute
-    if AUTO_WHATSAPP_ALWAYS_ON or start_min == end_min:
+    if start_min == end_min:
         active = True
     elif start_min < end_min:
         active = start_min <= current_min < end_min
