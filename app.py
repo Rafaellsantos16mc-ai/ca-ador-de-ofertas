@@ -135,18 +135,18 @@ FAST_ALL_CATEGORIES = True
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
 SEARCH_TARGET_OFFERS = 230
-SEARCH_CANDIDATES_PER_CATEGORY_ALL = 160
+SEARCH_CANDIDATES_PER_CATEGORY_ALL = 45
 SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
-SEARCH_RAW_POOL_PER_CATEGORY = 350
-SEARCH_SEEDS_FAST_PER_CATEGORY = 30
-SEARCH_RESULTS_PER_QUERY_FAST = 50
+SEARCH_RAW_POOL_PER_CATEGORY = 120
+SEARCH_SEEDS_FAST_PER_CATEGORY = 10
+SEARCH_RESULTS_PER_QUERY_FAST = 30
 # V42: fonte primária de anúncios reais para categorias comuns.
 # Em uma categoria isolada, consultamos uma amostra ampla dos micro-nichos
 # diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
 # depender somente do catálogo /products/search.
 SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
-SEARCH_REAL_ITEM_QUERIES_ALL = 28
-SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
+SEARCH_REAL_ITEM_QUERIES_ALL = 5
+SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 30
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -1256,20 +1256,69 @@ def access_token():
         return t["access_token"]
     return refresh() or t.get("access_token")
 
+# Limitador GLOBAL das chamadas à API do Mercado Livre.
+# As buscas de categorias podem rodar em paralelo; sem este bloqueio, várias
+# threads disparam requisições simultâneas e provocam HTTP 429.
+_ML_API_REQUEST_LOCK = threading.RLock()
+_ML_API_LAST_REQUEST_AT = 0.0
+_ML_API_MIN_INTERVAL = 0.75
+_ML_API_429_COOLDOWN = 0.0
+
+
 def ml_get(path, params=None):
+    """GET autenticado com espaçamento global e retentativa controlada no 429."""
+    global _ML_API_LAST_REQUEST_AT, _ML_API_429_COOLDOWN
     token = access_token()
     if not token:
         return {}, 401, {}
     url = path if path.startswith("http") else ML_API + path
-    try:
-        r = requests.get(url, headers={"Authorization":f"Bearer {token}","Accept":"application/json"}, params=params, timeout=30)
-        try:
-            data = r.json()
-        except Exception:
-            data = {"message": r.text}
-        return data, r.status_code, dict(r.headers)
-    except requests.RequestException as e:
-        return {"error":str(e)}, 500, {}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    # Mantém uma única fila para todas as categorias, inclusive quando os
+    # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
+    with _ML_API_REQUEST_LOCK:
+        # Se outra chamada acabou de receber 429, não repetimos a mesma
+        # pancada na API durante a janela de cooldown. Retornamos 429 para
+        # que a busca use cache/fontes alternativas; a própria chamada que
+        # recebeu o 429 já fez suas retentativas controladas abaixo.
+        if time.monotonic() < _ML_API_429_COOLDOWN:
+            return {"error": "rate_limit_cooldown"}, 429, {"Retry-After": str(max(1, int(_ML_API_429_COOLDOWN - time.monotonic())))}
+        for attempt in range(4):
+            now = time.monotonic()
+            wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
+                       _ML_API_429_COOLDOWN - now, 0.0)
+            if wait > 0:
+                time.sleep(wait)
+            _ML_API_LAST_REQUEST_AT = time.monotonic()
+            try:
+                r = requests.get(url, headers=headers, params=params, timeout=30)
+            except requests.RequestException as exc:
+                return {"error": str(exc)}, 500, {}
+
+            response_headers = dict(r.headers)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"message": r.text[:2000]}
+
+            if r.status_code != 429:
+                _ML_API_429_COOLDOWN = 0.0
+                return data, r.status_code, response_headers
+
+            # Honra Retry-After quando válido. Se ausente/inválido, usa espera
+            # exponencial crescente e partilhada por todas as threads.
+            retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
+            try:
+                delay = float(retry_after) if retry_after is not None else (1.5 * (2 ** attempt))
+            except (TypeError, ValueError):
+                delay = 1.5 * (2 ** attempt)
+            delay = max(1.0, min(delay, 20.0))
+            _ML_API_429_COOLDOWN = time.monotonic() + delay
+            print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/4; aguardando {delay:.1f}s")
+            if attempt == 3:
+                return data, 429, response_headers
+
+    return {}, 429, {}
 
 # ============================================================
 # LOGIN
@@ -2744,20 +2793,37 @@ def calculate_public_coupon(coupon, price):
     return round(min(max(d, 0), float(price)), 2)
 
 
+_PRODUCT_SEARCH_CACHE = {}
+_PRODUCT_SEARCH_CACHE_LOCK = threading.Lock()
+_PRODUCT_SEARCH_CACHE_TTL = 900  # 15 minutos; reduz chamadas repetidas por categoria.
+
+
 def search_products_direct(q, limit=40):
-    """Busca candidatos sem exigir que todos tenham detalhe de catálogo."""
+    """Busca candidatos com cache curto e proteção global contra HTTP 429."""
+    query = str(q or "").strip()
+    lim = min(int(limit or 40), 50)
+    cache_key = (norm(query), lim)
+    now = time.time()
+    with _PRODUCT_SEARCH_CACHE_LOCK:
+        cached = _PRODUCT_SEARCH_CACHE.get(cache_key)
+        if cached and now - cached[0] < _PRODUCT_SEARCH_CACHE_TTL:
+            print(f"[BUSCA CACHE] {query} -> {len(cached[1])} candidatos")
+            return list(cached[1])
+
     data, status, _ = ml_get("/products/search", {
         "site_id": SITE_ID,
-        "q": q,
+        "q": query,
         "status": "active",
-        "limit": min(int(limit or 40), 50),
+        "limit": lim,
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA] {q} -> HTTP {status}")
+        print(f"[BUSCA] {query} -> HTTP {status}")
         return []
     results = data.get("results") or []
-    print(f"[BUSCA] {q} -> {len(results)} candidatos")
+    with _PRODUCT_SEARCH_CACHE_LOCK:
+        _PRODUCT_SEARCH_CACHE[cache_key] = (time.time(), list(results))
+    print(f"[BUSCA] {query} -> {len(results)} candidatos")
     return results
 
 
@@ -3682,7 +3748,7 @@ def _search_arabic_real_listings(q, limit=80):
 
     # No máximo 3 produtos de catálogo por consulta. Isso evita o efeito de
     # 35 nichos x dezenas de chamadas que estava provocando HTTP 429.
-    for product_row in products[:6]:
+    for product_row in products[:3]:
         if len(listings) >= limit:
             break
         if not isinstance(product_row, dict):
@@ -3907,7 +3973,7 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:60]
+        queries = queries[:5]
     for q in queries:
         try:
             rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
@@ -4321,6 +4387,10 @@ def _shoe_diverse_queries(fast=False):
 def _search_shoes_category(cat, fast=False):
     """Busca tênis/calçados com diversidade real de marcas e modelos."""
     queries = _shoe_diverse_queries(fast=fast)
+    # Buscar todas as categorias não pode disparar dezenas de consultas só de
+    # calçados. A busca individual continua usando a lista ampla completa.
+    if fast:
+        queries = queries[:12]
     per_query = 24 if fast else 30
     rows_by_query = []
 
@@ -4381,17 +4451,27 @@ def _search_shoes_category(cat, fast=False):
     print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
     return out
 
-def _search_real_item_listings_api(q, limit=50, offset=0):
-    """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
+# Circuit breaker: somente 403 bloqueia definitivamente este endpoint.
+# 429 é temporário: entra em pausa temporizada e depois pode tentar novamente.
+_REAL_ITEM_SEARCH_API_BLOCKED = False
+_REAL_ITEM_SEARCH_API_BLOCKED_LOCK = threading.Lock()
+_REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = False
+_REAL_ITEM_SEARCH_API_RETRY_AT = 0.0
+_REAL_ITEM_SEARCH_API_429_LOGGED = False
 
-    Diferente de /products/search, /sites/MLB/search devolve publicações ITEM
-    (MLBxxxxxxxx) com preço, vendedor, frete e permalink. Essa é a fonte
-    principal da V42 para categorias comuns. Se a API retornar 403/erro,
-    devolvemos [] e o scanner continua usando as fontes anteriores.
-    """
+
+def _search_real_item_listings_api(q, limit=50, offset=0):
+    """Busca anúncios reais sem desativar o endpoint permanentemente por 429."""
+    global _REAL_ITEM_SEARCH_API_BLOCKED, _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
+    global _REAL_ITEM_SEARCH_API_RETRY_AT, _REAL_ITEM_SEARCH_API_429_LOGGED
     query = str(q or "").strip()
     if not query:
         return []
+    with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+        if _REAL_ITEM_SEARCH_API_BLOCKED:
+            return []
+        if time.monotonic() < _REAL_ITEM_SEARCH_API_RETRY_AT:
+            return []
     try:
         lim = max(1, min(int(limit or 50), 50))
         off = max(0, int(offset or 0))
@@ -4405,7 +4485,22 @@ def _search_real_item_listings_api(q, limit=50, offset=0):
         "sort": "relevance",
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
+        if status == 403:
+            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+                _REAL_ITEM_SEARCH_API_BLOCKED = True
+                should_log = not _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED
+                _REAL_ITEM_SEARCH_API_BLOCKED_LOGGED = True
+            if should_log:
+                print("[BUSCA ITEMS API] HTTP 403: endpoint não autorizado; usando fontes alternativas até reiniciar o processo.")
+        elif status == 429:
+            with _REAL_ITEM_SEARCH_API_BLOCKED_LOCK:
+                _REAL_ITEM_SEARCH_API_RETRY_AT = time.monotonic() + 120.0
+                should_log = not _REAL_ITEM_SEARCH_API_429_LOGGED
+                _REAL_ITEM_SEARCH_API_429_LOGGED = True
+            if should_log:
+                print("[BUSCA ITEMS API] HTTP 429: pausa de 120s só neste endpoint; /products/search e cache continuam ativos.")
+        else:
+            print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
         return []
 
     rows = data.get("results") or []
@@ -4569,7 +4664,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Mantemos 40 consultas no modo rápido, mas agora as primeiras
             # consultas são majoritariamente importadas e masculinas.
-            perfume_queries = perfume_queries[:90]
+            perfume_queries = perfume_queries[:12]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -4696,7 +4791,7 @@ def _search_category(cat, fast=False):
             if len(out) >= real_target:
                 break
 
-    print(f"[V44 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+    print(f"[V59 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
 
     # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
     # a busca pública; se devolver 403, não impede a primeira fonte.
@@ -4720,7 +4815,7 @@ def _search_category(cat, fast=False):
                 real_added += 1
                 if len(out) >= real_target:
                     break
-        print(f"[V44 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+        print(f"[V59 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
@@ -5646,8 +5741,16 @@ def _title_matches_scan_category(category, title):
     ))
     shoe = any(x in n for x in (
         "tenis", "tênis", "sneaker", "sneakers", "sapatenis", "sapatênis",
-        "calcado", "calçado", "chuteira", "chinelo", "slide", "sandalia",
-        "sandália", "running shoe", "running shoes",
+        "calcado", "calçado", "sapato", "sapatos", "mocassim", "mocassins",
+        "oxford", "loafer", "sapatilha", "scarpin", "bota masculina",
+        "bota feminina", "botina", "ankle boot", "social masculino",
+        "sapato social", "chinelo", "slide", "sandalia", "sandália",
+        "running shoe", "running shoes",
+        # Marcas de calçados reconhecidas no catálogo do projeto; ajudam quando
+        # o anúncio omite a palavra "sapato" no título (ex.: Ferracini Blady).
+        "ferracini", "pegada", "democrata", "west coast", "freeway",
+        "kildare", "sandro moscoloni", "moleca", "modare", "beira rio",
+        "via marte", "comfortflex", "piccadilly", " dakota ",
         # modelos/linhas muito característicos de tênis
         "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
         "ultraboost", "superstar", "adizero", "pegasus", "vomero",
@@ -5740,7 +5843,7 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V45 prioriza IDs ITEM reais descobertos na página pública
+    Para categorias comuns, a V59 prioriza IDs ITEM reais descobertos na página pública
     e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
@@ -5748,15 +5851,17 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
 
     raw_by_cat = {}
-    with _ThreadPoolExecutor(max_workers=min(8, max(1, len(categories)))) as ex:
+    with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
         fmap = {ex.submit(_search_category, cat, FAST_ALL_CATEGORIES and len(categories) > 1): cat for cat in categories}
         for fut in as_completed(fmap):
             cat = fmap[fut]
             try:
                 raw_by_cat[cat] = fut.result() or []
+                print(f"[V59 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
             except Exception as e:
                 print("[TOP 20 BUSCA]", cat, repr(e))
                 raw_by_cat[cat] = []
+                print(f"[V59 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -5769,7 +5874,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         perfume_raw = raw_by_cat.get("🌸 Perfumes", [])
         print(f"[PERFUMES CANDIDATOS BRUTOS] {len(perfume_raw)}")
         seen_perfume_items = set()
-        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
+        direct_limit = 45 if FAST_ALL_CATEGORIES and len(categories) > 1 else 120
         for pos, (raw, source_query) in enumerate(perfume_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5789,7 +5894,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         arabic_raw = raw_by_cat.get("🌙 Perfumes Árabes", [])
         print(f"[ARABES CANDIDATOS BRUTOS] {len(arabic_raw)}")
         seen_arabic_items = set()
-        direct_limit = 500 if FAST_ALL_CATEGORIES and len(categories) > 1 else 800
+        direct_limit = 45 if FAST_ALL_CATEGORIES and len(categories) > 1 else 120
         for pos, (raw, source_query) in enumerate(arabic_raw[:direct_limit], start=1):
             try:
                 item_id = str(raw.get("id") or raw.get("item_id") or "").strip()
@@ -5867,8 +5972,9 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # Mantém exatamente o ranking por posição dentro de cada categoria.
     candidates.sort(key=lambda x: (x[3], x[0] * -1, x[1]))
 
+    print(f"[V59 PROGRESSO] descoberta concluída: categorias={len(categories)}; candidatos_para_enriquecer={len(candidates)}; perfumes_diretos={len(direct_perfume_offers)}; arabes_diretos={len(direct_arabic_offers)}")
     fetched = []
-    enrichment_workers = 10 if FAST_ALL_CATEGORIES and len(categories) > 1 else 14
+    enrichment_workers = 4 if FAST_ALL_CATEGORIES and len(categories) > 1 else 5
     with _ThreadPoolExecutor(max_workers=enrichment_workers) as ex:
         fmap = {
             ex.submit(_fetch_product_fast, pid, raw, {
@@ -6516,6 +6622,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             "ofertas": [o],
         })
 
+    print(f"[V59 PROGRESSO] scan_queries concluído: ofertas_finais={len(flat)}; candidatos={len(candidates)}; enriquecidos={len(fetched)}; cupons={coupon_count}")
     values = [o["price"] for o in flat if o.get("price") is not None]
     totals = [o["total_price"] for o in flat if o.get("shipping_known") and o.get("total_price") is not None]
     stats = {
@@ -6537,7 +6644,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"V51: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
+        "modo": f"V59: bloqueio forte de pelúcias/brinquedos mesmo com marca/modelo no título; remove bolas e itens de cuidado dos pés; prioriza marcas grandes em tênis/moda; reduz marcas pouco conhecidas; máximo 1 bicicleta ergométrica; chuteiras excluídas; busca ampliada com mais consultas e candidatos; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -7550,49 +7657,21 @@ def whatsapp_image(filename):
 # ============================================================
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
+AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # padrão: 15 minutos
 AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
-# Agora estes horários são lidos do Railway. Ex.: AUTO_WHATSAPP_START=08:30 e AUTO_WHATSAPP_END=22:30.
-AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
-AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "22:30").strip()
-AUTO_WHATSAPP_ALWAYS_ON = os.getenv("AUTO_WHATSAPP_ALWAYS_ON", "0").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_WHATSAPP_ALWAYS_ON = True  # sem horário de início ou parada
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
-def _parse_hhmm(value, fallback):
-    try:
-        match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
-        if not match:
-            return fallback
-        hour, minute = int(match.group(1)), int(match.group(2))
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            return fallback
-        return hour * 60 + minute
-    except Exception:
-        return fallback
-
 def _auto_whatsapp_horario_atual():
-    """Retorna se a automação pode publicar agora, respeitando fuso e faixa horária.
-
-    Suporta janelas normais (08:00–22:00) e janelas que atravessam a meia-noite
-    (22:00–02:00). Se início e fim forem iguais, considera funcionamento contínuo.
-    """
+    """Compatibilidade com chamadas antigas: a automação fica liberada 24/7."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-    start_min = _parse_hhmm(AUTO_WHATSAPP_START, 0)
-    end_min = _parse_hhmm(AUTO_WHATSAPP_END, 23 * 60 + 59)
-    current_min = now.hour * 60 + now.minute
-    if AUTO_WHATSAPP_ALWAYS_ON or start_min == end_min:
-        active = True
-    elif start_min < end_min:
-        active = start_min <= current_min < end_min
-    else:
-        active = current_min >= start_min or current_min < end_min
-    return active, now, start_min, end_min
+    return True, now, 0, 24 * 60
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -7680,10 +7759,6 @@ def _whatsapp_publish_scan(result):
     skipped = 0
 
     for offer in offers:
-        active, now, start_min, end_min = _auto_whatsapp_horario_atual()
-        if not active:
-            print(f"[AUTO WHATSAPP] Horário de parada atingido ({AUTO_WHATSAPP_END}, fuso {AUTO_WHATSAPP_TZ}); interrompendo envios.")
-            break
         if sent >= AUTO_WHATSAPP_LIMIT:
             break
 
@@ -7748,11 +7823,7 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
-        # Revalida imediatamente antes do envio: a geração do link/anúncio pode demorar.
-        active, now, start_min, end_min = _auto_whatsapp_horario_atual()
-        if not active:
-            print(f"[AUTO WHATSAPP] Horário de parada atingido antes do envio ({AUTO_WHATSAPP_END}, {AUTO_WHATSAPP_TZ}); anúncio não enviado.")
-            break
+        # Não existe bloqueio por horário: publica sempre que houver oferta elegível.
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -7766,26 +7837,34 @@ def _whatsapp_publish_scan(result):
 
 
 def executar_caca_automatica():
-    """Executa uma rodada completa somente dentro da janela configurada."""
+    """Executa uma rodada completa sem restrição de horário (24 horas por dia)."""
     if not AUTO_WHATSAPP_ENABLED:
         return {"ok": True, "desativado": True, "enviadas": 0}
     active, now, start_min, end_min = _auto_whatsapp_horario_atual()
-    if not active:
-        print(f"[AUTO WHATSAPP] Fora do horário ({AUTO_WHATSAPP_START}–{AUTO_WHATSAPP_END}, {AUTO_WHATSAPP_TZ}); rodada não iniciada. Agora: {now:%H:%M}.")
-        return {"ok": True, "fora_do_horario": True, "enviadas": 0, "agora": now.isoformat()}
 
     if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
         print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
         return {"ok": True, "ocupado": True, "enviadas": 0}
 
     try:
-        print("[AUTO WHATSAPP] Iniciando nova caça automática...")
+        print(
+            f"[AUTO WHATSAPP] Iniciando nova caça automática às {now:%H:%M:%S} "
+            f"({AUTO_WHATSAPP_TZ}); categorias={len(CATALOG)}."
+        )
         result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
+        offers = list((result or {}).get("ofertas") or [])
+        if not offers:
+            print(
+                "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
+                "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
+                "[BUSCA ITEMS API], [V59 API ITEMS] e os retornos de product_items."
+            )
         publish = _whatsapp_publish_scan(result)
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
-            f"ofertas={len(result.get('ofertas', []))}, "
-            f"enviadas={publish.get('enviadas', 0)}"
+            f"ofertas_validas={len(offers)}, "
+            f"enviadas={publish.get('enviadas', 0)}, "
+            f"erro={publish.get('erro') or 'nenhum'}"
         )
         return publish
     except Exception as exc:
@@ -7803,20 +7882,14 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] Agendamento ativo: {AUTO_WHATSAPP_START}–{AUTO_WHATSAPP_END}; "
+            f"[AUTO WHATSAPP] Automação contínua ativa 24/7; "
             f"intervalo={AUTO_WHATSAPP_INTERVAL}s, até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
-            f"fuso={AUTO_WHATSAPP_TZ}; sempre_ligado={AUTO_WHATSAPP_ALWAYS_ON}."
+            f"fuso de referência={AUTO_WHATSAPP_TZ}. Sem horário de início/parada."
         )
         while True:
             try:
-                active, now, start_min, end_min = _auto_whatsapp_horario_atual()
-                if active:
-                    executar_caca_automatica()
-                    # Checa novamente em no máximo 60 segundos para não atravessar o horário de parada.
-                    time.sleep(min(AUTO_WHATSAPP_INTERVAL, 60))
-                else:
-                    # Fora da janela, aguarda pouco e reavalia sem iniciar buscas nem publicar.
-                    time.sleep(30)
+                executar_caca_automatica()
+                time.sleep(AUTO_WHATSAPP_INTERVAL)
             except Exception as exc:
                 print("[AUTO WHATSAPP] Erro no agendador:", repr(exc))
                 time.sleep(30)
@@ -7844,11 +7917,9 @@ def api_whatsapp_automacao():
         "ativo": AUTO_WHATSAPP_ENABLED,
         "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
         "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
-        "horario_inicio": AUTO_WHATSAPP_START,
-        "horario_parada": AUTO_WHATSAPP_END,
-        "fuso_horario": AUTO_WHATSAPP_TZ,
-        "sempre_ligado": AUTO_WHATSAPP_ALWAYS_ON,
-        "janela_ativa_agora": _auto_whatsapp_horario_atual()[0],
+        "sempre_ligado": True,
+        "restricao_horario": False,
+        "fuso_horario_referencia": AUTO_WHATSAPP_TZ,
         "hora_local_agora": _auto_whatsapp_horario_atual()[1].isoformat(),
         "publicadas": [dict(row) for row in rows],
     })
@@ -7911,6 +7982,36 @@ def run_caca_job(job_id, category=None):
     except Exception as e:
         print("[ERRO JOB CAÇA]", repr(e))
         update_job(job_id, status="error", progress=100, message="❌ Erro durante a atualização.", error=str(e))
+
+
+
+def run_manual_search_job(job_id, q):
+    """Executa busca manual em segundo plano e devolve erro explícito à interface."""
+    try:
+        update_job(job_id, status="running", progress=5, message="🔎 Preparando busca manual...")
+        category, category_queries = _manual_queries_for_category(q)
+        queries = category_queries if category and category_queries else [q]
+        update_job(
+            job_id, progress=15,
+            message=f"🛒 Consultando {category or q} ({len(queries)} termos)..."
+        )
+        result = scan_queries(queries, apply_coupons=True)
+        result.setdefault("stats", {})["busca_manual"] = category or q
+        result["stats"]["nichos_pesquisados"] = len(queries)
+        update_job(job_id, progress=96, message="📊 Organizando ofertas...")
+        offers_count = result.get("stats", {}).get("ofertas", 0)
+        update_job(
+            job_id, status="done", progress=100,
+            message=f"✅ Busca concluída: {offers_count} ofertas.",
+            result=json_safe(result)
+        )
+    except Exception as exc:
+        print("[ERRO BUSCA MANUAL]", repr(exc))
+        update_job(
+            job_id, status="error", progress=100,
+            message="❌ A busca manual falhou.",
+            error=str(exc)
+        )
 
 # ============================================================
 # RESOLUÇÃO DA BUSCA MANUAL POR CATEGORIA
@@ -8009,6 +8110,20 @@ def api_buscar():
     resultado["stats"]["nichos_pesquisados"] = len(queries)
 
     return jsonify(json_safe(resultado))
+
+@app.route("/api/buscar/job")
+def api_buscar_job():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"erro": "Informe uma busca."}), 400
+    job_id = create_job()
+    thread = threading.Thread(
+        target=run_manual_search_job, args=(job_id, q),
+        name="manual-search-" + job_id[:8], daemon=True
+    )
+    thread.start()
+    return jsonify({"ok": True, "job_id": job_id, "status": "queued"})
+
 
 @app.route("/api/cacar")
 def api_cacar():
@@ -9008,10 +9123,20 @@ async function acompanharCaca(jobId){
  }
 }
 async function buscar(){
- const q=document.getElementById('q').value.trim(); if(!q)return;
- document.getElementById('status').textContent='🔄 Procurando...';
- const r=await fetch('/api/buscar?q='+encodeURIComponent(q)); const data=await r.json(); render(data);
- document.getElementById('status').textContent='✅ Busca atualizada agora.';
+ const q=document.getElementById('q').value.trim();
+ if(!q)return;
+ const status=document.getElementById('status');
+ status.textContent='🔄 Busca iniciada. Consultando o Mercado Livre...';
+ document.getElementById('results').innerHTML='<p>🔎 Buscando ofertas em segundo plano. O resultado aparecerá aqui quando terminar.</p>';
+ if(cacarTimer){clearTimeout(cacarTimer);cacarTimer=null;}
+ try{
+  const r=await fetch('/api/buscar/job?q='+encodeURIComponent(q),{cache:'no-store'});
+  const start=await r.json();
+  if(!r.ok || !start.job_id) throw new Error(start.erro||'Não foi possível iniciar a busca.');
+  acompanharCaca(start.job_id);
+ }catch(e){
+  status.textContent='❌ Erro ao iniciar a busca: '+e.message;
+ }
 }
 function render(data){
  document.getElementById('stats').innerHTML=Object.entries(data.stats||{}).map(([k,v])=>`<div class="stat">${k}<b>${v}</b></div>`).join('');
