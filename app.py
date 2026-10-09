@@ -4791,7 +4791,7 @@ def _search_category(cat, fast=False):
             if len(out) >= real_target:
                 break
 
-    print(f"[V57 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+    print(f"[V58 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
 
     # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
     # a busca pública; se devolver 403, não impede a primeira fonte.
@@ -4815,7 +4815,7 @@ def _search_category(cat, fast=False):
                 real_added += 1
                 if len(out) >= real_target:
                     break
-        print(f"[V57 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+        print(f"[V58 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
 
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
@@ -5843,7 +5843,7 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para categorias comuns, a V57 prioriza IDs ITEM reais descobertos na página pública
+    Para categorias comuns, a V58 prioriza IDs ITEM reais descobertos na página pública
     e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
@@ -7882,13 +7882,24 @@ def executar_caca_automatica():
         return {"ok": True, "ocupado": True, "enviadas": 0}
 
     try:
-        print("[AUTO WHATSAPP] Iniciando nova caça automática...")
+        print(
+            f"[AUTO WHATSAPP] Iniciando nova caça automática às {now:%H:%M:%S} "
+            f"({AUTO_WHATSAPP_TZ}); categorias={len(CATALOG)}."
+        )
         result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
+        offers = list((result or {}).get("ofertas") or [])
+        if not offers:
+            print(
+                "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
+                "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
+                "[BUSCA ITEMS API], [V58 API ITEMS] e os retornos de product_items."
+            )
         publish = _whatsapp_publish_scan(result)
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
-            f"ofertas={len(result.get('ofertas', []))}, "
-            f"enviadas={publish.get('enviadas', 0)}"
+            f"ofertas_validas={len(offers)}, "
+            f"enviadas={publish.get('enviadas', 0)}, "
+            f"erro={publish.get('erro') or 'nenhum'}"
         )
         return publish
     except Exception as exc:
@@ -7914,9 +7925,11 @@ def iniciar_automacao_whatsapp():
             try:
                 active, now, start_min, end_min = _auto_whatsapp_horario_atual()
                 if active:
+                    # Respeita o intervalo configurado (padrão: 15 minutos).
+                    # A rotina de publicação revalida a janela antes de CADA envio,
+                    # portanto não publica depois das 22:30 mesmo se uma rodada demorar.
                     executar_caca_automatica()
-                    # Checa novamente em no máximo 60 segundos para não atravessar o horário de parada.
-                    time.sleep(min(AUTO_WHATSAPP_INTERVAL, 60))
+                    time.sleep(AUTO_WHATSAPP_INTERVAL)
                 else:
                     # Fora da janela, aguarda pouco e reavalia sem iniciar buscas nem publicar.
                     time.sleep(30)
