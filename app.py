@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V69_SCHEDULER_UNICO_DIAGNOSTICO"
+VERSAO_CACADOR = "V70_PRECO_E_HORARIO_RESTAURADOS"
 import random
 import os
 import sqlite3
@@ -7014,19 +7014,46 @@ def whatsapp_image(filename):
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # padrão: 15 minutos
 AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
-AUTO_WHATSAPP_ALWAYS_ON = True  # sem horário de início ou parada
+# Horário restaurado: publicar somente das 08:30 às 22:30 (Brasília).
+AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
+AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "22:30").strip()
+AUTO_WHATSAPP_ALWAYS_ON = os.getenv("AUTO_WHATSAPP_ALWAYS_ON", "0").strip().lower() in {"1", "true", "yes", "on"}
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
+def _parse_hhmm(value, fallback):
+    try:
+        match = re.fullmatch(r"(\\d{1,2}):(\\d{2})", str(value or "").strip())
+        if not match:
+            return fallback
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return fallback
+        return hour * 60 + minute
+    except Exception:
+        return fallback
+
+
 def _auto_whatsapp_horario_atual():
-    """Compatibilidade com chamadas antigas: a automação fica liberada 24/7."""
+    """Verifica a janela de publicação no fuso de São Paulo."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-    return True, now, 0, 24 * 60
+    start_min = _parse_hhmm(AUTO_WHATSAPP_START, 8 * 60 + 30)
+    end_min = _parse_hhmm(AUTO_WHATSAPP_END, 22 * 60 + 30)
+    current_min = now.hour * 60 + now.minute
+    if AUTO_WHATSAPP_ALWAYS_ON:
+        active = True
+    elif start_min == end_min:
+        active = False
+    elif start_min < end_min:
+        active = start_min <= current_min < end_min
+    else:
+        active = current_min >= start_min or current_min < end_min
+    return active, now, start_min, end_min
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -7223,7 +7250,7 @@ def _whatsapp_publish_scan(result):
             skipped += 1
             continue
 
-        # Não existe bloqueio por horário: publica sempre que houver oferta elegível.
+        # Publicação respeita a janela de funcionamento configurada.
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -7237,10 +7264,16 @@ def _whatsapp_publish_scan(result):
 
 
 def executar_caca_automatica():
-    """Executa uma rodada completa sem restrição de horário (24 horas por dia)."""
+    """Executa uma rodada completa somente dentro do horário permitido."""
     if not AUTO_WHATSAPP_ENABLED:
         return {"ok": True, "desativado": True, "enviadas": 0}
     active, now, start_min, end_min = _auto_whatsapp_horario_atual()
+    if not active:
+        print(
+            f"[AUTO WHATSAPP] Fora do horário de publicação ({AUTO_WHATSAPP_START}–"
+            f"{AUTO_WHATSAPP_END}, {AUTO_WHATSAPP_TZ}); rodada ignorada às {now:%H:%M}."
+        )
+        return {"ok": True, "fora_do_horario": True, "enviadas": 0}
 
     if not AUTO_WHATSAPP_LOCK.acquire(blocking=False):
         print("[AUTO WHATSAPP] Já existe uma rodada em andamento; ignorando esta execução.")
@@ -7297,10 +7330,11 @@ def iniciar_automacao_whatsapp():
             f"[{VERSAO_CACADOR}] Código carregado; pid={os.getpid()}."
         )
         print(
-            f"[AUTO WHATSAPP] Agendador único ativo 24/7; "
+            f"[AUTO WHATSAPP] Agendador único ativo; "
             f"intervalo-alvo={AUTO_WHATSAPP_INTERVAL}s ({AUTO_WHATSAPP_INTERVAL // 60} min), "
             f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada; "
-            f"fuso de referência={AUTO_WHATSAPP_TZ}. Sem horário de início/parada."
+            f"horário={AUTO_WHATSAPP_START}–{AUTO_WHATSAPP_END}; "
+            f"fuso={AUTO_WHATSAPP_TZ}."
         )
         while True:
             rodada_inicio = time.monotonic()
@@ -7350,8 +7384,10 @@ def api_whatsapp_automacao():
         "ativo": AUTO_WHATSAPP_ENABLED,
         "intervalo_segundos": AUTO_WHATSAPP_INTERVAL,
         "limite_por_rodada": AUTO_WHATSAPP_LIMIT,
-        "sempre_ligado": True,
-        "restricao_horario": False,
+        "sempre_ligado": AUTO_WHATSAPP_ALWAYS_ON,
+        "restricao_horario": not AUTO_WHATSAPP_ALWAYS_ON,
+        "horario_inicio": AUTO_WHATSAPP_START,
+        "horario_fim": AUTO_WHATSAPP_END,
         "fuso_horario_referencia": AUTO_WHATSAPP_TZ,
         "hora_local_agora": _auto_whatsapp_horario_atual()[1].isoformat(),
         "publicadas": [dict(row) for row in rows],
@@ -8536,15 +8572,12 @@ def afiliado_bookmarklet():
         "const h=(location.hash||'').replace(/^#/,''),hp=new URLSearchParams(h);"
         "const state=hp.get('cacador_state')||'';"
         "const ret=hp.get('cacador_return')||'';"
-        "const productUrl=hp.get('cacador_product_url')||'';"
-        "if(!productUrl)throw Error('Produto do Caçador não identificado. Volte ao Caçador e tente novamente.');"
-        "const u=new URL(productUrl);u.hash='';"
-        "if(location.hostname!=='www.mercadolivre.com.br')throw Error('Abra o Portal do Afiliado do Mercado Livre e toque novamente no favorito Caçador Afiliado.');"
-        "const tr=await fetch('/affiliate-program/api/v2/stripe/user/tags',{credentials:'same-origin',headers:{Accept:'application/json'}});"
+        "const u=new URL(location.href);u.hash='';"
+        "const tr=await fetch('/affiliate-program/api/v2/stripe/user/tags',{headers:{Accept:'application/json'}});"
         "const tj=await tr.json();"
         "const tag=(tj.tags||[]).find(x=>x.in_use)?.tag;"
         "if(!tag)throw Error('Tag de afiliado não encontrada');"
-        "const lr=await fetch('/affiliate-program/api/v2/stripe/user/links',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({url:u.toString(),tag})});"
+        "const lr=await fetch('/affiliate-program/api/v2/stripe/user/links',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({url:u.toString(),tag})});"
         "const j=await lr.json();"
         "if(!j.short_url)throw Error(j.error?.message||'O Mercado Livre não gerou o link');"
         "if(!ret)throw Error('Retorno do Caçador não encontrado');"
@@ -8748,21 +8781,27 @@ async function iniciarAfiliado(id,o){
     await anuncio(id,JSON.stringify(o));
     return;
    }
-   // HTTP 401 no Railway significa que a sessão não pode ser reutilizada
-   // no servidor. Continua pelo Portal oficial no mesmo navegador do usuário.
-   if(data.erro){ console.warn('[AFILIADO] servidor indisponível; usando Portal oficial:', data.erro); }
+   // Se o servidor está configurado mas recusou esta publicação, NÃO
+   // abrimos uma URL de fallback no Safari. Isso era exatamente o que
+   // fazia o iPhone cair na página “Parece que esta página não existe”.
+   if(data.configurado){
+    throw new Error(data.erro || 'O Mercado Livre não aceitou esta publicação para gerar o link afiliado.');
+   }
   }catch(e){
-   console.warn('[AFILIADO] falha no servidor; usando Portal oficial:', e && e.message || e);
+   // Só usa o Safari quando o gerador do servidor realmente não está
+   // configurado. Com cookies configurados, mostramos o erro real.
+   if(String(e && e.message || '').trim()){
+    alert('❌ Não foi possível gerar o link afiliado no servidor. '+e.message);
+    return;
+   }
   }
 
-  // Fallback no domínio www.mercadolivre.com.br, onde a sessão do portal
-  // pode autenticar a chamada interna. O produto é transportado no hash.
+  // FALLBACK: fluxo Safari somente quando o servidor não estiver configurado.
   const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
-  const portal=new URL('https://www.mercadolivre.com.br/l/visite-o-portal-de-afiliados');
-  portal.hash='cacador_state='+encodeURIComponent(state)+'&cacador_product_url='+encodeURIComponent(target)+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
-  alert('O Mercado Livre não autorizou a geração pelo servidor. No Portal que vai abrir, toque no favorito “Caçador Afiliado” do Safari para tentar gerar o link usando sua sessão oficial.');
-  window.location.href=portal.toString();
+  const u=new URL(target);
+  u.hash='cacador_state='+state+'&cacador_return='+encodeURIComponent(location.origin+'/afiliado/retorno');
+  window.location.href=u.toString();
  }catch(e){
   alert('❌ Não foi possível gerar o link afiliado. '+e.message);
  }
@@ -8890,7 +8929,7 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 29,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos de alto giro a partir de R$ 69,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
