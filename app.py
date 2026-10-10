@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V70_SEM_RESTRICAO_HORARIO_PRECO_69_90"
+VERSAO_CACADOR = "V75_401_PROTEGIDO_SEM_LINK_FALSO"
 import random
 import os
 import sqlite3
@@ -64,6 +64,9 @@ ML_AFFILIATE_TAG = os.getenv("ML_AFFILIATE_TAG", "sara89164").strip()
 ML_AFFILIATE_COOKIES = os.getenv("ML_AFFILIATE_COOKIES", "").strip()
 ML_AFFILIATE_TIMEOUT = int(os.getenv("ML_AFFILIATE_TIMEOUT", "25") or "25")
 ML_AFFILIATE_URL = "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links"
+# Proteção: depois de um HTTP 401, evita repetir a chamada interna para cada
+# produto durante 15 minutos. O endpoint não é uma API pública documentada.
+ML_AFFILIATE_401_COOLDOWN_UNTIL = 0.0
 
 # ============================================================
 # WHATSAPP BOT
@@ -7852,6 +7855,15 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
       2) /products/{item_id}/items, quando o ID recebido é um produto/catálogo;
       3) /products/{catalog_id}/items, quando a própria URL é /p/MLB....
     """
+    global ML_AFFILIATE_401_COOLDOWN_UNTIL
+    if time.time() < ML_AFFILIATE_401_COOLDOWN_UNTIL:
+        restante = max(1, int(ML_AFFILIATE_401_COOLDOWN_UNTIL - time.time()))
+        raise RuntimeError(
+            f"Geração automática pausada após HTTP 401 (restam {restante}s). "
+            "O Mercado Livre recusou a sessão no gerador interno; nenhuma URL comum será publicada. "
+            "Use o gerador oficial/Barra de Afiliados e atualize a sessão autorizada antes de tentar novamente."
+        )
+
     cookies = _parse_affiliate_cookies(ML_AFFILIATE_COOKIES)
     if not cookies:
         raise RuntimeError("ML_AFFILIATE_COOKIES não configurado")
@@ -8392,6 +8404,18 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
+        if r.status_code == 401:
+            ML_AFFILIATE_401_COOLDOWN_UNTIL = time.time() + 900
+            print(
+                "[AUTO AFILIADO] HTTP 401: o endpoint interno recusou a sessão. "
+                "Pausando novas tentativas por 15 minutos; ofertas sem link afiliado válido serão ignoradas."
+            )
+            raise RuntimeError(
+                "HTTP 401 Unauthorized no gerador interno de afiliados. "
+                "A sessão/cookies foram recusados pelo Mercado Livre; atualizar apenas o CSRF não resolve. "
+                "Este endpoint não é uma API pública documentada. Use o gerador oficial/Barra de Afiliados; "
+                "nenhum link normal será tratado como afiliado."
+            )
         is_url_not_allowed = (
             r.status_code == 400
             and ("URL not allowed in affiliates program" in detail
