@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V81_TESTE_TOP20_PERFUMES"
+VERSAO_CACADOR = "V82_TOP20_PERFUMES_BOOT_CORRIGIDO"
 import random
 import os
 import sqlite3
@@ -31,12 +31,11 @@ except Exception:
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
-print(f"[V81 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; teste_somente_perfumes={TESTE_SOMENTE_PERFUMES}; categorias={list(CATALOG.keys()) if 'CATALOG' in globals() else 'catalogo_inicializando'}; pid={os.getpid()}", flush=True)
 
-# TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
-# A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
-# completo no mesmo arquivo para reativação posterior.
+# TESTE TEMPORARIO: somente perfumes, limitado aos 20 mais vendidos.
+# O catálogo completo permanece no arquivo para reativação posterior.
 TESTE_SOMENTE_PERFUMES = True
+print(f"[V82 CORRIGIDO] Código carregado; versão={VERSAO_CACADOR}; teste_somente_perfumes={TESTE_SOMENTE_PERFUMES}; pid={os.getpid()}", flush=True)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
