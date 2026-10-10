@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V76_DIAGNOSTICO_FLUXO_AFILIADO"
+VERSAO_CACADOR = "V77_PROGRESO_POR_CATEGORIA"
 import random
 import os
 import sqlite3
@@ -31,7 +31,7 @@ except Exception:
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
-print(f"[V76 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
+print(f"[V77 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 # A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
@@ -5195,17 +5195,41 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
 
     raw_by_cat = {}
+    # Diagnóstico real: identifica a categoria em execução, não apenas o começo
+    # geral da rodada. Mantém concorrência limitada para não sobrecarregar o Railway.
+    def _search_category_logged(cat):
+        started = time.monotonic()
+        print(f"[V77 BUSCA] INICIO categoria={cat}; modo_rapido={FAST_ALL_CATEGORIES and len(categories) > 1}", flush=True)
+        try:
+            result = _search_category(cat, FAST_ALL_CATEGORIES and len(categories) > 1) or []
+            print(f"[V77 BUSCA] FIM categoria={cat}; candidatos={len(result)}; duracao_s={time.monotonic()-started:.1f}", flush=True)
+            return result
+        except Exception as exc:
+            print(f"[V77 BUSCA] ERRO categoria={cat}; duracao_s={time.monotonic()-started:.1f}; erro={exc!r}", flush=True)
+            raise
+
+    print(f"[V77 BUSCA] Iniciando {len(categories)} categorias com 3 trabalhadores.", flush=True)
     with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
-        fmap = {ex.submit(_search_category, cat, FAST_ALL_CATEGORIES and len(categories) > 1): cat for cat in categories}
-        for fut in as_completed(fmap):
-            cat = fmap[fut]
-            try:
-                raw_by_cat[cat] = fut.result() or []
-                print(f"[V69 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}")
-            except Exception as e:
-                print("[TOP 20 BUSCA]", cat, repr(e))
-                raw_by_cat[cat] = []
-                print(f"[V69 PROGRESSO] categoria com erro: {cat}; erro={e!r}")
+        fmap = {ex.submit(_search_category_logged, cat): cat for cat in categories}
+        remaining = set(fmap)
+        last_progress = time.monotonic()
+        while remaining:
+            done, remaining = __import__('concurrent.futures').futures.wait(
+                remaining, timeout=20, return_when=__import__('concurrent.futures').futures.FIRST_COMPLETED
+            )
+            if not done:
+                pending_cats = [fmap[f] for f in remaining]
+                print(f"[V77 BUSCA] AINDA_EXECUTANDO categorias={pending_cats}; aguardando retorno das consultas externas.", flush=True)
+                continue
+            for fut in done:
+                cat = fmap[fut]
+                try:
+                    raw_by_cat[cat] = fut.result() or []
+                    print(f"[V77 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}", flush=True)
+                except Exception as e:
+                    print("[TOP 20 BUSCA]", cat, repr(e), flush=True)
+                    raw_by_cat[cat] = []
+                    print(f"[V77 PROGRESSO] categoria com erro: {cat}; erro={e!r}", flush=True)
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -7244,20 +7268,20 @@ def executar_caca_automatica():
             f"[AUTO WHATSAPP] Iniciando nova caça automática às {now:%H:%M:%S} "
             f"(sem restrição de horário); categorias={len(CATALOG)}."
         )
-        print(f"[V76 FLUXO] Etapa 1/4: iniciando scan_queries; categorias={len(CATALOG)}.", flush=True)
+        print(f"[V77 FLUXO] Etapa 1/4: iniciando scan_queries; categorias={len(CATALOG)}.", flush=True)
         result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
         offers = list((result or {}).get("ofertas") or [])
-        print(f"[V76 FLUXO] Etapa 2/4: busca terminou; ofertas_validas={len(offers)}.", flush=True)
+        print(f"[V77 FLUXO] Etapa 2/4: busca terminou; ofertas_validas={len(offers)}.", flush=True)
         if not offers:
             print(
                 "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
                 "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
                 "[BUSCA ITEMS API], [V61 API ITEMS] e os retornos de product_items."
             )
-        print("[V76 FLUXO] Etapa 3/4: chamando publicação/geração de afiliados.", flush=True)
+        print("[V77 FLUXO] Etapa 3/4: chamando publicação/geração de afiliados.", flush=True)
         publish = _whatsapp_publish_scan(result)
         print(
-            f"[V76 FLUXO] Etapa 4/4: rodada concluída; enviadas={publish.get('enviadas', 0)}; ignoradas={publish.get('ignoradas', 0)}; erro={publish.get('erro') or 'nenhum'}.",
+            f"[V77 FLUXO] Etapa 4/4: rodada concluída; enviadas={publish.get('enviadas', 0)}; ignoradas={publish.get('ignoradas', 0)}; erro={publish.get('erro') or 'nenhum'}.",
             flush=True,
         )
         print(
