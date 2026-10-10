@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V78_CORRECOES_RATE_AFILIADO_WHATSAPP"
+VERSAO_CACADOR = "V78_BUSCA_WORKER_SEGURO"
 import random
 import os
 import sqlite3
@@ -694,7 +694,7 @@ def access_token():
 # threads disparam requisições simultâneas e provocam HTTP 429.
 _ML_API_REQUEST_LOCK = threading.RLock()
 _ML_API_LAST_REQUEST_AT = 0.0
-_ML_API_MIN_INTERVAL = 1.1  # V78: aumentado para reduzir 429
+_ML_API_MIN_INTERVAL = 0.75
 _ML_API_429_COOLDOWN = 0.0
 
 
@@ -709,7 +709,6 @@ def ml_get(path, params=None):
 
     # Mantém uma única fila para todas as categorias, inclusive quando os
     # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
-    max_attempts = 4
     with _ML_API_REQUEST_LOCK:
         # Se outra chamada acabou de receber 429, não repetimos a mesma
         # pancada na API durante a janela de cooldown. Retornamos 429 para
@@ -717,7 +716,7 @@ def ml_get(path, params=None):
         # recebeu o 429 já fez suas retentativas controladas abaixo.
         if time.monotonic() < _ML_API_429_COOLDOWN:
             return {"error": "rate_limit_cooldown"}, 429, {"Retry-After": str(max(1, int(_ML_API_429_COOLDOWN - time.monotonic())))}
-        for attempt in range(max_attempts):
+        for attempt in range(2):
             now = time.monotonic()
             wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
                        _ML_API_429_COOLDOWN - now, 0.0)
@@ -746,10 +745,10 @@ def ml_get(path, params=None):
                 delay = float(retry_after) if retry_after is not None else (1.5 * (2 ** attempt))
             except (TypeError, ValueError):
                 delay = 1.5 * (2 ** attempt)
-            delay = max(1.0, min(delay, 25.0))
+            delay = max(1.0, min(delay, 20.0))
             _ML_API_429_COOLDOWN = time.monotonic() + delay
-            print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/{max_attempts}; aguardando {delay:.1f}s")
-            if attempt >= max_attempts - 1:
+            print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/4; aguardando {delay:.1f}s")
+            if attempt == 3:
                 return data, 429, response_headers
 
     return {}, 429, {}
@@ -1012,22 +1011,16 @@ def _hydrate_real_item_permalink(item):
     return item
 
 PRICE_CACHE = {}
-PRICE_CACHE_TTL = 600  # 10 minutos
-PRICE_CACHE_LOCK = threading.Lock()
 
 def get_current_sale_price(item_id):
     if not item_id:
         return None, None
-    now = time.time()
-    with PRICE_CACHE_LOCK:
-        cached = PRICE_CACHE.get(item_id)
-        if cached and (now - cached[0]) < PRICE_CACHE_TTL:
-            return cached[1], cached[2]
+    if item_id in PRICE_CACHE:
+        return PRICE_CACHE[item_id]
     data, status, _ = ml_get(
         f"/items/{item_id}/sale_price",
         {"context": "channel_marketplace"}
     )
-    amount = regular = None
     if status == 200 and isinstance(data, dict):
         try:
             amount = float(data.get("amount")) if data.get("amount") is not None else None
@@ -1037,11 +1030,11 @@ def get_current_sale_price(item_id):
             regular = float(data.get("regular_amount")) if data.get("regular_amount") is not None else None
         except Exception:
             regular = None
-        if data.get("currency_id") not in (None, "BRL") or amount is None or amount <= 0:
-            amount = regular = None
-    with PRICE_CACHE_LOCK:
-        PRICE_CACHE[item_id] = (time.time(), amount, regular)
-    return amount, regular
+        if data.get("currency_id") in (None, "BRL") and amount is not None and amount > 0:
+            PRICE_CACHE[item_id] = (amount, regular)
+            return amount, regular
+    PRICE_CACHE[item_id] = (None, None)
+    return None, None
 
 def valid_catalog_price(price):
     try:
@@ -5216,27 +5209,40 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             raise
 
     print(f"[V77 BUSCA] Iniciando {len(categories)} categorias com 3 trabalhadores.", flush=True)
-    with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
-        fmap = {ex.submit(_search_category_logged, cat): cat for cat in categories}
-        remaining = set(fmap)
-        last_progress = time.monotonic()
+    # Prazo total por categoria. O executor é encerrado sem aguardar tarefas
+    # que excederem o prazo; as chamadas HTTP individuais já têm timeouts.
+    category_timeout = max(20, int(os.getenv("CATEGORY_SEARCH_TIMEOUT", "90")))
+    executor = _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories))))
+    fmap = {executor.submit(_search_category_logged, cat): cat for cat in categories}
+    remaining = set(fmap)
+    deadlines = {f: time.monotonic() + category_timeout for f in remaining}
+    try:
         while remaining:
-            done, remaining = __import__('concurrent.futures').futures.wait(
-                remaining, timeout=20, return_when=__import__('concurrent.futures').futures.FIRST_COMPLETED
+            now = time.monotonic()
+            expired = {f for f in remaining if now >= deadlines[f]}
+            for fut in expired:
+                cat = fmap[fut]
+                raw_by_cat[cat] = []
+                remaining.remove(fut)
+                fut.cancel()
+                print(f"[V78 BUSCA] TIMEOUT categoria={cat}; limite_s={category_timeout}; seguindo para as demais.", flush=True)
+            if not remaining:
+                break
+            next_wait = min(2.0, max(0.1, min(deadlines[f] for f in remaining) - time.monotonic()))
+            done, _ = __import__('concurrent.futures').futures.wait(
+                remaining, timeout=next_wait, return_when=__import__('concurrent.futures').futures.FIRST_COMPLETED
             )
-            if not done:
-                pending_cats = [fmap[f] for f in remaining]
-                print(f"[V77 BUSCA] AINDA_EXECUTANDO categorias={pending_cats}; aguardando retorno das consultas externas.", flush=True)
-                continue
             for fut in done:
                 cat = fmap[fut]
+                remaining.discard(fut)
                 try:
                     raw_by_cat[cat] = fut.result() or []
-                    print(f"[V77 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}", flush=True)
+                    print(f"[V78 BUSCA] CONCLUIDA categoria={cat}; candidatos={len(raw_by_cat[cat])}", flush=True)
                 except Exception as e:
-                    print("[TOP 20 BUSCA]", cat, repr(e), flush=True)
                     raw_by_cat[cat] = []
-                    print(f"[V77 PROGRESSO] categoria com erro: {cat}; erro={e!r}", flush=True)
+                    print(f"[V78 BUSCA] ERRO categoria={cat}; erro={e!r}", flush=True)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
@@ -6167,71 +6173,6 @@ def _extract_item_id_from_affiliate_url(link):
     return None
 
 
-def ad_text(o, affiliate=""):
-    """Monta o anúncio no formato visual pedido para o WhatsApp.
-
-    Formato:
-    - frase de destaque
-    - nome do produto
-    - preço antigo riscado com ~ ~
-    - cupom, quando existir
-    - preço atual em destaque
-    - uma linha em branco antes da chamada
-    - PEGAR PROMOÇÃO + link na MESMA linha
-
-    O ~texto~ é o recurso nativo de tachado do WhatsApp.
-    """
-    title = str(o.get("title") or "Produto").strip()
-    marketing = _marketing_phrase(title, o)
-
-    lines = [
-        f"*{marketing.upper()}*",
-        "",
-        f"*{title}*",
-        "",
-    ]
-
-    # Em queda de preço, o preço antigo deve ser o último preço publicado
-    # anteriormente no grupo. Nas ofertas normais, usamos o preço original
-    # do anúncio, quando disponível.
-    previous_price = o.get("_price_drop_from")
-    try:
-        previous_price = float(previous_price) if previous_price not in (None, "") else None
-        current_price = float(o.get("price") or 0)
-    except (TypeError, ValueError):
-        previous_price = None
-        current_price = 0.0
-    is_price_drop = previous_price is not None and current_price > 0 and current_price < previous_price - 0.01
-
-    original = o.get("original_price")
-    try:
-        original_value = float(original) if original not in (None, "") else 0.0
-    except (TypeError, ValueError):
-        original_value = 0.0
-
-    # Evita mostrar dois preços antigos diferentes no anúncio de queda.
-    if not is_price_drop and original_value > 0:
-        lines.append(f"~De {brl(original_value)}~")
-
-    if o.get("cupom"):
-        c = o["cupom"] or {}
-        label = c.get("code") or c.get("label") or "Cupom disponível"
-        lines.append(f"🎟️ Cupom: *{label}*")
-
-    # Na queda, exibe explicitamente o último preço enviado e o preço atual.
-    if is_price_drop:
-        lines[0] = "🚨 *VOLTOU MAIS BARATO! PREÇO REDUZIDO* 🚨"
-        lines.append(f"~Antes: {brl(previous_price)}~")
-    lines.append(f"Por *{brl(o['price'])}*")
-
-    link = str(affiliate or "").strip()
-    if not valid_affiliate_link(link):
-        raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
-
-    # Link fica na frente, continuando a mesma linha de PEGAR PROMOÇÃO.
-    lines.append(f"*PEGAR PROMOÇÃO 🔥:* {link}")
-
-    return "\n".join(lines)
 
 
 def _marketing_phrase(title, offer=None):
@@ -6487,57 +6428,6 @@ def _marketing_phrase(title, offer=None):
         detail = f"{pn} está {discount_text}; uma boa oportunidade para quem já estava de olho nesse produto."
     return result(f"{pn.upper()} EM OFERTA", "🔥👀", detail)
 
-def ad_text(o, affiliate=""):
-    """Monta o anúncio no formato visual pedido para o WhatsApp.
-
-    Formato:
-    - frase de destaque
-    - nome do produto
-    - preço antigo riscado com ~ ~
-    - cupom, quando existir
-    - preço atual em destaque
-    - uma linha em branco antes da chamada
-    - PEGAR PROMOÇÃO + link na MESMA linha
-
-    O ~texto~ é o recurso nativo de tachado do WhatsApp.
-    """
-    title = str(o.get("title") or "Produto").strip()
-    marketing = _marketing_phrase(title, o)
-
-    lines = [
-        f"*{marketing.upper()}*",
-        "",
-        f"*{title}*",
-        "",
-    ]
-
-    # Preço antigo no estilo do anúncio de referência: ~De R$222,83~
-    # Só mostramos o valor riscado quando ele realmente existe.
-    original = o.get("original_price")
-    try:
-        original_value = float(original) if original not in (None, "") else 0.0
-    except (TypeError, ValueError):
-        original_value = 0.0
-
-    if original_value > 0:
-        lines.append(f"~De {brl(original_value)}~")
-
-    if o.get("cupom"):
-        c = o["cupom"] or {}
-        label = c.get("code") or c.get("label") or "Cupom disponível"
-        lines.append(f"🎟️ Cupom: *{label}*")
-
-    # Preço atual separado do preço antigo para ficar visualmente limpo.
-    lines.append(f"Por *{brl(o['price'])}*")
-
-    link = str(affiliate or "").strip()
-    if not valid_affiliate_link(link):
-        raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
-
-    # Link fica na frente, continuando a mesma linha de PEGAR PROMOÇÃO.
-    lines.append(f"*PEGAR PROMOÇÃO 🔥:* {link}")
-
-    return "\n".join(lines)
 
 
 def _marketing_phrase(title, offer=None):
@@ -7045,7 +6935,7 @@ def whatsapp_image(filename):
 
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # padrão: 15 minutos
-AUTO_WHATSAPP_LIMIT = max(1, int(os.getenv("AUTO_WHATSAPP_LIMIT", "3")))  # configurável; padrão 3
+AUTO_WHATSAPP_LIMIT = 3  # no máximo 3 ofertas por rodada
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
@@ -7387,8 +7277,10 @@ def api_whatsapp_automacao():
     })
 
 
-# A thread começa depois que o módulo terminou de carregar as rotas e o banco.
-iniciar_automacao_whatsapp()
+# O agendador só roda no serviço dedicado quando AUTO_WHATSAPP_WORKER_ONLY=1.
+# No serviço web, mantenha AUTO_WHATSAPP_ENABLED=0 para evitar disputa com Gunicorn.
+if os.getenv("AUTO_WHATSAPP_WORKER_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}:
+    iniciar_automacao_whatsapp()
 
 # ============================================================
 # JOBS DE CAÇA EM SEGUNDO PLANO
@@ -7882,35 +7774,6 @@ def _parse_affiliate_cookies(raw):
     return out
 
 
-
-# ============================================================
-# CACHE DE LINKS DE AFILIADO (V78)
-# ============================================================
-_AFFILIATE_LINK_CACHE = {}
-_AFFILIATE_LINK_CACHE_LOCK = threading.Lock()
-_AFFILIATE_LINK_CACHE_TTL = 86400  # 24 horas
-
-
-def _affiliate_cache_get(item_id):
-    iid = str(item_id or "").strip().upper()
-    if not iid:
-        return None
-    now = time.time()
-    with _AFFILIATE_LINK_CACHE_LOCK:
-        row = _AFFILIATE_LINK_CACHE.get(iid)
-        if row and (now - row[0]) < _AFFILIATE_LINK_CACHE_TTL:
-            return row[1]
-    return None
-
-
-def _affiliate_cache_set(item_id, link):
-    iid = str(item_id or "").strip().upper()
-    link = str(link or "").strip()
-    if not iid or not link:
-        return
-    with _AFFILIATE_LINK_CACHE_LOCK:
-        _AFFILIATE_LINK_CACHE[iid] = (time.time(), link)
-
 def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller_id=None, expected_price=None):
     """Gera meli.la usando a sessão salva no Railway.
 
@@ -7932,12 +7795,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     product_url = str(product_url or "").strip()
     item_id = str(item_id or "").strip().upper()
-
-    # V78: reutiliza link de afiliado já gerado com sucesso (24h).
-    cached_link = _affiliate_cache_get(item_id)
-    if cached_link and valid_affiliate_link(cached_link):
-        print(f"[AFILIADO CACHE] hit para {item_id}")
-        return cached_link
 
     def is_catalog_url(url):
         return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
@@ -7995,20 +7852,14 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
         for q in queries:
             try:
-                # V78: /sites/MLB/search costuma retornar 403 neste app.
-                # Tentamos uma vez; em 403/401 interrompemos o fallback
-                # para não desperdiçar rate-limit.
                 data, status, _ = ml_get(
                     "/sites/MLB/search",
                     params={"q": q, "limit": 50},
                 )
             except Exception as exc:
                 print("[AFILIADO BUSCA] erro:", repr(exc))
-                break
+                continue
 
-            if status in (401, 403):
-                print("[AFILIADO BUSCA] endpoint bloqueado (HTTP", status, "); abortando fallback de busca.")
-                break
             if status != 200 or not isinstance(data, dict):
                 print("[AFILIADO BUSCA] HTTP", status, "para", q[:100])
                 continue
@@ -8518,8 +8369,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
                         alt_short_url = str(alt_data.get("short_url") or "").strip()
                         if alt_short_url:
                             print("[AFILIADO FALLBACK] publicação alternativa aceita.")
-                            if item_id:
-                                _affiliate_cache_set(item_id, alt_short_url)
                             return alt_short_url
                         print("[AFILIADO FALLBACK] resposta alternativa sem short_url.")
                     else:
@@ -8540,9 +8389,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
     if not short_url:
         raise RuntimeError("Mercado Livre não retornou short_url")
 
-    # V78: grava no cache para não regenerar o mesmo item nas próximas 24h.
-    if item_id:
-        _affiliate_cache_set(item_id, short_url)
     return short_url
 
 
@@ -9094,4 +8940,9 @@ def teste_user_items():
         }), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
+    if os.getenv("AUTO_WHATSAPP_WORKER_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        print("[V78 WORKER] Processo dedicado ativo; sem servidor web.", flush=True)
+        while True:
+            time.sleep(3600)
+    else:
+        app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
