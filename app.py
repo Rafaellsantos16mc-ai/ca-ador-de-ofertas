@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V78_CORRECOES_RATE_AFILIADO_WHATSAPP"
+VERSAO_CACADOR = "V80_BUSCA_LIMITADA_WHATSAPP_PRESERVADO"
 import random
 import os
 import sqlite3
@@ -31,7 +31,7 @@ except Exception:
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
-print(f"[V78 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
+print(f"[V80 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 # A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
@@ -694,7 +694,7 @@ def access_token():
 # threads disparam requisições simultâneas e provocam HTTP 429.
 _ML_API_REQUEST_LOCK = threading.RLock()
 _ML_API_LAST_REQUEST_AT = 0.0
-_ML_API_MIN_INTERVAL = 1.1  # V78: aumentado para reduzir 429
+_ML_API_MIN_INTERVAL = 0.35  # V80: ritmo moderado para evitar fila global longa
 _ML_API_429_COOLDOWN = 0.0
 
 
@@ -709,7 +709,7 @@ def ml_get(path, params=None):
 
     # Mantém uma única fila para todas as categorias, inclusive quando os
     # scanners de tênis/moda/beleza usam ThreadPoolExecutor.
-    max_attempts = 4
+    max_attempts = 2
     with _ML_API_REQUEST_LOCK:
         # Se outra chamada acabou de receber 429, não repetimos a mesma
         # pancada na API durante a janela de cooldown. Retornamos 429 para
@@ -725,7 +725,7 @@ def ml_get(path, params=None):
                 time.sleep(wait)
             _ML_API_LAST_REQUEST_AT = time.monotonic()
             try:
-                r = requests.get(url, headers=headers, params=params, timeout=(5, 15))
+                r = requests.get(url, headers=headers, params=params, timeout=(4, 10))
             except requests.RequestException as exc:
                 return {"error": str(exc)}, 500, {}
 
@@ -3291,9 +3291,9 @@ def _search_perfume_public_fallback(q, limit=20):
     }
 
     page = ""
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            r = requests.get(url, headers=headers, timeout=18, allow_redirects=True)
+            r = requests.get(url, headers=headers, timeout=(3, 8), allow_redirects=True)
             if r.status_code == 429:
                 wait = min(3, max(0.5, float(r.headers.get("Retry-After") or 1)))
                 print(f"[PERFUMES FALLBACK PUBLICO] HTTP 429 {query} - aguardando {wait:.1f}s")
@@ -3306,8 +3306,8 @@ def _search_perfume_public_fallback(q, limit=20):
             break
         except Exception as exc:
             print("[PERFUMES FALLBACK PUBLICO] erro", query, repr(exc))
-            if attempt < 2:
-                time.sleep(0.6)
+            if attempt < 1:
+                time.sleep(0.3)
 
     if not page:
         with _PUBLIC_PERFUME_CACHE_LOCK:
@@ -3415,7 +3415,7 @@ def _search_arabic_perfumes(fast=False):
     if fast:
         # Teste rápido: percorre uma lista grande de modelos/marcas, mas
         # limita cada consulta para reduzir 429 e ainda gerar variedade.
-        queries = queries[:5]
+        queries = queries[:4]
     for q in queries:
         try:
             rows = _search_arabic_real_listings(q, limit=30 if fast else 80)
@@ -3752,7 +3752,7 @@ def _search_shoes_category(cat, fast=False):
     # Buscar todas as categorias não pode disparar dezenas de consultas só de
     # calçados. A busca individual continua usando a lista ampla completa.
     if fast:
-        queries = queries[:12]
+        queries = queries[:6]
     per_query = 24 if fast else 30
     rows_by_query = []
 
@@ -4026,7 +4026,7 @@ def _search_category(cat, fast=False):
         if fast:
             # Mantemos 40 consultas no modo rápido, mas agora as primeiras
             # consultas são majoritariamente importadas e masculinas.
-            perfume_queries = perfume_queries[:12]
+            perfume_queries = perfume_queries[:6]
         for q in perfume_queries:
             # Mantém o micro-nicho exatamente como definido e acrescenta apenas
             # a exclusão operacional de decant na consulta.
@@ -5217,16 +5217,16 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     # geral da rodada. Mantém concorrência limitada para não sobrecarregar o Railway.
     def _search_category_logged(cat):
         started = time.monotonic()
-        print(f"[V78 BUSCA] INICIO categoria={cat}; modo_rapido={FAST_ALL_CATEGORIES and len(categories) > 1}", flush=True)
+        print(f"[V80 BUSCA] INICIO categoria={cat}; modo_rapido={FAST_ALL_CATEGORIES and len(categories) > 1}", flush=True)
         try:
             result = _search_category(cat, FAST_ALL_CATEGORIES and len(categories) > 1) or []
-            print(f"[V78 BUSCA] FIM categoria={cat}; candidatos={len(result)}; duracao_s={time.monotonic()-started:.1f}", flush=True)
+            print(f"[V80 BUSCA] FIM categoria={cat}; candidatos={len(result)}; duracao_s={time.monotonic()-started:.1f}", flush=True)
             return result
         except Exception as exc:
-            print(f"[V78 BUSCA] ERRO categoria={cat}; duracao_s={time.monotonic()-started:.1f}; erro={exc!r}", flush=True)
+            print(f"[V80 BUSCA] ERRO categoria={cat}; duracao_s={time.monotonic()-started:.1f}; erro={exc!r}", flush=True)
             raise
 
-    print(f"[V78 BUSCA] Iniciando {len(categories)} categorias com 3 trabalhadores.", flush=True)
+    print(f"[V80 BUSCA] Iniciando {len(categories)} categorias com até 3 trabalhadores; consultas automáticas reduzidas e timeouts externos limitados.", flush=True)
     with _ThreadPoolExecutor(max_workers=min(3, max(1, len(categories)))) as ex:
         fmap = {ex.submit(_search_category_logged, cat): cat for cat in categories}
         remaining = set(fmap)
@@ -5237,17 +5237,17 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             )
             if not done:
                 pending_cats = [fmap[f] for f in remaining]
-                print(f"[V78 BUSCA] AINDA_EXECUTANDO categorias={pending_cats}; aguardando retorno das consultas externas.", flush=True)
+                print(f"[V80 BUSCA] AINDA_EXECUTANDO categorias={pending_cats}; aguardando retorno das consultas externas.", flush=True)
                 continue
             for fut in done:
                 cat = fmap[fut]
                 try:
                     raw_by_cat[cat] = fut.result() or []
-                    print(f"[V78 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}", flush=True)
+                    print(f"[V80 PROGRESSO] categoria concluída: {cat}; candidatos={len(raw_by_cat[cat])}", flush=True)
                 except Exception as e:
                     print("[TOP 20 BUSCA]", cat, repr(e), flush=True)
                     raw_by_cat[cat] = []
-                    print(f"[V78 PROGRESSO] categoria com erro: {cat}; erro={e!r}", flush=True)
+                    print(f"[V80 PROGRESSO] categoria com erro: {cat}; erro={e!r}", flush=True)
 
     # PERFUMES: rota direta de publicação real.
     # Tanto Perfumes quanto Perfumes Árabes precisam nascer de ITEM real.
