@@ -6466,39 +6466,83 @@ def _marketing_phrase(title, offer=None):
     return {"headline": f"{short_name.upper()} EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🔥👀", "detail": "Oferta encontrada pelo Caçador de Ofertas; confira preço, condições e disponibilidade."}
 
 def ad_text(o, affiliate=""):
-    """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
+    """Monta anúncio variado; usa alerta especial somente quando o preço caiu."""
     title = str(o.get("title") or "Produto").strip()
-    marketing = _marketing_phrase(title, o)
+    title_lower = title.lower()
+    is_arabic = any(term in title_lower for term in (
+        "lattafa", "afnan", "armaf", "rasasi", "al haramain",
+        "maison alhambra", "fragrance world", "paris corner",
+        "khadlaj", "zimaya", "ajmal", "swiss arabian",
+        "ard al zaafaran", "ahmed al maghribi", "orientica",
+        "al rehab", "perfume árabe", "perfume arabe"
+    ))
 
-    # Formato aprovado pelo usuário: headline comercial específico + emojis,
-    # depois o produto. Não exibe uma segunda descrição em itálico.
-    lines = [
-        f"*{marketing['headline']}*",
-        marketing["emojis"],
-        "",
-        f"*{title}*",
-        "",
-    ]
+    # O alerta é reservado exclusivamente para uma redução real de preço.
+    try:
+        previous_price = float(o.get("previous_price") or 0)
+        current_price = float(o.get("price") or 0)
+    except (TypeError, ValueError):
+        previous_price, current_price = 0.0, 0.0
+    price_dropped = bool(o.get("price_dropped")) and previous_price > current_price > 0
 
-    if o.get("original_price"):
-        # Tachado real do WhatsApp.
-        lines.append(f"~De {brl(o['original_price'])}~")
+    if price_dropped:
+        headline = "🚨 VOLTOU MAIS BARATO! PREÇO REDUZIDO 🚨"
+        lines = [
+            f"*{headline}*",
+            "",
+            f"*{title}*",
+            f"~De {brl(previous_price)}~",
+        ]
+        if o.get("cupom"):
+            c = o["cupom"] or {}
+            label = c.get("code") or c.get("label") or "Cupom disponível"
+            lines.append(f"🎟️ Cupom: *{label}*")
+        lines.append(f"Por *{brl(current_price)}*")
+    else:
+        if is_arabic:
+            headlines = [
+                "Esse árabe vai te surpreender! 🌙🔥",
+                "Olha esse perfume árabe! 👀✨",
+                "Uma fragrância árabe para conhecer 🌙",
+                "Achado para quem curte perfumes marcantes! 🔥",
+                "Esse perfume merece entrar no radar! ✨",
+                "Curte perfumaria árabe? Dá uma olhada nessa opção! 🌙",
+            ]
+        else:
+            headlines = [
+                "Olha esse achado! 👀🔥",
+                "Pode valer a conferida! ✨",
+                "Uma opção que chamou atenção! 👌",
+                "Dá uma olhada nesse produto! 🔎",
+                "Achado do Caçador! 🎯",
+                "Confira esse modelo! 🔥",
+                "Pode ser uma boa oportunidade! 👀",
+                "Esse aqui merece entrar no radar! ⭐",
+            ]
+        headline = random.choice(headlines)
+        lines = [f"*{headline}*", "", f"*{title}*"]
 
-    if o.get("cupom"):
-        c = o["cupom"] or {}
-        label = c.get("code") or c.get("label") or "Cupom disponível"
-        lines.append(f"🎟️ Cupom: *{label}*")
+        original_price = o.get("original_price")
+        try:
+            original_price = float(original_price or 0)
+        except (TypeError, ValueError):
+            original_price = 0.0
+        if original_price > current_price > 0:
+            lines.append(f"De: ~{brl(original_price)}~")
 
-    lines.append(f"Por *{brl(o['price'])}*")
+        if o.get("cupom"):
+            c = o["cupom"] or {}
+            label = c.get("code") or c.get("label") or "Cupom disponível"
+            lines.append(f"🎟️ Cupom: *{label}*")
+
+        lines.append(f"Por *{brl(current_price)}*")
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    # A chama fica DEPOIS de PROMOÇÃO.
     lines += ["", "*PEGAR PROMOÇÃO 🔥:* " + link]
-
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 # ============================================================
 # IMAGEM NATURAL PARA WHATSAPP
@@ -6789,6 +6833,24 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
+def _whatsapp_previous_price(product_id):
+    """Retorna o último preço publicado para identificar reduções reais."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
+            (str(product_id),),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            return float(row["last_price"])
+        except (TypeError, ValueError):
+            return None
+    finally:
+        conn.close()
+
+
 def _whatsapp_should_publish(product_id, price):
     """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
     conn = get_db()
@@ -6854,6 +6916,12 @@ def _whatsapp_publish_scan(result):
             continue
         if price <= 0:
             continue
+
+        previous_price = _whatsapp_previous_price(product_id)
+        offer["previous_price"] = previous_price or 0
+        offer["price_dropped"] = bool(
+            previous_price is not None and price < previous_price - 0.01
+        )
 
         if not _whatsapp_should_publish(product_id, price):
             skipped += 1
