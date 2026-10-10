@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V80_BUSCA_LIMITADA_WHATSAPP_PRESERVADO"
+VERSAO_CACADOR = "V81_TESTE_TOP20_PERFUMES"
 import random
 import os
 import sqlite3
@@ -31,12 +31,12 @@ except Exception:
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
-print(f"[V80 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
+print(f"[V81 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; teste_somente_perfumes={TESTE_SOMENTE_PERFUMES}; categorias={list(CATALOG.keys()) if 'CATALOG' in globals() else 'catalogo_inicializando'}; pid={os.getpid()}", flush=True)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 # A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
 # completo no mesmo arquivo para reativação posterior.
-TESTE_SOMENTE_PERFUMES = False
+TESTE_SOMENTE_PERFUMES = True
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-cacador-ofertas")
 
 ML_CLIENT_ID = os.getenv("ML_CLIENT_ID", "").strip()
@@ -246,20 +246,13 @@ CATALOG = {
 
 # ============================================================
 # MODO COMPLETO# ============================================================
-# MODO COMPLETO — TODAS AS CATEGORIAS ATIVAS
-# ============================================================
-# Mantemos TODO o restante do projeto no arquivo, mas durante este teste
-# todas as categorias do catálogo ficam ativas no scanner, na busca manual,
-# nos botões e no fluxo automático. O modo de teste exclusivo de perfumes
-# fica desativado para que as demais categorias apareçam normalmente.
-
+# MODO DE TESTE CONTROLADO — somente perfumes tradicionais, top 20 por vendas.
+# O catálogo completo fica preservado para reativação posterior. Neste teste,
+# perfumes árabes e as outras categorias não entram no scanner nem no envio.
 CATALOG_COMPLETO = dict(CATALOG)
 
 if TESTE_SOMENTE_PERFUMES:
-    _CATEGORIAS_TESTE_PERFUMES = (
-        "🌸 Perfumes",
-        "🌙 Perfumes Árabes",
-    )
+    _CATEGORIAS_TESTE_PERFUMES = ("🌸 Perfumes",)
     CATALOG = {
         categoria: CATALOG_COMPLETO[categoria]
         for categoria in _CATEGORIAS_TESTE_PERFUMES
@@ -3973,6 +3966,60 @@ def _search_category(cat, fast=False):
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
+        if TESTE_SOMENTE_PERFUMES:
+            # Teste enxuto: poucas consultas gerais de mais vendidos para
+            # reduzir a demora e comparar os anúncios por vendas informadas.
+            perfume_queries = [
+                "perfumes mais vendidos",
+                "perfume mais vendido",
+                "perfume masculino mais vendido",
+                "perfume feminino mais vendido",
+            ]
+            rank_base = 1
+            for q in perfume_queries:
+                print(f"[V81 TESTE PERFUMES] buscando consulta={q!r}", flush=True)
+                try:
+                    rows = _search_arabic_real_listings(q, limit=50)
+                    try:
+                        public_rows = _search_perfume_public_fallback(q, limit=25)
+                    except Exception as fallback_exc:
+                        print(f"[V81 TESTE PERFUMES] fallback falhou consulta={q!r}: {fallback_exc!r}", flush=True)
+                        public_rows = []
+                    known_ids = {str(x.get("id") or x.get("item_id") or "").strip() for x in rows if isinstance(x, dict)}
+                    rows = list(rows) + [x for x in public_rows if isinstance(x, dict) and str(x.get("id") or x.get("item_id") or "").strip() not in known_ids]
+                except Exception as exc:
+                    print(f"[V81 TESTE PERFUMES] consulta falhou={q!r}: {exc!r}", flush=True)
+                    rows = []
+                for j, row in enumerate(rows, start=1):
+                    if not isinstance(row, dict):
+                        continue
+                    item_id = str(row.get("id") or row.get("item_id") or "").strip().upper()
+                    if not re.fullmatch(r"MLB\d+", item_id) or item_id in seen:
+                        continue
+                    seen.add(item_id)
+                    out.append(({
+                        "id": item_id,
+                        "item_id": item_id,
+                        "title": row.get("title") or item_id,
+                        "name": row.get("title") or item_id,
+                        "source_type": "ITEM",
+                        "highlight_position": rank_base + j,
+                        "highlight_category_id": BEST_SELLER_CATEGORY_IDS.get(cat),
+                        "permalink": row.get("permalink"),
+                        "thumbnail": row.get("thumbnail") or row.get("secure_thumbnail"),
+                        "pictures": row.get("pictures") or [],
+                        "price": row.get("price"),
+                        "original_price": row.get("original_price") or row.get("regular_price"),
+                        "seller": row.get("seller") or {},
+                        "seller_id": row.get("seller_id"),
+                        "shipping": row.get("shipping") or {},
+                        "condition": row.get("condition") or "new",
+                        "sold_quantity": row.get("sold_quantity") or row.get("sales") or 0,
+                    }, q))
+                rank_base += max(50, len(rows))
+            out.sort(key=lambda pair: int((pair[0].get("sold_quantity") or 0)), reverse=True)
+            print(f"[V81 TESTE PERFUMES] candidatos únicos antes dos filtros={len(out)}; ordenados por sold_quantity desc.", flush=True)
+            return out[:100]
         # Prioridade da busca: aumentar a presença de perfumes masculinos
         # importados sem retirar os femininos. A lista prioritária entra antes
         # das demais porque o modo rápido usa as primeiras 40 consultas.
@@ -5811,8 +5858,15 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             limit = 50
         flat.extend(arr[:limit])
 
-    # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
-    random.shuffle(flat)
+    if TESTE_SOMENTE_PERFUMES:
+        # Exibir/processar apenas os 20 anúncios com maior sold_quantity.
+        # Se o campo não vier da fonte, esses anúncios ficam abaixo dos que têm vendas.
+        flat.sort(key=lambda o: int(o.get("sold_quantity") or 0), reverse=True)
+        flat = flat[:20]
+        print("[V81 TESTE PERFUMES] resultado limitado aos 20 anúncios com maior sold_quantity; categoria única=🌸 Perfumes.", flush=True)
+    else:
+        # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
+        random.shuffle(flat)
 
     dominant_type = None
 
