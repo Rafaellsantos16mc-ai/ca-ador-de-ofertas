@@ -696,7 +696,7 @@ def access_token():
 # threads disparam requisições simultâneas e provocam HTTP 429.
 _ML_API_REQUEST_LOCK = threading.RLock()
 _ML_API_LAST_REQUEST_AT = 0.0
-_ML_API_MIN_INTERVAL = 0.75
+_ML_API_MIN_INTERVAL = 1.5
 _ML_API_429_COOLDOWN = 0.0
 
 
@@ -718,7 +718,7 @@ def ml_get(path, params=None):
         # recebeu o 429 já fez suas retentativas controladas abaixo.
         if time.monotonic() < _ML_API_429_COOLDOWN:
             return {"error": "rate_limit_cooldown"}, 429, {"Retry-After": str(max(1, int(_ML_API_429_COOLDOWN - time.monotonic())))}
-        for attempt in range(4):
+        for attempt in range(3):
             now = time.monotonic()
             wait = max(_ML_API_MIN_INTERVAL - (now - _ML_API_LAST_REQUEST_AT),
                        _ML_API_429_COOLDOWN - now, 0.0)
@@ -744,13 +744,14 @@ def ml_get(path, params=None):
             # exponencial crescente e partilhada por todas as threads.
             retry_after = response_headers.get("Retry-After") or response_headers.get("retry-after")
             try:
-                delay = float(retry_after) if retry_after is not None else (1.5 * (2 ** attempt))
+                delay = float(retry_after) if retry_after is not None else (3.0 * (2 ** attempt))
             except (TypeError, ValueError):
-                delay = 1.5 * (2 ** attempt)
-            delay = max(1.0, min(delay, 20.0))
+                delay = 3.0 * (2 ** attempt)
+            delay = max(3.0, min(delay, 30.0))
             _ML_API_429_COOLDOWN = time.monotonic() + delay
             print(f"[ML API 429] limite atingido em {path}; tentativa {attempt + 1}/4; aguardando {delay:.1f}s")
-            if attempt == 3:
+            if attempt == 2:
+                print(f"[ML API 429] desistindo após {attempt + 1} tentativas em {path}; esta chamada será ignorada para evitar sobrecarga")
                 return data, 429, response_headers
 
     return {}, 429, {}
@@ -2253,7 +2254,7 @@ def search_products_direct(q, limit=40):
         "offset": 0,
     })
     if status != 200 or not isinstance(data, dict):
-        print(f"[BUSCA] {query} -> HTTP {status}")
+        print(f"[BUSCA] {query} -> HTTP {status}; sem candidatos nesta consulta")
         return []
     results = data.get("results") or []
     with _PRODUCT_SEARCH_CACHE_LOCK:
