@@ -1,16 +1,10 @@
-# CAÇADOR DE OFERTAS — V74 RESTAURA BUSCA V40
-# Base de recuperação: Cacador_Ofertas_FINAL_CATEGORIAS_V40_FRASES_NATURAIS.py
-# Objetivo: recuperar o mecanismo de busca da família V40, que o usuário
-# identificou como a última fase em que a pesquisa funcionava bem.
-# Mantém preço mínimo R$ 69,90 e automação contínua configurada no código.
-# A sintaxe foi validada; a execução real depende do deploy e das variáveis Railway.
-
 import random
 import os
 import sqlite3
 import secrets
 import hashlib
 import base64
+import json
 import time
 import re
 import html as html_lib
@@ -140,12 +134,19 @@ FAST_ALL_CATEGORIES = True
 # Com 6 categorias, 65 candidatos por categoria = até 390 candidatos
 # para o enriquecimento, permitindo ultrapassar 230 ofertas quando houver
 # estoque suficiente de anúncios promocionais.
-SEARCH_TARGET_OFFERS = 270
+SEARCH_TARGET_OFFERS = 230
 SEARCH_CANDIDATES_PER_CATEGORY_ALL = 110
-SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 160
-SEARCH_RAW_POOL_PER_CATEGORY = 220
-SEARCH_SEEDS_FAST_PER_CATEGORY = 28
+SEARCH_CANDIDATES_PER_CATEGORY_SINGLE = 500
+SEARCH_RAW_POOL_PER_CATEGORY = 350
+SEARCH_SEEDS_FAST_PER_CATEGORY = 30
 SEARCH_RESULTS_PER_QUERY_FAST = 50
+# V42: fonte primária de anúncios reais para categorias comuns.
+# Em uma categoria isolada, consultamos uma amostra ampla dos micro-nichos
+# diretamente em /sites/MLB/search para obter IDs MLB reais, em vez de
+# depender somente do catálogo /products/search.
+SEARCH_REAL_ITEM_QUERIES_SINGLE = 45
+SEARCH_REAL_ITEM_QUERIES_ALL = 8
+SEARCH_REAL_ITEM_RESULTS_PER_QUERY = 50
 
 # ============================================================
 # FILTRO RIGOROSO DE ALTO GIRO / QUALIDADE
@@ -473,16 +474,13 @@ CATALOG = {'📱 Tecnologia': ['📱 Celulares',
                         'New Balance tênis casual',
                         'Fila tênis casual',
                         'Skechers tênis casual',
-                        '⚽ Tênis/Chuteiras para Futebol',
-                        'tênis futebol',
-                        'chuteira',
-                        'chuteira Nike',
-                        'chuteira Adidas',
-                        'chuteira Puma',
-                        'chuteira Fila',
-                        'chuteira infantil',
-                        'Nike futebol',
-                        'Adidas futebol',
+                        '🚶 Tênis para Caminhada',
+                        'tênis para caminhada',
+                        'Nike tênis caminhada',
+                        'Adidas tênis caminhada',
+                        'Skechers caminhada',
+                        'New Balance caminhada',
+                        'tênis confortável para o dia a dia',
                         '🏀 Tênis de Basquete',
                         'tênis basquete',
                         'Nike LeBron',
@@ -1397,7 +1395,7 @@ def product_items(pid):
 
 def _is_catalog_permalink(url):
     """Retorna True somente para URLs de catálogo /p/MLB..., nunca para publicação."""
-    return bool(re.search(r"/p/MLB\\d+(?:[/?#]|$)", str(url or ""), re.I))
+    return bool(re.search(r"/p/MLB\d+(?:[/?#]|$)", str(url or ""), re.I))
 
 
 def _is_real_publication_item(item):
@@ -1406,7 +1404,7 @@ def _is_real_publication_item(item):
         return False
     iid = str(item.get("item_id") or item.get("id") or "").strip().upper()
     permalink = str(item.get("permalink") or "").strip()
-    return bool(re.fullmatch(r"MLB\\d+", iid) and permalink and not _is_catalog_permalink(permalink))
+    return bool(re.fullmatch(r"MLB\d+", iid) and permalink and not _is_catalog_permalink(permalink))
 
 
 def _hydrate_real_item_permalink(item):
@@ -1439,7 +1437,7 @@ def _hydrate_real_item_permalink(item):
             continue
         cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
         cp = str(candidate.get("permalink") or "").strip()
-        if not re.fullmatch(r"MLB\\d+", cid):
+        if not re.fullmatch(r"MLB\d+", cid):
             continue
         if cid == item_id and _is_catalog_permalink(cp):
             continue
@@ -1474,14 +1472,14 @@ def _hydrate_real_item_permalink(item):
                 continue
             cid = str(candidate.get("item_id") or candidate.get("id") or "").strip().upper()
             cp = str(candidate.get("permalink") or "").strip()
-            if not re.fullmatch(r"MLB\\d+", cid) or cid == item_id:
+            if not re.fullmatch(r"MLB\d+", cid) or cid == item_id:
                 continue
             if cp and not _is_catalog_permalink(cp):
                 normalized = normalize_item(candidate)
                 if normalized:
                     normalized.update({"item_id": cid, "permalink": cp})
                     return normalized
-            if re.fullmatch(r"MLB\\d+", cid):
+            if re.fullmatch(r"MLB\d+", cid):
                 try:
                     real_data, real_status, _ = ml_get(f"/items/{cid}")
                 except Exception:
@@ -3911,6 +3909,487 @@ def _search_arabic_perfumes(fast=False):
     print(f"[ARABES BUSCA AMPLA] {len(out)} anúncios candidatos")
     return out
 
+_PUBLIC_GENERIC_CACHE = {}
+_PUBLIC_GENERIC_CACHE_LOCK = threading.Lock()
+
+
+def _search_public_real_item_ids(q, limit=30):
+    """Descobre IDs MLB reais diretamente na busca pública do Mercado Livre.
+
+    A busca por /products/search retorna muitos IDs de catálogo. Esses IDs
+    podem formar um pool grande, mas depois quase todos falham na conversão
+    para uma publicação real. Para categorias comuns, a fonte mais útil para
+    a etapa final é a página pública, que contém IDs MLB de anúncios.
+
+    Aqui NÃO consultamos /items ainda. Só descobrimos os IDs; o enriquecimento
+    existente (_fetch_product_fast) faz a leitura da publicação real uma única
+    vez por ID. Isso evita duplicar chamadas e mantém o fluxo atual.
+    """
+    query = str(q or '').strip()
+    if not query:
+        return []
+    lim = max(1, min(int(limit or 18), 30))
+    key = norm(query)
+    with _PUBLIC_GENERIC_CACHE_LOCK:
+        cached = _PUBLIC_GENERIC_CACHE.get(key)
+    if cached is not None:
+        return list(cached)[:lim]
+
+    url = 'https://lista.mercadolivre.com.br/' + quote(query.replace(' ', '-'))
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Cache-Control': 'no-cache',
+    }
+    page = ''
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if r.status_code == 429:
+                time.sleep(min(2.0, max(0.4, float(r.headers.get('Retry-After') or 0.8))))
+                continue
+            if r.status_code != 200:
+                print('[BUSCA PUBLICA REAL] HTTP', r.status_code, query)
+                break
+            page = r.text or ''
+            break
+        except Exception as exc:
+            print('[BUSCA PUBLICA REAL] erro', query, repr(exc))
+            if attempt == 0:
+                time.sleep(0.4)
+
+    ids = []
+    seen_ids = set()
+    if page:
+        patterns = (
+            r'(?:MLB[-_]?)(\d{6,})',
+            r'(?:wid|item_id|itemId|item-id)["\'=:\s]+(?:MLB[-_]?)(\d{6,})',
+            r'/MLB[-_]?(\d{6,})(?:[/?#"\'])',
+        )
+        for pattern in patterns:
+            for m in re.finditer(pattern, page, re.I):
+                iid = 'MLB' + m.group(1)
+                if iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+                ids.append(iid)
+                if len(ids) >= lim:
+                    break
+            if len(ids) >= lim:
+                break
+
+    with _PUBLIC_GENERIC_CACHE_LOCK:
+        _PUBLIC_GENERIC_CACHE[key] = list(ids)
+    print(f'[BUSCA PUBLICA REAL] {query} -> {len(ids)} ITEMs')
+    return ids[:lim]
+
+
+def _search_shoes_real_listings(q, limit=60):
+    """Busca publicações reais de tênis/calçados pela rota catálogo -> ITEM.
+
+    A busca pública por IDs estava concentrando o resultado nos primeiros
+    anúncios da consulta (principalmente tênis de corrida). Para tênis,
+    precisamos de diversidade de MARCAS, MODELOS e SUBNICHOS. Esta rota usa
+    /products/search + /products/{id}/items, que já é a rota que funciona no
+    projeto, e retorna os dados da publicação diretamente sem depender de
+    GET /items/{id}.
+    """
+    query = str(q or "").strip()
+    if not query:
+        return []
+    lim = max(1, min(int(limit or 60), 60))
+    listings = []
+    seen = set()
+
+    # Fonte primária: anúncios reais (MLB...) com título/preço/imagem já no
+    # resultado. A rota de catálogo sozinha retornava poucos candidatos.
+    try:
+        direct_rows = _search_real_item_listings_api(query, limit=lim)
+    except Exception as exc:
+        print("[TENIS API REAL]", query, repr(exc))
+        direct_rows = []
+    for row in direct_rows:
+        if not isinstance(row, dict):
+            continue
+        iid = str(row.get("id") or row.get("item_id") or "").strip().upper()
+        title = str(row.get("title") or row.get("name") or "").strip()
+        try:
+            price = float(row.get("price"))
+        except (TypeError, ValueError):
+            price = 0
+        title_norm = norm(title)
+        if (not re.fullmatch(r"MLB\d+", iid) or iid in seen or not title
+                or price < MIN_PRODUCT_PRICE or price > 100000
+                or any(term in title_norm for term in ("chuteira", "trava society", "trava campo", "futsal"))):
+            continue
+        row["id"] = iid
+        row["item_id"] = iid
+        row["title"] = title
+        row["name"] = title
+        row["source_type"] = "ITEM"
+        seen.add(iid)
+        listings.append(row)
+        if len(listings) >= lim:
+            break
+
+    if len(listings) >= lim:
+        print(f"[TENIS BUSCA REAL] {query} -> {len(listings)} anúncios API")
+        return listings[:lim]
+
+    try:
+        products = search_products_direct(query, limit=min(10, max(6, lim)))
+    except Exception as exc:
+        print("[TENIS CATALOGO]", query, repr(exc))
+        products = []
+
+    for product_row in products:
+        if len(listings) >= lim:
+            break
+        if not isinstance(product_row, dict):
+            continue
+        pid = str(product_row.get("id") or product_row.get("product_id") or "").strip()
+        if not pid:
+            continue
+
+        candidates = []
+        bb = product_row.get("buy_box_winner") or product_row.get("buy_box")
+        if isinstance(bb, dict):
+            candidates.append(bb)
+
+        try:
+            candidates.extend(product_items(pid) or [])
+        except Exception as exc:
+            print("[TENIS ITEMS]", pid, repr(exc))
+
+        # Se a busca direta não trouxe itens, tenta o detalhe do catálogo
+        # apenas para recuperar o buy box/publicação ligada ao produto.
+        if not candidates:
+            try:
+                detail = product(pid)
+                if isinstance(detail, dict):
+                    dbb = detail.get("buy_box_winner") or detail.get("buy_box")
+                    if isinstance(dbb, dict):
+                        candidates.append(dbb)
+            except Exception as exc:
+                print("[TENIS PRODUTO]", pid, repr(exc))
+
+        for item in candidates:
+            if len(listings) >= lim:
+                break
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("id") or item.get("item_id") or "").strip().upper()
+            if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                continue
+
+            price = item.get("price")
+            if price is None:
+                price = item.get("sale_price")
+            try:
+                price = float(price) if price is not None else None
+            except Exception:
+                price = None
+            if price is None or price < MIN_PRODUCT_PRICE or price > 100000:
+                continue
+
+            title = str(
+                item.get("title")
+                or product_row.get("title")
+                or product_row.get("name")
+                or ""
+            ).strip()
+            if not title:
+                continue
+            if any(term in norm(title) for term in ("chuteira", "trava society", "trava campo", "futsal")):
+                continue
+
+            shipping = item.get("shipping") if isinstance(item.get("shipping"), dict) else {}
+            seller = item.get("seller") if isinstance(item.get("seller"), dict) else {}
+            pictures = item.get("pictures") or product_row.get("pictures") or []
+            thumbnail = str(item.get("thumbnail") or product_row.get("thumbnail") or "").strip()
+            if not thumbnail and isinstance(pictures, list):
+                for pic in pictures:
+                    if isinstance(pic, dict):
+                        thumbnail = str(
+                            pic.get("secure_url") or pic.get("url") or
+                            pic.get("secure_thumbnail") or pic.get("thumbnail") or ""
+                        ).strip()
+                        if thumbnail:
+                            break
+
+            seen.add(iid)
+            listings.append({
+                "id": iid,
+                "item_id": iid,
+                "product_id": pid,
+                "title": title,
+                "name": title,
+                "permalink": item.get("permalink") or "",
+                "thumbnail": thumbnail,
+                "pictures": pictures,
+                "price": price,
+                "original_price": item.get("original_price") or item.get("regular_price"),
+                "seller_id": item.get("seller_id") or seller.get("id"),
+                "official_store_id": _extract_official_store_id(item) or _extract_official_store_id(product_row),
+                "sold_quantity": item.get("sold_quantity") or 0,
+                "shipping": shipping,
+                "free_shipping": bool(shipping.get("free_shipping") or item.get("free_shipping")),
+                "logistic_type": shipping.get("logistic_type") or item.get("logistic_type"),
+                "condition": item.get("condition") or "new",
+                "source_type": "ITEM",
+            })
+
+    print(f"[TENIS BUSCA REAL] {query} -> {len(listings)} anúncios")
+    return listings[:lim]
+
+
+def _shoe_diverse_queries(fast=False):
+    """Monta consultas de tênis em ordem intercalada por marca/subnicho."""
+    groups = [
+        [
+            "Nike tênis corrida", "Adidas tênis corrida", "Asics tênis corrida",
+            "Mizuno tênis corrida", "New Balance tênis corrida", "Olympikus tênis corrida",
+            "Fila tênis corrida", "Puma tênis corrida", "Reebok tênis corrida",
+            "Under Armour tênis corrida", "Skechers tênis corrida", "Hoka tênis corrida",
+        ],
+        [
+            "Nike tênis casual", "Adidas tênis casual", "Puma tênis casual",
+            "Vans tênis casual", "Converse tênis casual", "New Balance 574",
+            "Fila tênis casual", "Lacoste tênis casual", "Skechers tênis casual",
+        ],
+        [
+            "Nike tênis caminhada", "Adidas tênis caminhada", "Skechers caminhada",
+            "New Balance caminhada", "Fila tênis confortável", "Puma tênis confortável",
+        ],
+        [
+            "Nike basquete", "Jordan tênis", "Nike LeBron", "Adidas Harden",
+            "Under Armour Curry", "Puma basquete", "New Balance basquete",
+        ],
+        [
+            "Salomon tênis trilha", "Columbia tênis trilha", "Timberland tênis",
+            "Oakley tênis adventure", "Mizuno tênis trilha",
+        ],
+        [
+            "Vans skate", "Nike SB", "Adidas Skateboarding", "DC Shoes skate",
+            "Converse skate", "Puma skate",
+        ],
+        [
+            "Nike slide", "Adidas slide", "Puma slide", "Havaianas", "Rider", "Ipanema",
+        ],
+        [
+            "Nike tênis feminino", "Adidas tênis feminino", "Puma tênis feminino",
+            "Asics tênis feminino", "New Balance tênis feminino", "Mizuno tênis feminino",
+            "Olympikus tênis feminino", "Fila tênis feminino", "Skechers tênis feminino",
+        ],
+        [
+            "Nike tênis masculino", "Adidas tênis masculino", "Puma tênis masculino",
+            "Asics tênis masculino", "New Balance tênis masculino", "Mizuno tênis masculino",
+            "Olympikus tênis masculino", "Fila tênis masculino", "Reebok tênis masculino",
+            "Skechers tênis masculino",
+        ],
+        [
+            "Nike Air Force 1", "Nike Air Max", "Adidas Superstar", "Adidas Ultraboost",
+            "Puma Caven", "Asics Gel Nimbus", "Mizuno Wave", "New Balance 9060",
+            "Olympikus Corre", "Fila Float", "Vans Old Skool", "Converse Chuck Taylor",
+        ],
+    ]
+
+    # Intercala uma consulta de cada bloco para que o modo "todas" não fique
+    # preso em corrida só porque ela aparece primeiro no catálogo.
+    merged = []
+    pos = 0
+    while True:
+        added = False
+        for group in groups:
+            if pos < len(group):
+                q = group[pos]
+                if q not in merged:
+                    merged.append(q)
+                added = True
+        if not added:
+            break
+        pos += 1
+
+    # No modo geral também fazemos mais consultas: a rota anterior consultava
+    # poucas marcas e podia produzir menos de 20 candidatos para toda a categoria.
+    limit = 30 if fast else 36
+    return merged[:limit]
+
+
+def _search_shoes_category(cat, fast=False):
+    """Busca tênis/calçados com diversidade real de marcas e modelos."""
+    queries = _shoe_diverse_queries(fast=fast)
+    per_query = 12 if fast else 16
+    rows_by_query = []
+
+    for q in queries:
+        try:
+            rows = _search_shoes_real_listings(q, limit=per_query)
+        except Exception as exc:
+            print("[TENIS BUSCA]", q, repr(exc))
+            rows = []
+        rows_by_query.append((q, rows))
+
+    # Round-robin entre consultas: primeiro entra 1 produto de cada marca,
+    # depois o segundo de cada marca. Assim Nike/Puma/Fila não ocupam toda a
+    # primeira página antes de Adidas/Asics/Mizuno/New Balance etc.
+    out = []
+    seen = set()
+    round_index = 0
+    target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    while len(out) < target:
+        progressed = False
+        for q, rows in rows_by_query:
+            if round_index >= len(rows):
+                continue
+            row = rows[round_index]
+            progressed = True
+            if not isinstance(row, dict):
+                continue
+            iid = str(row.get("id") or row.get("item_id") or "").strip().upper()
+            if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                continue
+            seen.add(iid)
+            out.append(({
+                **row,
+                "id": iid,
+                "item_id": iid,
+                "title": row.get("title") or row.get("name") or iid,
+                "name": row.get("title") or row.get("name") or iid,
+                "source_type": "ITEM",
+                "highlight_position": len(out) + 1,
+                "public_query": q,
+            }, cat))
+            if len(out) >= target:
+                break
+        if not progressed:
+            break
+        round_index += 1
+
+    print(f"[TENIS DIVERSIDADE] {cat}: {len(out)} candidatos de {len(queries)} consultas")
+    return out
+
+def _search_real_item_listings_api(q, limit=50, offset=0):
+    """Busca anúncios reais diretamente na busca de anúncios do Mercado Livre.
+
+    Diferente de /products/search, /sites/MLB/search devolve publicações ITEM
+    (MLBxxxxxxxx) com preço, vendedor, frete e permalink. Essa é a fonte
+    principal da V42 para categorias comuns. Se a API retornar 403/erro,
+    devolvemos [] e o scanner continua usando as fontes anteriores.
+    """
+    query = str(q or "").strip()
+    if not query:
+        return []
+    try:
+        lim = max(1, min(int(limit or 50), 50))
+        off = max(0, int(offset or 0))
+    except Exception:
+        lim, off = 50, 0
+
+    data, status, _ = ml_get(f"/sites/{SITE_ID}/search", {
+        "q": query,
+        "limit": lim,
+        "offset": off,
+        "sort": "relevance",
+    })
+    if status != 200 or not isinstance(data, dict):
+        print(f"[BUSCA ITEMS API] {query} -> HTTP {status}")
+        return []
+
+    rows = data.get("results") or []
+    out = []
+    for pos, row in enumerate(rows, start=off + 1):
+        if not isinstance(row, dict):
+            continue
+        iid = str(row.get("id") or "").strip().upper()
+        title = str(row.get("title") or "").strip()
+        if not re.fullmatch(r"MLB\d+", iid) or not title:
+            continue
+        out.append({
+            "id": iid,
+            "item_id": iid,
+            "title": title,
+            "name": title,
+            "source_type": "ITEM",
+            "permalink": row.get("permalink"),
+            "thumbnail": row.get("thumbnail"),
+            "pictures": row.get("pictures") or [],
+            "price": row.get("price"),
+            "original_price": row.get("original_price"),
+            "seller_id": (row.get("seller") or {}).get("id") if isinstance(row.get("seller"), dict) else row.get("seller_id"),
+            "seller": row.get("seller"),
+            "shipping": row.get("shipping") or {},
+            "condition": row.get("condition") or "new",
+            "sold_quantity": row.get("sold_quantity") or 0,
+            "listing_type_id": row.get("listing_type_id"),
+            "highlight_position": pos,
+        })
+    print(f"[BUSCA ITEMS API] {query} -> {len(out)} anúncios reais")
+    return out
+
+
+def _category_real_item_seed_queries(cat, fast=False):
+    """Retorna sementes limpas para a busca de anúncios reais.
+
+    Não usamos todos os 117 termos de uma vez: isso seria lento e aumentaria
+    o risco de 429. A lista mantém diversidade por subnicho e usa uma amostra
+    grande na busca manual de uma categoria.
+    """
+    seeds = []
+    for seed in CATALOG.get(cat, []):
+        clean = str(seed or "").strip()
+        if not clean or clean == cat:
+            continue
+        clean = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+", "", clean).strip()
+        if not clean or clean.lower() in {"e", "ou"}:
+            continue
+        if clean not in seeds:
+            seeds.append(clean)
+
+    # Prioriza consultas mais específicas e mantém uma consulta ampla no início.
+    priority = []
+    for x in seeds:
+        n = norm(x)
+        if cat == "👟 Tênis & Calçados" and any(k in n for k in (
+            "tenis", "corrida", "casual", "futebol", "chuteira", "basquete",
+            "trilha", "skate", "feminino", "masculino", "infantil", "nike",
+            "adidas", "asics", "mizuno", "olympikus", "fila", "puma",
+        )):
+            priority.append(x)
+        elif cat == "📱 Tecnologia" and any(k in n for k in (
+            "iphone", "samsung", "motorola", "xiaomi", "celular", "smartphone",
+            "notebook", "tablet", "fone", "smartwatch", "teclado", "mouse",
+        )):
+            priority.append(x)
+        elif cat == "💪 Academia & Fitness" and any(k in n for k in (
+            "creatina", "whey", "halter", "anilha", "barra", "esteira", "banco",
+            "suplement", "academia", "fitness",
+        )):
+            priority.append(x)
+        elif cat == "🏠 Casa e Organização" and any(k in n for k in (
+            "guarda", "armario", "organizador", "cozinha", "air fryer", "cafeteira",
+            "aspirador", "estante", "prateleira", "mesa", "cadeira", "cama",
+        )):
+            priority.append(x)
+        elif cat == "👕 Moda" and any(k in n for k in (
+            "camiseta", "camisa", "bermuda", "short", "calca", "jeans", "moletom",
+            "jaqueta", "polo", "vestido", "nike", "adidas", "puma",
+        )):
+            priority.append(x)
+        elif cat == "💇 Saúde & Beleza" and any(k in n for k in (
+            "shampoo", "cabelo", "skincare", "protetor", "hidratante", "barbeador",
+            "aparador", "maquiagem", "esmalte", "secador", "chapinha",
+        )):
+            priority.append(x)
+
+    merged=[]
+    for x in priority + seeds:
+        if x not in merged:
+            merged.append(x)
+    return merged[:(SEARCH_REAL_ITEM_QUERIES_ALL if fast else SEARCH_REAL_ITEM_QUERIES_SINGLE)]
+
+
 def _search_category(cat, fast=False):
     """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
     if cat == "🌙 Perfumes Árabes":
@@ -3920,6 +4399,9 @@ def _search_category(cat, fast=False):
     # pode trazer poucos/nenhum candidato útil para os filtros finais.
     # Buscamos anúncios reais por vários termos positivos e deixamos o
     # enriquecimento /items resolver preço, vendedor e imagem.
+    if cat == "👟 Tênis & Calçados":
+        return _search_shoes_category(cat, fast=fast)
+
     if cat == "🌸 Perfumes":
         out = []
         seen = set()
@@ -4055,6 +4537,80 @@ def _search_category(cat, fast=False):
     out = []
     seen = set()
 
+    # V44 — FONTE PRINCIPAL: página pública do Mercado Livre.
+    # A API /sites/MLB/search frequentemente retorna 403 neste projeto.
+    # Quando isso acontece, a versão anterior voltava para /products/search,
+    # que entrega IDs de catálogo e fazia o pool 184 -> apenas 4 ofertas.
+    # Agora descobrimos primeiro IDs MLB reais na página pública e os enviamos
+    # ao mesmo pipeline de /items, preço, imagem e coerência.
+    real_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    public_queries = _category_real_item_seed_queries(cat, fast=fast)
+    # Na busca individual usamos até 25 consultas públicas; no modo todas
+    # usamos 8 para preservar tempo. Cada consulta pode devolver vários IDs.
+    if fast:
+        public_queries = public_queries[:SEARCH_REAL_ITEM_QUERIES_ALL]
+    else:
+        public_queries = public_queries[:40]
+
+    def _public_ids_for_query(q):
+        try:
+            return q, _search_public_real_item_ids(q, limit=30)
+        except Exception as exc:
+            print("[BUSCA PUBLICA REAL]", cat, q, repr(exc))
+            return q, []
+
+    public_added = 0
+    # Concorrência moderada: suficiente para não ficar lento, sem bombardear
+    # o site público e provocar 429.
+    with _ThreadPoolExecutor(max_workers=min(6, max(1, len(public_queries)))) as ex:
+        futures = [ex.submit(_public_ids_for_query, q) for q in public_queries]
+        for fut in as_completed(futures):
+            q, ids = fut.result()
+            for iid in ids:
+                iid = str(iid or '').strip().upper()
+                if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                    continue
+                seen.add(iid)
+                out.append(({
+                    "id": iid,
+                    "item_id": iid,
+                    "title": "",
+                    "name": "",
+                    "source_type": "ITEM",
+                    "public_query": q,
+                }, cat))
+                public_added += 1
+                if len(out) >= real_target:
+                    break
+            if len(out) >= real_target:
+                break
+
+    print(f"[V44 BUSCA PUBLICA REAL] {cat}: +{public_added} ITEMs reais | pool inicial={len(out)}")
+
+    # Segunda fonte: API de anúncios reais. Se estiver liberada, complementa
+    # a busca pública; se devolver 403, não impede a primeira fonte.
+    if len(out) < real_target:
+        real_queries = _category_real_item_seed_queries(cat, fast=fast)
+        real_added = 0
+        for q in real_queries:
+            if len(out) >= real_target:
+                break
+            try:
+                rows = _search_real_item_listings_api(q, limit=SEARCH_REAL_ITEM_RESULTS_PER_QUERY)
+            except Exception as exc:
+                print("[BUSCA ITEMS API]", cat, q, repr(exc))
+                rows = []
+            for row in rows:
+                iid = str(row.get("id") or "").strip().upper()
+                if not re.fullmatch(r"MLB\d+", iid) or iid in seen:
+                    continue
+                seen.add(iid)
+                out.append((row, cat))
+                real_added += 1
+                if len(out) >= real_target:
+                    break
+        print(f"[V44 API ITEMS] {cat}: +{real_added} | pool={len(out)}")
+
     category_id = BEST_SELLER_CATEGORY_IDS.get(cat)
     if not category_id:
         try:
@@ -4107,16 +4663,8 @@ def _search_category(cat, fast=False):
             clean_seed = re.sub(r'^[^A-Za-zÀ-ÿ0-9]+', '', clean_seed).strip()
         if clean_seed and clean_seed not in seed_queries:
             seed_queries.append(clean_seed)
-
-    # No modo "todas", não pegamos simplesmente os primeiros 28 termos.
-    # Distribuímos as consultas ao longo de TODA a lista da categoria para
-    # representar os vários nichos (ex.: feminino, futebol, praia, fitness,
-    # informática etc.) em vez de deixar o início da lista dominar a busca.
-    if fast and len(seed_queries) > SEARCH_SEEDS_FAST_PER_CATEGORY:
-        total_seeds = len(seed_queries)
-        count = SEARCH_SEEDS_FAST_PER_CATEGORY
-        positions = [round(i * (total_seeds - 1) / (count - 1)) for i in range(count)]
-        seed_queries = [seed_queries[i] for i in positions]
+        if fast and len(seed_queries) >= SEARCH_SEEDS_FAST_PER_CATEGORY:
+            break
 
     for q in seed_queries:
         try:
@@ -4145,6 +4693,44 @@ def _search_category(cat, fast=False):
         rank_base += SEARCH_RESULTS_PER_QUERY_FAST if fast else 50
         if len(out) >= (SEARCH_RAW_POOL_PER_CATEGORY if fast else 180):
             break
+
+    # COMPLEMENTO: o /products/search forma um pool grande de CATÁLOGOS,
+    # mas a etapa de enriquecimento pode converter apenas poucos deles em
+    # publicações reais. Isso era exatamente o que fazia 184 candidatos
+    # virarem 4 ofertas.
+    #
+    # Complementamos a descoberta com a busca pública, que entrega IDs MLB
+    # de anúncios reais. Esses IDs entram como source_type=ITEM e seguem o
+    # mesmo enriquecimento/validação já existente. Não alteramos os filtros
+    # de coerência, preço ou imagem.
+    public_target = SEARCH_RAW_POOL_PER_CATEGORY if fast else min(500, SEARCH_CANDIDATES_PER_CATEGORY_SINGLE)
+    if len(out) < public_target:
+        public_queries = seed_queries[:8] if fast else seed_queries[:14]
+        public_added = 0
+        for q in public_queries:
+            try:
+                real_ids = _search_public_real_item_ids(q, limit=30 if fast else 30)
+            except Exception as exc:
+                print('[BUSCA PUBLICA COMPLEMENTAR]', cat, q, repr(exc))
+                continue
+            for iid in real_ids:
+                if any(str(row.get('id') or '') == iid for row, _ in out):
+                    continue
+                out.append(({
+                    'id': iid,
+                    'name': iid,
+                    'title': iid,
+                    'source_type': 'ITEM',
+                    'highlight_position': 10000 + public_added,
+                    'highlight_category_id': category_id,
+                    'public_query': q,
+                }, cat))
+                public_added += 1
+                if len(out) >= public_target:
+                    break
+            if len(out) >= public_target:
+                break
+        print(f'[BUSCA PUBLICA COMPLEMENTAR] {cat}: +{public_added} ITEMs reais | total bruto={len(out)}')
 
     print(f"[TOP 20] {cat}: {len(out)} candidatos amplos")
     return out
@@ -4313,6 +4899,179 @@ def validate_high_turnover_item(item, product_id=None):
     return None
 
 
+
+_PUBLIC_ITEM_PAGE_CACHE = {}
+_PUBLIC_ITEM_PAGE_CACHE_LOCK = threading.Lock()
+
+def _scrape_public_item_page(item_id):
+    """Lê os dados básicos do anúncio diretamente da página pública.
+
+    O app já consegue descobrir IDs MLB reais na busca pública, mas o V44
+    descartava esses IDs quando GET /items/{id} retornava 403. Isso era o
+    gargalo que transformava centenas de candidatos em 4 ofertas.
+
+    A página pública do anúncio contém metadados públicos (título, imagem,
+    preço e URL canônica). Usamos esses dados apenas como fallback quando a
+    API de /items não estiver disponível.
+    """
+    iid = str(item_id or '').strip().upper()
+    if not re.fullmatch(r'MLB\d+', iid):
+        return None
+
+    cache_key = iid
+    with _PUBLIC_ITEM_PAGE_CACHE_LOCK:
+        cached = _PUBLIC_ITEM_PAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    urls = [
+        f'https://www.mercadolivre.com.br/{iid.lower()}-produto',
+        f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
+    ]
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Cache-Control': 'no-cache',
+    }
+
+    html = ''
+    final_url = ''
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            if r.status_code == 200 and r.text:
+                html = r.text
+                final_url = str(r.url or url)
+                break
+            print('[ITEM PUBLICO] HTTP', r.status_code, iid, url)
+        except Exception as exc:
+            print('[ITEM PUBLICO] erro', iid, repr(exc))
+
+    if not html:
+        return None
+
+    def meta(prop=None, name=None, itemprop=None):
+        if prop:
+            attr = r'(?:property|name)=[\"\']' + re.escape(prop) + r'[\"\']'
+        elif name:
+            attr = r'name=[\"\']' + re.escape(name) + r'[\"\']'
+        elif itemprop:
+            attr = r'itemprop=[\"\']' + re.escape(itemprop) + r'[\"\']'
+        else:
+            return ''
+        patterns = [
+            r'<meta\b[^>]*' + attr + r'[^>]*content=[\"\']([^\"\']+)[\"\']',
+            r'<meta\b[^>]*content=[\"\']([^\"\']+)[\"\'][^>]*' + attr + r'[^>]*>',
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, html, re.I)
+            if m:
+                return html_lib.unescape(m.group(1)).strip()
+        return ''
+
+    title = meta(prop='og:title') or meta(name='twitter:title') or meta(itemprop='name')
+    image = meta(prop='og:image') or meta(name='twitter:image') or meta(itemprop='image')
+    price_raw = (
+        meta(prop='product:price:amount')
+        or meta(itemprop='price')
+        or meta(name='price')
+    )
+    currency = meta(prop='product:price:currency') or meta(itemprop='priceCurrency')
+
+    canonical = ''
+    m = re.search(r'<link\b[^>]*(?:rel=[\"\']canonical[\"\'])[^>]*href=[\"\']([^\"\']+)', html, re.I)
+    if not m:
+        m = re.search(r'<link\b[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*(?:rel=[\"\']canonical[\"\'])', html, re.I)
+    if m:
+        canonical = html_lib.unescape(m.group(1)).strip()
+
+    # Fallback para JSON-LD/Product/Offer.
+    if not title or not image or not price_raw:
+        for sm in re.finditer(r'<script\b[^>]*type=[\"\']application/ld\+json[\"\'][^>]*>(.*?)</script>', html, re.I | re.S):
+            raw_json = html_lib.unescape(sm.group(1)).strip()
+            try:
+                obj = json.loads(raw_json)
+            except Exception:
+                continue
+            stack = obj if isinstance(obj, list) else [obj]
+            while stack:
+                node = stack.pop(0)
+                if isinstance(node, list):
+                    stack.extend(node)
+                    continue
+                if not isinstance(node, dict):
+                    continue
+                if not title and node.get('name'):
+                    title = str(node.get('name')).strip()
+                if not image and node.get('image'):
+                    img = node.get('image')
+                    if isinstance(img, list):
+                        img = img[0] if img else ''
+                    image = str(img or '').strip()
+                offers_node = node.get('offers')
+                if isinstance(offers_node, dict):
+                    if not price_raw and offers_node.get('price') is not None:
+                        price_raw = str(offers_node.get('price'))
+                    if not currency and offers_node.get('priceCurrency'):
+                        currency = str(offers_node.get('priceCurrency'))
+                elif isinstance(offers_node, list):
+                    stack.extend(offers_node)
+                if node.get('@graph'):
+                    stack.extend(node.get('@graph') if isinstance(node.get('@graph'), list) else [node.get('@graph')])
+
+    def parse_price(v):
+        if v is None:
+            return None
+        txt = str(v).strip().replace('\xa0', ' ')
+        # JSON-LD costuma vir em 1234.56; meta pode vir em 1.234,56.
+        if re.fullmatch(r'\d+(?:\.\d+)?', txt):
+            try:
+                return float(txt)
+            except Exception:
+                return None
+        m = re.search(r'\d[\d.]*,\d{2}', txt)
+        if m:
+            try:
+                return float(m.group(0).replace('.', '').replace(',', '.'))
+            except Exception:
+                return None
+        m = re.search(r'\d+(?:\.\d+)?', txt)
+        try:
+            return float(m.group(0)) if m else None
+        except Exception:
+            return None
+
+    price = parse_price(price_raw)
+    if not title or price is None or price <= 0:
+        print('[ITEM PUBLICO] dados insuficientes', iid, 'title=', bool(title), 'price=', price_raw)
+        return None
+
+    if not canonical or '/p/' not in canonical:
+        canonical = final_url or f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}'
+
+    row = {
+        'id': iid,
+        'item_id': iid,
+        'title': title,
+        'name': title,
+        'permalink': canonical,
+        'price': price,
+        'original_price': None,
+        'thumbnail': image,
+        'pictures': [{'secure_url': image}] if image else [],
+        'seller_id': None,
+        'seller': {},
+        'shipping': {},
+        'condition': 'new',
+        'source_type': 'ITEM',
+        'public_page': True,
+        'currency_id': currency or 'BRL',
+    }
+    with _PUBLIC_ITEM_PAGE_CACHE_LOCK:
+        _PUBLIC_ITEM_PAGE_CACHE[cache_key] = dict(row)
+    return row
+
 def _fetch_product_fast(pid, raw=None, base=None):
     """Enriquece o candidato sem eliminar catálogo durante a busca.
 
@@ -4328,14 +5087,28 @@ def _fetch_product_fast(pid, raw=None, base=None):
             return _PRODUCT_CACHE[cache_key]
 
     # 0) Busca que já trouxe uma publicação ITEM real.
+    # Primeiro aproveitamos os dados já coletados da página pública. Isso é
+    # essencial porque /items/{id} pode responder 403 para o token atual.
     source_type = str((raw or {}).get("source_type") or "").upper().strip()
     if source_type == "ITEM":
+        raw_item = normalize_item(raw)
+        raw_title = str((raw or {}).get("title") or (raw or {}).get("name") or "").strip()
+        raw_price = raw_item.get("price") if raw_item else None
+        raw_image = _extract_image_url(raw or {})
+        if raw_item is not None and raw_title and raw_price is not None and float(raw_price or 0) > 0 and raw_image:
+            raw_item["permalink"] = (raw_item.get("permalink") or (raw or {}).get("permalink"))
+            p = dict(raw or {})
+            p.update({"id": pid, "name": raw_title, "title": raw_title})
+            result = (pid, p, raw_item, base)
+            with _PRODUCT_CACHE_LOCK:
+                _PRODUCT_CACHE[cache_key] = result
+            return result
+
+        # Segunda tentativa: API oficial /items.
         item_data, status, _ = ml_get(f"/items/{pid}")
         if status == 200 and isinstance(item_data, dict):
             item = normalize_item(item_data)
             if item is not None:
-                # Se houver permalink real, usamos. Se vier catálogo, também
-                # preservamos porque a geração do afiliado resolverá depois.
                 item = _hydrate_real_item_permalink(item)
                 p = dict(raw or {})
                 p.update({
@@ -4345,6 +5118,18 @@ def _fetch_product_fast(pid, raw=None, base=None):
                     "pictures": item_data.get("pictures") or [],
                     "permalink": item.get("permalink") or p.get("permalink"),
                 })
+                result = (pid, p, item, base)
+                with _PRODUCT_CACHE_LOCK:
+                    _PRODUCT_CACHE[cache_key] = result
+                return result
+
+        # Fallback definitivo: página pública do próprio anúncio.
+        public_row = _scrape_public_item_page(pid)
+        if public_row:
+            item = normalize_item(public_row)
+            if item is not None:
+                p = dict(public_row)
+                p.update({"id": pid, "name": public_row.get("title") or pid, "title": public_row.get("title") or pid})
                 result = (pid, p, item, base)
                 with _PRODUCT_CACHE_LOCK:
                     _PRODUCT_CACHE[cache_key] = result
@@ -4754,7 +5539,7 @@ def _title_matches_scan_category(category, title):
         return _is_arabic_perfume_for_query(title, "")
 
     if cat == "👟 Tênis & Calçados":
-        if fragrance:
+        if fragrance or any(x in n for x in ("chuteira", "trava society", "trava campo", "futsal")):
             return False
         return shoe
 
@@ -4833,8 +5618,8 @@ def _title_matches_scan_category(category, title):
 def scan_queries(queries, min_discount=0, apply_coupons=False):
     """Busca candidatos das categorias e enriquece as publicações reais.
 
-    Para perfumes, a descoberta usa /products/search, que foi validada
-    funcionando para esta aplicação; /sites/MLB/search não é usado.
+    Para categorias comuns, a V45 prioriza IDs ITEM reais descobertos na página pública
+    e enriquece cada anúncio pela própria página pública quando /items/{id} retorna 403. Perfumes mantêm a rota própria.
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
@@ -5009,7 +5794,21 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
                     price = sale
                     if sale_original is not None:
                         original = sale_original
-            # REGRA PRINCIPAL: o preço mínimo de produto é R$ 69,90.
+            # Se o buy box/catalogo não trouxe preço original, consulta a
+            # venda atual do ITEM. O Mercado Livre pode guardar o preço cheio
+            # em /items/{id}/sale_price; sem essa recuperação o filtro antigo
+            # descartava quase todos os produtos.
+            if item.get("item_id") and (original is None or original <= price):
+                try:
+                    sale_price, sale_original = get_current_sale_price(item.get("item_id"))
+                    if sale_price is not None and sale_price > 0:
+                        price = sale_price
+                    if sale_original is not None and sale_original > price:
+                        original = sale_original
+                except Exception as exc:
+                    print("[SALE PRICE] falha", item.get("item_id"), repr(exc))
+
+            # REGRA PRINCIPAL: o preço mínimo de produto é o valor configurado em MIN_PRODUCT_PRICE.
             # O valor precisa ser filtrado aqui, depois de resolver o preço
             # real da publicação, e não apenas na descoberta do catálogo.
             # Isso impede que produtos de R$ 15,99, R$ 22,99 etc. cheguem
@@ -5110,20 +5909,19 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
 
-    # REGRA ATUAL: somente produtos com DESCONTO REAL.
-    # Loja Oficial NÃO é mais exigida. O desconto precisa ser comprovado
-    # por preço atual menor que o preço original.
+    # BUSCA AMPLA: não eliminamos um produto somente porque o catálogo
+    # não informou preço original. Isso era o principal gargalo que fazia
+    # centenas de candidatos virarem 1 única oferta.
+    # Quando há preço original, o desconto real continua sendo calculado e
+    # usado no ranking. Quando não há, a oferta continua válida pelo preço
+    # atual, imagem e coerência do nicho. Cupons entram depois.
     before_discount_filter = len(offers)
-    discounted_offers = []
     for o in offers:
-        if not _discount_is_real(o.get("price"), o.get("original_price")):
-            continue
-        o["discount"] = discount(o.get("price"), o.get("original_price"))
-        if float(o.get("discount") or 0) <= 0:
-            continue
-        discounted_offers.append(o)
-    offers = discounted_offers
-    print(f"[FILTRO DESCONTO REAL] {before_discount_filter} -> {len(offers)} ofertas")
+        if _discount_is_real(o.get("price"), o.get("original_price")):
+            o["discount"] = discount(o.get("price"), o.get("original_price"))
+        else:
+            o["discount"] = 0.0
+    print(f"[BUSCA AMPLA] {before_discount_filter} ofertas após filtros básicos; desconto real usado no ranking")
 
     # Perfumes: mostra somente perfumes/fragrâncias individuais,
     # incluindo Body Splash e Body Mist, sem kits/combos.
@@ -5176,36 +5974,81 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             moda.append(o)
         offers = moda
 
-    # DEDUPLICAÇÃO ROBUSTA — SEM PERDER VARIEDADE
-    # O mesmo anúncio pode aparecer em várias sementes. A chave principal é
-    # o ITEM MLB (publicação real), e não a imagem nem apenas o título.
-    # Isso é importante porque vários vendedores usam a mesma foto de fábrica.
-    # Antes, "mesma imagem = mesmo produto" estava eliminando anúncios
-    # diferentes e era uma das principais causas de a busca parar perto de
-    # 100 ofertas.
+    # DEDUPLICAÇÃO ROBUSTA
+    # O mesmo produto pode chegar com product_id diferente e com pequenas
+    # diferenças no título (ex.: "Escapes Urina G" x "Escapes Urina Gg").
+    # O agrupamento apenas por product_id/título não é suficiente.
+    # Primeiro usamos o título exato; depois a imagem normalizada, que é um
+    # identificador muito mais confiável quando o Mercado Livre devolve a
+    # mesma publicação/catálogo por caminhos diferentes.
     def _offer_value(x):
         try:
             return float(x.get("total_price")) if x.get("total_price") is not None else float(x.get("price") or 999999)
         except Exception:
             return 999999.0
 
+    def _image_identity(x):
+        raw = str(x.get("image") or "").strip()
+        if not raw:
+            return ""
+        try:
+            u = urlparse(raw)
+            path = re.sub(r"\s+", "", u.path.lower())
+            # Ignora parâmetros de CDN que só alteram tamanho/formato.
+            path = re.sub(r"[?&](?:width|height|size|quality|format)=[^&]+", "", path)
+            return (u.netloc.lower() + path).strip()
+        except Exception:
+            return raw.lower().split("?")[0].strip()
+
+    # 1) Título exato.
     unique_offers = {}
     for o in offers:
-        item_key = str(o.get("item_id") or "").strip().upper()
-        product_key = str(o.get("product_id") or "").strip().upper()
         title_key = norm(o.get("title") or "")
-        # Publicação real > catálogo > título.
-        key = item_key or product_key or title_key
+        item_key = str(o.get("item_id") or o.get("product_id") or "").strip()
+        key = title_key or item_key
         if not key:
             continue
         current = unique_offers.get(key)
-        # Se o mesmo anúncio foi encontrado mais de uma vez, fica a menor
-        # condição de preço, sem eliminar outras publicações do mesmo produto.
         if current is None or _offer_value(o) < _offer_value(current):
             unique_offers[key] = o
 
-    offers = list(unique_offers.values())
-    print(f"[DEDUP VARIEDADE] {len(offers)} publicações únicas por ITEM/PRODUTO")
+    # 2) Mesma imagem = mesmo produto visual. Isso captura publicações que
+    # possuem IDs/títulos diferentes, mas mostram exatamente o mesmo produto.
+    by_image = {}
+    no_image = []
+    for o in unique_offers.values():
+        ikey = _image_identity(o)
+        if not ikey:
+            no_image.append(o)
+            continue
+        current = by_image.get(ikey)
+        if current is None or _offer_value(o) < _offer_value(current):
+            by_image[ikey] = o
+
+    deduped = list(by_image.values()) + no_image
+
+    # 3) Pequenas diferenças de título só são usadas como desempate quando
+    # a imagem também coincide. O objetivo é remover duplicata, não juntar
+    # variantes legítimas que possuem imagens diferentes.
+    final_offers = []
+    for o in deduped:
+        duplicate_index = None
+        title = norm(o.get("title") or "")
+        image = _image_identity(o)
+        if image and title:
+            for i, existing in enumerate(final_offers):
+                if image != _image_identity(existing):
+                    continue
+                other = norm(existing.get("title") or "")
+                if title == other or SequenceMatcher(None, title, other).ratio() >= 0.94:
+                    duplicate_index = i
+                    break
+        if duplicate_index is None:
+            final_offers.append(o)
+        elif _offer_value(o) < _offer_value(final_offers[duplicate_index]):
+            final_offers[duplicate_index] = o
+
+    offers = final_offers
 
     def _display_demand_key(o):
         cat = o.get("category_name") or ""
@@ -5257,8 +6100,8 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
 
     offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
 
-    # Até 20 por categoria; a categoria árabe recebe 30 para aparecer com
-    # mais frequência. Dentro dela, boas promoções têm prioridade real.
+    # Até 50 por categoria; perfumes recebem o mesmo limite para manter variedade e
+    # variedade. Dentro de cada categoria, boas promoções têm prioridade real.
     grouped = {}
     for o in offers:
         grouped.setdefault(o["category_name"], []).append(o)
@@ -5267,15 +6110,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     for cat in categories:
         arr = grouped.get(cat, [])
         arr.sort(key=_display_demand_key)
-        # As duas categorias de perfumes têm espaço próprio. A quantidade
-        # final depende dos anúncios reais encontrados, preço, imagem e
-        # filtros; não cortamos cedo em 15/20.
-        if cat == "🌙 Perfumes Árabes":
-            limit = 60
-        elif cat == "🌸 Perfumes":
-            limit = 60
+        # Em uma categoria isolada, podemos entregar até 250 ofertas.
+        # No modo "todas", mantemos 50 por categoria para preservar velocidade
+        # e permitir passar de 230 ofertas somando as categorias.
+        if len(categories) == 1:
+            limit = 250
         else:
-            limit = 45
+            limit = 50
         flat.extend(arr[:limit])
 
     # A ordem exibida é aleatória; a posição real de mais vendido continua salva em best_seller_position.
@@ -5494,7 +6335,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
         "cupom principal": coupon_primary_code or "—",
         "tipo do cupom principal": dominant_type or "—",
         "ofertas elegíveis para cupom principal": coupon_coverage_count,
-        "modo": f"busca expandida: até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} anúncios únicos por categoria (até {SEARCH_CANDIDATES_PER_CATEGORY_ALL * max(1, len(categories))} no modo todas), com meta de {SEARCH_TARGET_OFFERS} ofertas; filtros de coerência, imagem e desconto real preservados",
+        "modo": f"V47: tênis por marcas/modelos/subnichos com busca ITEM real + catálogo; chuteiras excluídas; até {SEARCH_CANDIDATES_PER_CATEGORY_ALL} candidatos por categoria no modo todas e até 250 resultados na busca de uma categoria; filtros de coerência e imagem preservados; preço mínimo R$ {MIN_PRODUCT_PRICE:.2f}",
         "meta_ofertas": SEARCH_TARGET_OFFERS,
         "pool_candidatos": len(candidates),
     }
@@ -5648,7 +6489,8 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque (já identifica o produto)
+    - frase de destaque
+    - nome do produto
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -5660,10 +6502,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # A chamada já identifica o produto. Não repetimos o título abaixo,
-    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
+        "",
+        f"*{title}*",
         "",
     ]
 
@@ -5953,7 +6795,8 @@ def ad_text(o, affiliate=""):
     """Monta o anúncio no formato visual pedido para o WhatsApp.
 
     Formato:
-    - frase de destaque (já identifica o produto)
+    - frase de destaque
+    - nome do produto
     - preço antigo riscado com ~ ~
     - cupom, quando existir
     - preço atual em destaque
@@ -5965,10 +6808,10 @@ def ad_text(o, affiliate=""):
     title = str(o.get("title") or "Produto").strip()
     marketing = _marketing_phrase(title, o)
 
-    # A chamada já identifica o produto. Não repetimos o título abaixo,
-    # deixando o anúncio mais limpo e parecido com o modelo aprovado.
     lines = [
         f"*{marketing.upper()}*",
+        "",
+        f"*{title}*",
         "",
     ]
 
@@ -6002,321 +6845,239 @@ def ad_text(o, affiliate=""):
 
 
 def _marketing_phrase(title, offer=None):
-    """Cria chamadas curtas, naturais e específicas para CADA anúncio.
+    """Gera uma chamada comercial específica para qualquer categoria.
 
-    A versão anterior repetia fórmulas como "EM DESTAQUE", "OLHA ESSE
-    PREÇO" e "PREÇO PARA CONFERIR". Aqui a chamada usa o nome/modelo real,
-    características que aparecem no título e um conjunto de variações
-    determinísticas. Assim o mesmo anúncio não recebe uma frase aleatória
-    diferente a cada execução, mas anúncios diferentes não ficam com a mesma
-    chamada o tempo todo.
+    A frase usa o próprio título do produto para identificar o tipo de item,
+    marca e/ou modelo quando possível. Evita deixar a comunicação restrita
+    a perfumes e evita o fallback genérico sempre que houver informação útil.
     """
-    t = re.sub(r"\s+", " ", str(title or "Produto").strip())
+    t = str(title or "Produto").strip()
     n = norm(t)
-    offer = offer or {}
 
-    seed_text = "|".join([
-        t,
-        str(offer.get("item_id") or ""),
-        str(offer.get("seller_id") or ""),
-    ])
-    try:
-        seed = int(hashlib.sha256(seed_text.encode("utf-8", "ignore")).hexdigest()[:12], 16)
-    except Exception:
-        seed = sum(ord(c) for c in seed_text)
-
-    def pick(values):
-        return values[seed % len(values)] if values else ""
-
-    def result(headline, emojis):
-        return {"headline": re.sub(r"\s+", " ", headline).strip(), "emojis": emojis, "detail": ""}
-
-    def first_match(values):
-        for value in values:
-            if value in n:
-                return value
-        return ""
-
-    # ------------------------------------------------------------
-    # Utilidades para deixar a chamada baseada no produto real.
-    # ------------------------------------------------------------
-    brand_map = [
-        ("apple", "APPLE"), ("samsung", "SAMSUNG"), ("xiaomi", "XIAOMI"),
-        ("motorola", "MOTOROLA"), ("realme", "REALME"), ("poco", "POCO"),
-        ("redmi", "REDMI"), ("nike", "NIKE"), ("adidas", "ADIDAS"),
-        ("puma", "PUMA"), ("asics", "ASICS"), ("new balance", "NEW BALANCE"),
-        ("mizuno", "MIZUNO"), ("olympikus", "OLYMPIKUS"), ("fila", "FILA"),
-        ("reebok", "REEBOK"), ("vans", "VANS"), ("converse", "CONVERSE"),
-        ("under armour", "UNDER ARMOUR"), ("skechers", "SKECHERS"),
-        ("oakley", "OAKLEY"), ("lacoste", "LACOSTE"), ("jbl", "JBL"),
-        ("sony", "SONY"), ("lenovo", "LENOVO"), ("dell", "DELL"),
-        ("acer", "ACER"), ("hugo boss", "HUGO BOSS"), ("lattafa", "LATTAFA"),
-        ("maison alhambra", "MAISON ALHAMBRA"), ("afnan", "AFNAN"),
-        ("armaf", "ARMAF"), ("rasasi", "RASASI"), ("al haramain", "AL HARAMAIN"),
-        ("al wataniah", "AL WATANIAH"), ("french avenue", "FRENCH AVENUE"),
-        ("fragrance world", "FRAGRANCE WORLD"), ("paris corner", "PARIS CORNER"),
-        ("rayhaan", "RAYHAAN"), ("khadlaj", "KHADLAJ"), ("zimaya", "ZIMAYA"),
+    # ============================================================
+    # PERFUMES — mantém as chamadas específicas já construídas.
+    # ============================================================
+    perfume_profiles = [
+        (["fakhar rose", "fakhar women", "fakhar feminino"],
+         "FLORAL, FEMININO E ELEGANTE — O FAKHAR ROSE É UM DESTAQUE DA LATTAFA", "🌸✨",
+         "Tuberosa e jasmim no coração, com uma base de baunilha, almíscar branco e sândalo."),
+        (["fakhar black", "fakhar men", "fakhar masculino"],
+         "FRESCO, MASCULINO E COM PRESENÇA — FAKHAR BLACK EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem procura uma fragrância masculina com perfil moderno."),
+        (["fakhar extrait"],
+         "FRESCO NA SAÍDA, ESPECIADO NO CORAÇÃO E MARCANTE NA BASE", "🔥✨",
+         "Fakhar Extrait combina grapefruit, pimenta-rosa e cardamomo com tuberosa, âmbar e couro."),
+        (["asad"],
+         "INTENSO, ESPECIADO E MARCANTE — ASAD EM DESTAQUE", "🖤🔥",
+         "Uma opção da Lattafa para quem prefere fragrâncias mais intensas e de personalidade."),
+        (["khamrah qahwa"],
+         "DOCE, ESPECIADO E COM UM TOQUE DE CAFÉ — KHAMRAH QAHWA", "☕🔥",
+         "Uma combinação para quem gosta de perfumes quentes e envolventes."),
+        (["khamrah"],
+         "DOCE, QUENTE E ENVOLVENTE — KHAMRAH EM DESTAQUE", "🍂🔥",
+         "Uma opção para quem curte um perfil mais gourmand e cheio de presença."),
+        (["oud for glory"],
+         "OUD INTENSO, ELEGANTE E MARCANTE — PARA QUEM GOSTA DE PRESENÇA", "🖤🔥",
+         "Uma escolha para quem procura um perfume árabe com personalidade forte."),
+        (["club de nuit intense"],
+         "MARCANTE E ELEGANTE — CLUB DE NUIT INTENSE EM DESTAQUE", "🔥🖤",
+         "Uma fragrância para quem gosta de um perfil marcante e sofisticado."),
+        (["club de nuit woman", "club de nuit women"],
+         "FEMININO, ELEGANTE E MARCANTE — CLUB DE NUIT WOMAN", "🌹✨",
+         "Uma opção para quem gosta de fragrâncias femininas com presença."),
+        (["9pm"],
+         "DOCE, SEDUTOR E MARCANTE — 9PM EM DESTAQUE", "🌙🔥",
+         "Uma opção para quem prefere um perfume mais adocicado e envolvente."),
+        (["qaed al fursan"],
+         "FRUTADO, MARCANTE E CHEIO DE PERSONALIDADE — QAED AL FURSAN", "🍍🔥",
+         "Uma escolha para quem gosta de fragrâncias árabes com perfil frutado."),
+        (["yara moi"],
+         "CREMOSO, FEMININO E DELICADAMENTE ADOCICADO — YARA MOI", "🤍✨",
+         "Uma opção da linha Yara para quem prefere um perfil feminino mais cremoso."),
+        (["yara tous"],
+         "FRUTADO, FEMININO E VIBRANTE — YARA TOUS EM DESTAQUE", "🥭✨",
+         "Uma escolha para quem gosta de fragrâncias femininas com uma pegada mais alegre."),
+        (["yara candy"],
+         "DOCE, JOVEM E DIVERTIDO — YARA CANDY", "🍬💗",
+         "Uma opção para quem procura um perfume feminino com proposta mais doce."),
+        (["yara"],
+         "DELICADO, FEMININO E ADOCICADO — YARA EM DESTAQUE", "🎀✨",
+         "Uma escolha para quem gosta de fragrâncias femininas mais doces e delicadas."),
+        (["delilah"],
+         "FLORAL, FEMININO E ELEGANTE — DELILAH EM DESTAQUE", "🌸✨",
+         "Uma opção para quem procura uma fragrância feminina com perfil floral."),
+        (["khair pistachio"],
+         "PISTACHE, DOÇURA E CREMOSIDADE — KHAIR PISTACHIO", "💚✨",
+         "Uma escolha para quem ama perfumes gourmand e um perfil mais cremoso."),
+        (["nebras", "neb ras"],
+         "DOCE, CREMOSO E ENVOLVENTE — NEBRAS EM DESTAQUE", "🍫✨",
+         "Uma opção para quem prefere fragrâncias doces e aconchegantes."),
+        (["liam grey"],
+         "ELEGANTE, ESPECIADO E SOFISTICADO — LIAM GREY", "🩶🔥",
+         "Uma opção para quem gosta de perfumes com personalidade e perfil refinado."),
+        (["liquid brun"],
+         "QUENTE, MARCANTE E SOFISTICADO — LIQUID BRUN", "🤎🔥",
+         "Uma escolha para quem procura uma fragrância masculina com presença."),
+        (["maahir black"],
+         "ESCURO, INTENSO E MARCANTE — MAAHIR BLACK", "🖤🔥",
+         "Uma opção para quem prefere perfumes árabes com personalidade forte."),
+        (["najdia"],
+         "FRESCO, VIBRANTE E MASCULINO — NAJDIA EM DESTAQUE", "💙🔥",
+         "Uma escolha para quem procura uma fragrância masculina com proposta fresca."),
+        (["teriaq", "tériaq"],
+         "DOCE, MARCANTE E ENVOLVENTE — TERIAQ EM DESTAQUE", "🍯🔥",
+         "Uma opção para quem gosta de perfumes com presença e lado adocicado."),
     ]
-    brand = ""
-    for needle, label in brand_map:
-        if needle in n:
-            brand = label
-            break
+    for terms, headline, emojis, detail in perfume_profiles:
+        if any(term in n for term in terms):
+            return {"headline": headline, "emojis": emojis, "detail": detail}
 
-    def extract_storage():
-        m = re.search(r"\b(64|128|256|512|1\s*tb)\s*(?:gb|g|tb)\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
-
-    def extract_ram():
-        m = re.search(r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)\s*ram\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
-
-    def extract_volume():
-        m = re.search(r"\b(30|40|50|60|75|80|90|100|105|110|120|125|150|200|250|300)\s*ml\b", n, re.I)
-        return re.sub(r"\s+", "", m.group(0).upper()) if m else ""
-
-    def perfume_core():
-        x = re.sub(r"\b(perfume|parfum|fragrance|eau de parfum|eau de toilette|eau de cologne|edt|edp)\b", " ", t, flags=re.I)
-        x = re.sub(r"\b(original|importado|importada|masculino|masculina|feminino|feminina|unissex|unisex|tester|arabe|árabe)\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*ml\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*oz\b", " ", x, flags=re.I)
-        x = re.sub(r"\b(kit|combo|duo|trio|conjunto|pack)\b.*$", " ", x, flags=re.I)
-        x = re.sub(r"\s+", " ", x).strip(" -–—|/")
-        words = x.split()
-        # Remove ruído comercial no fim e não transforma o headline em um
-        # título gigante.
-        stop = {"com", "de", "para", "por", "ml", "100ml", "50ml", "original"}
-        words = [w for w in words if w.lower() not in stop]
-        return " ".join(words[:6]).strip() or "PERFUME"
-
-    def phone_core():
-        x = re.sub(r"\b(smartphone|celular|telefone|mobile)\b", " ", t, flags=re.I)
-        x = re.sub(r"\b(original|novo|lacrado|global|nacional)\b", " ", x, flags=re.I)
-        # Remove RAM antes do armazenamento para não transformar "4GB RAM"
-        # em um pedaço solto do nome do aparelho.
-        x = re.sub(r"\b\d+\s*gb\s*ram\b", " ", x, flags=re.I)
-        x = re.sub(r"\b\d+(?:[.,]\d+)?\s*(?:gb|g|tb)\b", " ", x, flags=re.I)
-        x = re.sub(r"[+|]+", " ", x)
-        x = re.sub(r"\s+", " ", x).strip(" -–—|/")
-        words = x.split()
-        return " ".join(words[:6]).strip() or (brand or "CELULAR")
-
-    # ============================================================
-    # PERFUMES — chamadas por modelo, não por categoria genérica.
-    # ============================================================
-    is_perfume = any(x in n for x in [
-        "perfume", "parfum", "eau de ", "fragrance", "colonia", "colônia",
-        "body splash", "body mist", "deo colonia", "deo colônia",
+    if any(x in n for x in [
+        "perfume", "parfum", "eau de", "fragrance",
+        "colonia", "colônia", "body splash", "body mist",
+        "edt", "edp", "eau de toilette", "eau de parfum",
+        "eau de cologne", "deo colonia", "deo colônia",
         "desodorante colonia", "desodorante colônia",
-    ]) or str(offer.get("category_name") or "") in {"🌸 Perfumes", "🌙 Perfumes Árabes"}
-
-    if is_perfume:
-        core = perfume_core()
-        volume = extract_volume()
-        label = f"{core.upper()} {volume}".strip()
-
-        perfume_profiles = [
-            ("fakhar rose", "FEMININO, FLORAL E ELEGANTE", "🌸✨"),
-            ("fakhar black", "MASCULINO E FRESCO, COM PRESENÇA", "🖤🔥"),
-            ("fakhar extrait", "ESPECIADO E MARCANTE", "🔥✨"),
-            ("asad", "INTENSO E ESPECIADO", "🖤🔥"),
-            ("khamrah qahwa", "DOCE, ESPECIADO E COM CAFÉ", "☕🔥"),
-            ("khamrah", "DOCE, QUENTE E GOURMAND", "🍂🔥"),
-            ("oud for glory", "OUD INTENSO E MARCANTE", "🖤🔥"),
-            ("club de nuit intense", "MARCANTE E SOFISTICADO", "🔥🖤"),
-            ("club de nuit woman", "FEMININO E ELEGANTE", "🌹✨"),
-            ("club de nuit women", "FEMININO E ELEGANTE", "🌹✨"),
-            ("9pm", "DOCE E ENVOLVENTE", "🌙🔥"),
-            ("qaed al fursan", "FRUTADO E MARCANTE", "🍍🔥"),
-            ("yara moi", "CREMOSO, FEMININO E DELICADO", "🤍✨"),
-            ("yara tous", "FRUTADO, FEMININO E VIBRANTE", "🥭✨"),
-            ("yara candy", "DOCE, FEMININO E JOVEM", "🍬💗"),
-            ("yara", "DOCE, FEMININO E DELICADO", "🎀✨"),
-            ("delilah", "FLORAL, FEMININO E ELEGANTE", "🌸✨"),
-            ("khair pistachio", "CREMOSO E GOURMAND", "💚✨"),
-            ("nebras", "DOCE, CREMOSO E ENVOLVENTE", "🍫✨"),
-            ("liam grey", "ESPECIADO E SOFISTICADO", "🩶🔥"),
-            ("liquid brun", "QUENTE E MARCANTE", "🤎🔥"),
-            ("maahir black", "INTENSO E MARCANTE", "🖤🔥"),
-            ("najdia", "FRESCO E VIBRANTE", "💙🔥"),
-            ("teriaq", "DOCE E ENVOLVENTE", "🍯🔥"),
-            ("infini oud", "OUD MARCANTE E ELEGANTE", "🖤✨"),
-            ("bottled", "ELEGANTE E VERSÁTIL", "🖤✨"),
-        ]
-        profile = next((p for term, *p in perfume_profiles if term in n), None)
-
-        if profile:
-            descriptor, emojis = profile
-            brand_text = f" DA {brand}" if brand else ""
-            variants = [
-                f"{label} — {descriptor}",
-                f"{label} — A PEGADA {descriptor}",
-                f"{label} — {descriptor}{brand_text}",
-                f"{label} — PARA QUEM CURTE UM PERFIL {descriptor}",
-            ]
-            return result(pick(variants), emojis)
-
-        # Perfume sem modelo conhecido: ainda usa o nome real e evita
-        # "perfume em destaque / olha o preço".
+    ]):
         if "body splash" in n:
-            variants = [
-                f"{label} — BODY SPLASH PARA A ROTINA",
-                f"{label} — FRAGRÂNCIA LEVE PARA REAPLICAR",
-                f"{label} — UMA OPÇÃO LEVE PARA O DIA A DIA",
-            ]
-            return result(pick(variants), "🌸💦")
+            return {"headline": "BODY SPLASH EM OFERTA — PERFUME LEVE PARA O DIA A DIA", "emojis": "🌸🔥", "detail": "Uma opção prática para quem prefere uma fragrância leve e fácil de usar."}
         if "body mist" in n:
-            variants = [
-                f"{label} — BODY MIST PARA DEIXAR NA ROTINA",
-                f"{label} — FRAGRÂNCIA LEVE PARA REAPLICAR",
-                f"{label} — PRÁTICO PARA A ROTINA E PARA LEVAR NA BOLSA",
-            ]
-            return result(pick(variants), "✨💦")
-
-        gender = "FEMININO" if any(x in n for x in ["feminino", "feminina", "women", "woman"]) else "MASCULINO" if any(x in n for x in ["masculino", "masculina", "men", "man"]) else ""
-        if "oud" in n:
-            descriptor = "OUD E PERFIL MARCANTE"
-        elif any(x in n for x in ["rose", "floral", "flor"]):
-            descriptor = "PERFIL FLORAL"
-        elif any(x in n for x in ["vanilla", "baunilha", "vanille"]):
-            descriptor = "PERFIL ADOCICADO"
-        elif any(x in n for x in ["fresh", "aqua", "water", "blue"]):
-            descriptor = "PERFIL FRESCO"
-        else:
-            descriptor = "UMA FRAGRÂNCIA PARA COLOCAR NO RADAR"
-        gender_part = f" • {gender}" if gender else ""
-        variants = [
-            f"{label}{gender_part} — {descriptor}",
-            f"{label} — {descriptor}",
-            f"{brand + ' • ' if brand else ''}{label} — UMA FRAGRÂNCIA QUE CHAMA ATENÇÃO",
-        ]
-        return result(pick(variants), "✨🔥")
+            return {"headline": "BODY MIST EM DESTAQUE — LEVE E PRÁTICO PARA REAPLICAR", "emojis": "✨🌸", "detail": "Uma opção para deixar na rotina e reaplicar ao longo do dia."}
+        if "feminino" in n or "women" in n:
+            return {"headline": "PERFUME FEMININO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🌸✨", "detail": "Uma opção para quem gosta de fragrâncias femininas e encontrou um bom preço."}
+        if "masculino" in n or "men" in n:
+            return {"headline": "PERFUME MASCULINO EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "🖤🔥", "detail": "Uma alternativa para quem procura uma fragrância masculina em promoção."}
+        return {"headline": "PERFUME EM DESTAQUE — OLHA O PREÇO DESSE ACHADO", "emojis": "✨🔥", "detail": "Uma fragrância para colocar no radar quando aparece com preço promocional."}
 
     # ============================================================
-    # CELULARES — usa modelo + armazenamento/RAM/5G quando existem.
+    # TECNOLOGIA
     # ============================================================
-    is_phone = any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"])
-    if is_phone:
-        core = phone_core().upper()
-        storage = extract_storage()
-        ram_matches = re.findall(r"\b(2|3|4|6|8|12|16|24|32)\s*(?:gb|g)\s*ram\b", n, re.I)
-        ram = extract_ram() if len(set(ram_matches)) == 1 else ""
-        fiveg = "5G" if re.search(r"\b5g\b", n) else ""
-        specs = " + ".join(x for x in [fiveg, storage, ram] if x)
-        suffix = f" — {specs}" if specs else ""
-        short_core = core.replace("MOTOROLA ", "").replace("SAMSUNG ", "").replace("APPLE ", "")
-        variants = [
-            f"{core}{suffix} — PARA QUEM QUER TROCAR DE CELULAR",
-            f"{short_core}{suffix} — 5G + {storage} PARA A ROTINA" if fiveg and storage else f"{core}{suffix} — CONFIGURAÇÃO PARA O DIA A DIA",
-            f"{core}{suffix} — UMA VERSÃO QUE MERECE ATENÇÃO",
-            f"{short_core}{suffix} — SE VOCÊ JÁ ESTAVA DE OLHO NESSE MODELO",
-        ]
-        return result(pick(variants), "📱🔥")
+    brands = ["Apple", "Samsung", "Xiaomi", "Motorola", "Realme", "Nike", "Adidas", "Puma", "Asics", "New Balance", "Mizuno", "Olympikus", "Fila", "Reebok", "Vans", "Converse", "Under Armour", "Skechers", "Oakley", "Lacoste", "JBL", "Sony", "Lenovo", "Dell", "Acer"]
+    brand = next((b for b in brands if norm(b) in n), "")
+    bprefix = f"{brand.upper()} • " if brand else ""
 
-    # ============================================================
-    # ÁUDIO / INFORMÁTICA
-    # ============================================================
+    if any(x in n for x in ["iphone", "smartphone", "celular", "galaxy", "redmi", "poco", "moto g", "motorola"]):
+        return {"headline": f"{bprefix}CELULAR EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "📱🔥", "detail": "Uma oferta para quem já estava de olho em trocar ou atualizar o celular."}
+    if any(x in n for x in ["capa", "case", "pelicula", "película", "carregador", "cabo usb", "power bank", "suporte para celular"]):
+        return {"headline": "ACESSÓRIO PARA CELULAR EM OFERTA — PREÇO BAIXOU", "emojis": "📱⚡", "detail": "Itens úteis para proteger, carregar ou complementar o celular."}
     if any(x in n for x in ["airpods", "fone", "headset", "caixa de som", "jbl", "soundbar", "bluetooth"]):
-        core = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{core[:62].upper()} — ÁUDIO PARA A ROTINA 🎧",
-            f"{core[:62].upper()} — PARA QUEM QUER MELHORAR O SOM",
-            f"{core[:62].upper()} — OLHA ESSE MODELO DE ÁUDIO",
-        ]
-        return result(pick(variants), "🎧🔥")
-
+        return {"headline": f"{bprefix}ÁUDIO EM DESTAQUE — OFERTA PARA FICAR DE OLHO", "emojis": "🎧🔥", "detail": "Uma opção para quem quer melhorar o áudio sem deixar passar uma boa oferta."}
     if any(x in n for x in ["notebook", "macbook", "monitor", "teclado", "mouse", "ssd", "memoria ram", "memória ram", "impressora", "webcam"]):
-        core = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{core[:64].upper()} — PARA ATUALIZAR O SETUP",
-            f"{core[:64].upper()} — UM UPGRADE PARA FICAR DE OLHO",
-            f"{core[:64].upper()} — CONFIGURAÇÃO QUE MERECE ATENÇÃO",
-        ]
-        return result(pick(variants), "💻🔥")
+        return {"headline": f"{bprefix}INFORMÁTICA EM OFERTA — OLHA O PREÇO", "emojis": "💻🔥", "detail": "Uma oportunidade para quem está montando ou atualizando o setup."}
+    if any(x in n for x in ["tablet", "smartwatch", "tv smart", "console", "videogame", "controle gamer"]):
+        return {"headline": "ELETRÔNICO EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "⚡🔥", "detail": "Um produto que pode valer a pena quando aparece com essa condição."}
 
     # ============================================================
-    # CASA / FERRAMENTAS
+    # CASA E FERRAMENTAS
     # ============================================================
-    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:62].upper()} — UM ITEM QUE FAZ DIFERENÇA NA COZINHA",
-            f"{product[:62].upper()} — PARA FACILITAR A ROTINA EM CASA",
-            f"{product[:62].upper()} — AQUELE TIPO DE ACHADO PARA A CASA",
-        ]
-        return result(pick(variants), "🏠🔥")
-
+    if any(x in n for x in ["air fryer", "cafeteira", "liquidificador", "aspirador", "panela elétrica", "mixer", "cozinha", "pote", "organizador", "estante", "sapateira", "varal"]):
+        return {"headline": "ACHADO PARA CASA — PREÇO BOM PARA DEIXAR NO RADAR", "emojis": "🏠🔥", "detail": "Produto útil para a rotina e que merece uma olhada quando entra em promoção."}
     if any(x in n for x in ["furadeira", "parafusadeira", "esmerilhadeira", "chave", "broca", "ferramenta", "serra", "martelete"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PARA OFICINA, MANUTENÇÃO OU PROJETO",
-            f"{product[:64].upper()} — FERRAMENTA PARA TER À MÃO",
-            f"{product[:64].upper()} — UM ACHADO PARA QUEM ESTÁ EQUIPANDO A OFICINA",
-        ]
-        return result(pick(variants), "🔧🔥")
+        return {"headline": "FERRAMENTA EM OFERTA — BOA HORA PARA QUEM ESTÁ PRECISANDO", "emojis": "🔧🔥", "detail": "Uma opção prática para oficina, manutenção ou projetos em casa."}
 
     # ============================================================
-    # ACADEMIA / FITNESS
+    # ACADEMIA & FITNESS
     # ============================================================
-    if any(x in n for x in ["whey", "creatina", "pre treino", "pré treino", "hipercalorico", "hipercalórico", "barra proteica", "pasta de amendoim"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PARA A ROTINA DE TREINO",
-            f"{product[:64].upper()} — SUPLEMENTAÇÃO PARA COLOCAR NO RADAR",
-            f"{product[:64].upper()} — OPÇÃO PARA QUEM JÁ USA ESSE PRODUTO",
-        ]
-        return result(pick(variants), "💪🔥")
-
-    if any(x in n for x in ["esteira", "bicicleta ergométrica", "spinning", "elíptico", "step", "corda de pular"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — TREINO EM CASA SEM COMPLICAÇÃO",
-            f"{product[:64].upper()} — EQUIPAMENTO PARA A ROTINA FITNESS",
-            f"{product[:64].upper()} — PARA MONTAR O ESPAÇO DE TREINO",
-        ]
-        return result(pick(variants), "🏃🔥")
+    if any(x in n for x in ["esteira", "bicicleta ergométrica", "bike spinning", "elíptico", "step", "stepper", "cardio"]):
+        return {"headline": "TREINO EM CASA — EQUIPAMENTO EM OFERTA", "emojis": "🏃🔥", "detail": "Uma opção para montar ou melhorar o espaço de treino em casa."}
+    if any(x in n for x in ["faixa elástica", "faixa elastica", "elástico de resistência", "elastico de resistencia", "caneleira", "luva de academia", "strap", "wrist wrap", "cinturão", "corda de pular", "barra de porta"]):
+        return {"headline": "ACESSÓRIO DE TREINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "💪🔥", "detail": "Acessório para complementar o treino sem complicar a rotina."}
+    if any(x in n for x in ["garrafa fitness", "coqueteleira", "shaker", "mochila academia", "bolsa academia", "toalha academia"]):
+        return {"headline": "FITNESS EM OFERTA — ACESSÓRIO PARA O DIA A DIA", "emojis": "🥤💪", "detail": "Um item útil para acompanhar a rotina de treino."}
+    if any(x in n for x in ["yoga", "pilates", "alongamento", "tapete"]):
+        return {"headline": "YOGA E PILATES — ITEM EM OFERTA", "emojis": "🧘🔥", "detail": "Uma opção para treinar, alongar e montar seu espaço em casa."}
 
     # ============================================================
-    # MODA / TÊNIS
+    # SAÚDE & BELEZA
     # ============================================================
-    if any(x in n for x in ["corrida", "running", "tênis", "tenis", "sneaker", "air max", "air force", "air jordan", "jordan", "dunk", "ultraboost", "superstar", "pegasus", "vomero", "novablast", "gel kayano", "gel nimbus", "fresh foam", "1080"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        if "corrida" in n or "running" in n or any(x in n for x in ["pegasus", "vomero", "novablast", "gel kayano", "gel nimbus", "fresh foam", "1080"]):
-            variants = [
-                f"{product[:64].upper()} — PARA CORRIDA E TREINOS",
-                f"{product[:64].upper()} — FOCO EM CORRIDA, OLHA ESSA VERSÃO",
-                f"{product[:64].upper()} — UM MODELO PARA QUEM CORRE",
-            ]
-            return result(pick(variants), "🏃👟")
-        variants = [
-            f"{product[:64].upper()} — MODELO PARA USAR NO DIA A DIA",
-            f"{product[:64].upper()} — UM TÊNIS QUE CHAMA ATENÇÃO",
-            f"{product[:64].upper()} — PARA QUEM JÁ ESTAVA DE OLHO NESSE MODELO",
-        ]
-        return result(pick(variants), "👟🔥")
-
-    if any(x in n for x in ["camiseta", "t-shirt", "tee", "polo", "moletom", "jaqueta", "bermuda", "shorts", "jeans", "calça", "calca"]):
-        product = re.sub(r"\s+", " ", t).strip()
-        variants = [
-            f"{product[:64].upper()} — PEÇA PARA O DIA A DIA",
-            f"{product[:64].upper()} — PARA RENOVAR O GUARDA-ROUPA",
-            f"{product[:64].upper()} — UM MODELO PARA FICAR DE OLHO",
-        ]
-        return result(pick(variants), "👕🔥")
+    if any(x in n for x in ["shampoo", "condicionador", "máscara capilar", "mascara capilar", "secador", "chapinha", "modelador", "escova secadora", "wella", "l'oreal", "loreal", "kerastase", "elseve", "truss", "salon line"]):
+        return {"headline": f"{bprefix}CUIDADOS COM O CABELO — OFERTA EM DESTAQUE", "emojis": "💇🔥", "detail": "Uma opção para cuidar dos cabelos aproveitando uma condição promocional."}
+    if any(x in n for x in ["unha", "manicure", "esmalte", "cabine uv", "cabine led", "nail art", "lixa elétrica", "gel para unhas"]):
+        return {"headline": "UNHAS E MANICURE — KIT OU PRODUTO EM OFERTA", "emojis": "💅✨", "detail": "Uma boa opção para montar ou renovar o kit de manicure."}
+    if any(x in n for x in ["skincare", "protetor solar facial", "hidratante facial", "serum facial", "sérum facial", "vitamina c", "niacinamida", "ácido hialurônico", "acido hialuronico", "cerave", "la roche", "principia", "neutrogena", "vichy"]):
+        return {"headline": "SKINCARE EM DESTAQUE — OLHA ESSA CONDIÇÃO", "emojis": "🧴✨", "detail": "Produto para cuidados faciais que apareceu com preço promocional."}
+    if any(x in n for x in ["barbeador", "barbearia", "máquina de cortar cabelo", "maquina de cortar cabelo", "aparador", "trimmer"]):
+        return {"headline": "CUIDADOS MASCULINOS — EQUIPAMENTO EM OFERTA", "emojis": "🪒🔥", "detail": "Uma opção prática para barba, cabelo e rotina de cuidados."}
+    if any(x in n for x in ["hidratante corporal", "creme corporal", "body cream", "óleo corporal", "oleo corporal", "cuidados corporais"]):
+        return {"headline": "CUIDADOS CORPORAIS — PRODUTO EM PROMOÇÃO", "emojis": "🧖✨", "detail": "Uma opção para cuidados diários com uma condição promocional."}
 
     # ============================================================
-    # FALLBACK — usa o próprio nome, sem frases genéricas de categoria.
+    # MODA — exclui social tradicional/manga longa no catálogo, mas
+    # a chamada também evita incentivar esse tipo de peça.
     # ============================================================
-    product = re.sub(r"\s+", " ", t).strip()
-    if len(product) > 70:
-        product = product[:70].rsplit(" ", 1)[0]
-    variants = [
-        f"{product.upper()} — OLHA O PREÇO DE HOJE",
-        f"{product.upper()} — ACHADO QUE ENTROU NO RADAR",
-        f"{product.upper()} — ESSA CONDIÇÃO MERECE UMA OLHADA",
-        f"{product.upper()} — OFERTA ENCONTRADA AGORA",
-    ]
-    return result(pick(variants), "🔥👀")
+    if any(x in n for x in ["camiseta", "t-shirt", "tee"]):
+        return {"headline": f"{bprefix}CAMISETA EM DESTAQUE — OLHA ESSE PREÇO", "emojis": "👕🔥", "detail": "Peça casual para o dia a dia com condição promocional."}
+    if any(x in n for x in ["camisa de futebol", "camisa esportiva", "camisa futebol", "jersey", "futebol"]):
+        return {"headline": f"{bprefix}CAMISA ESPORTIVA EM OFERTA — PREÇO PARA CONFERIR", "emojis": "⚽🔥", "detail": "Boa opção para quem curte futebol e quer aproveitar uma promoção."}
+    if any(x in n for x in ["jaqueta", "corta vento", "corta-vento", "corta vento"]):
+        return {"headline": f"{bprefix}JAQUETA EM OFERTA — PEÇA PARA FICAR DE OLHO", "emojis": "🧥🔥", "detail": "Uma peça versátil para completar o visual em dias mais frios ou de vento."}
+    if any(x in n for x in ["bermuda", "shorts"]):
+        return {"headline": f"{bprefix}BERMUDA EM DESTAQUE — PREÇO BOM PARA APROVEITAR", "emojis": "🩳🔥", "detail": "Peça prática para o dia a dia, treino ou momentos de lazer."}
+    if any(x in n for x in ["calça", "calca", "jeans"]):
+        return {"headline": f"{bprefix}CALÇA/JEANS EM OFERTA — OLHA O PREÇO", "emojis": "👖🔥", "detail": "Uma peça versátil para renovar o guarda-roupa."}
+    if any(x in n for x in ["fitness", "legging", "top esportivo", "short esportivo", "roupa esportiva"]):
+        return {"headline": f"{bprefix}ROUPA FITNESS EM DESTAQUE — OFERTA PARA O TREINO", "emojis": "🏃🔥", "detail": "Peça esportiva para treinar com uma condição promocional."}
+    if any(x in n for x in ["moletom", "casaco"]):
+        return {"headline": f"{bprefix}MOLETOM/CASACO EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🧥🔥", "detail": "Peça confortável para o dia a dia com preço promocional."}
+    if any(x in n for x in ["moda feminina", "vestido", "blusa feminina", "saia", "conjunto feminino"]):
+        return {"headline": f"{bprefix}MODA FEMININA EM DESTAQUE — PREÇO PARA CONFERIR", "emojis": "👚✨", "detail": "Uma peça para renovar o visual sem perder a oportunidade de promoção."}
+    if any(x in n for x in ["polo"]):
+        return {"headline": f"{bprefix}POLO EM OFERTA — ESTILO CASUAL COM PREÇO ESPECIAL", "emojis": "👔🔥", "detail": "Uma peça versátil para looks casuais e do dia a dia."}
+    if any(x in n for x in ["biquini", "biquíni", "maiô", "maio", "sunga", "moda praia"]):
+        return {"headline": f"{bprefix}MODA PRAIA EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🏖️🔥", "detail": "Uma opção para curtir praia ou piscina aproveitando o preço."}
+    if any(x in n for x in ["boné", "bone", "bucket", "viseira", "acessório de moda"]):
+        return {"headline": f"{bprefix}ACESSÓRIO EM OFERTA — DETALHE QUE FAZ DIFERENÇA", "emojis": "🧢🔥", "detail": "Um complemento fácil para o visual do dia a dia."}
+
+    # ============================================================
+    # TÊNIS & CALÇADOS
+    # ============================================================
+    shoe_brand = f"{brand.upper()} • " if brand else ""
+    if any(x in n for x in ["corrida", "running"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE CORRIDA EM OFERTA — OLHA ESSE PREÇO", "emojis": "🏃👟", "detail": "Uma opção para corrida e treinos, com preço promocional."}
+    if any(x in n for x in ["academia", "training", "treino"]):
+        return {"headline": f"{shoe_brand}TÊNIS PARA ACADEMIA — OFERTA EM DESTAQUE", "emojis": "🏋️👟", "detail": "Uma opção para complementar o treino com uma condição promocional."}
+    if any(x in n for x in ["chuteira", "futebol"]):
+        return {"headline": f"{shoe_brand}FUTEBOL EM OFERTA — CHUTEIRA PARA FICAR DE OLHO", "emojis": "⚽🔥", "detail": "Uma opção para quem joga e quer aproveitar um preço promocional."}
+    if any(x in n for x in ["basquete", "basketball"]):
+        return {"headline": f"{shoe_brand}TÊNIS DE BASQUETE EM DESTAQUE", "emojis": "🏀🔥", "detail": "Uma opção para quadra ou para quem curte o estilo do basquete."}
+    if any(x in n for x in ["trilha", "adventure", "trail"]):
+        return {"headline": f"{shoe_brand}TRILHA/ADVENTURE — CALÇADO EM OFERTA", "emojis": "🥾🔥", "detail": "Uma opção para atividades ao ar livre e terrenos mais exigentes."}
+    if any(x in n for x in ["skate"]):
+        return {"headline": f"{shoe_brand}SKATE EM OFERTA — TÊNIS PARA FICAR DE OLHO", "emojis": "🛹🔥", "detail": "Uma opção casual e esportiva para quem anda de skate."}
+    if any(x in n for x in ["chinelo", "slide", "sandália"]):
+        return {"headline": f"{shoe_brand}CHINELO/SLIDE EM OFERTA — PREÇO PARA APROVEITAR", "emojis": "🏖️🔥", "detail": "Conforto para o dia a dia com uma condição promocional."}
+    if any(x in n for x in ["infantil", "kids"]):
+        return {"headline": f"{shoe_brand}TÊNIS INFANTIL EM DESTAQUE — OLHA O PREÇO", "emojis": "👟🧒", "detail": "Uma opção para os pequenos aproveitando uma condição promocional."}
+    # "masculino/feminino/men/women" sozinhos NÃO identificam calçado.
+    # Só usamos gênero depois de confirmar que o título realmente contém
+    # algum marcador de tênis/calçado.
+    shoe_markers = (
+        "tenis", "tênis", "sapatenis", "sapatênis", "calcado", "calçado",
+        "sneaker", "sneakers", "chuteira", "chinelo", "slide", "sandalia",
+        "sandália", "running shoe", "running shoes",
+        "air max", "air force", "air jordan", "jordan", "dunk low", "dunk",
+        "ultraboost", "superstar", "adizero", "pegasus", "vomero",
+        "novablast", "gel kayano", "gel nimbus", "gel cumulus", "fresh foam",
+        "1080", "574", "990", "clifton", "bondi", "corre",
+    )
+    has_shoe_marker = any(x in n for x in shoe_markers)
+    if has_shoe_marker and any(x in n for x in ["feminino", "feminina", "women"]):
+        return {"headline": f"{shoe_brand}TÊNIS FEMININO EM OFERTA — PREÇO PARA CONFERIR", "emojis": "👟✨", "detail": "Uma opção para completar o visual ou a rotina de treino."}
+    if has_shoe_marker and any(x in n for x in ["masculino", "masculina", "men"]):
+        return {"headline": f"{shoe_brand}TÊNIS MASCULINO EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "👟🔥", "detail": "Uma opção versátil para o dia a dia ou treino."}
+    if has_shoe_marker:
+        return {"headline": f"{shoe_brand}TÊNIS EM DESTAQUE — PREÇO PARA FICAR DE OLHO", "emojis": "👟🔥", "detail": "Uma opção para uso casual ou rotina, dependendo do modelo."}
+
+    # ============================================================
+    # FALLBACK — ainda é específico o suficiente para qualquer item.
+    # ============================================================
+    if brand:
+        return {"headline": f"{brand.upper()} EM DESTAQUE — OLHA ESSA OFERTA", "emojis": "🔥👀", "detail": "Produto de marca em condição promocional para ficar no radar."}
+
+    words = [w for w in re.split(r"\s+", t) if len(w) > 2]
+    short_name = " ".join(words[:4]) if words else "produto"
+    return {"headline": f"{short_name.upper()} EM OFERTA — OLHA ESSA CONDIÇÃO", "emojis": "🔥👀", "detail": "Oferta encontrada pelo Caçador de Ofertas; confira preço, condições e disponibilidade."}
+
 def ad_text(o, affiliate=""):
     """Monta o anúncio no estilo visual solicitado para o WhatsApp."""
     title = str(o.get("title") or "Produto").strip()
@@ -6598,33 +7359,14 @@ AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 def _auto_whatsapp_horario_atual():
-    """Controla a janela diária de publicação automática."""
+    """Automação contínua: sempre ativa, sem horário de início ou parada."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
+    return True, now, 0, 24 * 60 - 1
 
-    def _parse_hhmm(value, default):
-        try:
-            h, m = str(value).split(":", 1)
-            h, m = int(h), int(m)
-            if 0 <= h <= 23 and 0 <= m <= 59:
-                return h * 60 + m
-        except Exception:
-            pass
-        return default
-
-    start = _parse_hhmm(AUTO_WHATSAPP_START, 8 * 60 + 30)
-    end = _parse_hhmm(AUTO_WHATSAPP_END, 22 * 60 + 30)
-    current = now.hour * 60 + now.minute
-
-    if start <= end:
-        active = start <= current < end
-    else:
-        active = current >= start or current < end
-
-    return active, now, start, end
 
 def _whatsapp_send_text(text, image_url=""):
     """Envia texto ou foto com legenda ao grupo selecionado pelo WhatsApp Bot."""
@@ -6660,43 +7402,19 @@ def _whatsapp_send_text(text, image_url=""):
     return False, payload.get("error") or payload.get("erro") or f"HTTP {response.status_code}"
 
 
-def _whatsapp_publication_key(offer):
-    """Identidade do anúncio para o WhatsApp. Prioriza ITEM MLB.
-
-    Assim dois vendedores diferentes do mesmo produto podem aparecer como
-    anúncios diferentes. O MESMO anúncio só volta a ser publicado quando o
-    preço cai.
-    """
-    return str(
-        offer.get("item_id")
-        or offer.get("product_id")
-        or ""
-    ).strip().upper()
-
-
-def _whatsapp_should_publish(offer_or_product_id, price=None):
-    if isinstance(offer_or_product_id, dict):
-        offer = offer_or_product_id
-        key = _whatsapp_publication_key(offer)
-        new_price = offer.get("price")
-    else:
-        key = str(offer_or_product_id or "").strip().upper()
-        new_price = price
-
-    if not key:
-        return False
-
+def _whatsapp_should_publish(product_id, price):
+    """Novo produto = publica. Mesmo produto = só publica novamente se ficou mais barato."""
     conn = get_db()
     row = conn.execute(
         "SELECT last_price FROM whatsapp_publicacoes WHERE product_id=?",
-        (key,),
+        (str(product_id),),
     ).fetchone()
     conn.close()
     if not row:
         return True
     try:
         old_price = float(row["last_price"])
-        new_price = float(new_price)
+        new_price = float(price)
     except (TypeError, ValueError):
         return False
     return new_price < old_price - 0.01
@@ -6715,7 +7433,7 @@ def _whatsapp_mark_published(offer):
             published_count=whatsapp_publicacoes.published_count + 1,
             last_published_at=CURRENT_TIMESTAMP
     """, (
-        _whatsapp_publication_key(offer),
+        str(offer.get("product_id") or ""),
         float(offer.get("price") or 0),
         offer.get("permalink") or "",
         offer.get("title") or "Produto",
@@ -6738,9 +7456,8 @@ def _whatsapp_publish_scan(result):
         if sent >= AUTO_WHATSAPP_LIMIT:
             break
 
-        publication_key = _whatsapp_publication_key(offer)
         product_id = str(offer.get("product_id") or "").strip()
-        if not publication_key:
+        if not product_id:
             continue
 
         price = offer.get("price")
@@ -6751,7 +7468,7 @@ def _whatsapp_publish_scan(result):
         if price <= 0:
             continue
 
-        if not _whatsapp_should_publish(offer):
+        if not _whatsapp_should_publish(product_id, price):
             skipped += 1
             continue
 
@@ -6807,7 +7524,7 @@ def _whatsapp_publish_scan(result):
 
         _whatsapp_mark_published(offer)
         sent += 1
-        print(f"[AUTO WHATSAPP] Oferta {publication_key} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
+        print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
 
     return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
 
@@ -6846,18 +7563,15 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] HORÁRIO: {AUTO_WHATSAPP_START} às {AUTO_WHATSAPP_END}; "
+            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
             f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
             f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
             f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            ativo, now, start, end = _auto_whatsapp_horario_atual()
-            if ativo:
-                executar_caca_automatica()
-                time.sleep(AUTO_WHATSAPP_INTERVAL)
-            else:
-                time.sleep(60)
+            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
+            executar_caca_automatica()
+            time.sleep(AUTO_WHATSAPP_INTERVAL)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
         target=worker,
@@ -6949,19 +7663,59 @@ def run_caca_job(job_id, category=None):
 # ============================================================
 
 def _manual_queries_for_category(q):
-    """Se o usuário digitar uma categoria, pesquisa cada nicho dela individualmente."""
+    """Resolve a busca manual para a categoria inteira.
+
+    A busca manual não pode tratar variações como "Tênis e calçados" como
+    uma consulta literal. Elas precisam apontar para "👟 Tênis & Calçados"
+    e então disparar TODOS os micro-nichos da categoria.
+    """
     nq = norm(q)
 
-    # Correspondência exata é a prioridade.
+    # Correspondência exata pelo nome cadastrado.
     for category, seeds in CATALOG.items():
         if nq == norm(category):
             return category, list(seeds)
 
-    # Também aceita digitar somente o nome sem emoji.
+    # Também aceita o nome sem emoji.
     for category, seeds in CATALOG.items():
         plain = re.sub(r"^[^A-Za-zÀ-ÿ0-9]+", "", category).strip()
         if nq == norm(plain):
             return category, list(seeds)
+
+    # ALIASES IMPORTANTES: o usuário normalmente digita a categoria de
+    # forma natural, sem copiar exatamente o texto do botão.
+    aliases = {
+        "tecnologia": "📱 Tecnologia",
+        "celulares": "📱 Tecnologia",
+        "celular": "📱 Tecnologia",
+        "casa": "🏠 Casa e Organização",
+        "casa e organizacao": "🏠 Casa e Organização",
+        "casa e cozinha": "🏠 Casa e Organização",
+        "organizacao": "🏠 Casa e Organização",
+        "academia": "💪 Academia & Fitness",
+        "academia e fitness": "💪 Academia & Fitness",
+        "fitness": "💪 Academia & Fitness",
+        "saude e beleza": "💇 Saúde & Beleza",
+        "saude beleza": "💇 Saúde & Beleza",
+        "beleza": "💇 Saúde & Beleza",
+        "moda": "👕 Moda",
+        "roupas": "👕 Moda",
+        "roupa": "👕 Moda",
+        "tenis": "👟 Tênis & Calçados",
+        "tenis e calcados": "👟 Tênis & Calçados",
+        "tenis e calcados": "👟 Tênis & Calçados",
+        "calcados": "👟 Tênis & Calçados",
+        "calcado": "👟 Tênis & Calçados",
+        "sapatos": "👟 Tênis & Calçados",
+        "perfumes": "🌸 Perfumes",
+        "perfume": "🌸 Perfumes",
+        "perfumes arabes": "🌙 Perfumes Árabes",
+        "perfumes arabes": "🌙 Perfumes Árabes",
+        "perfume arabe": "🌙 Perfumes Árabes",
+    }
+    category = aliases.get(nq)
+    if category in CATALOG:
+        return category, list(CATALOG[category])
 
     return None, None
 
@@ -6983,6 +7737,9 @@ def api_buscar():
 
     if category and category_queries:
         print(f"[BUSCA MANUAL CATEGORIA] {category}: {len(category_queries)} nichos")
+        # Categoria manual = TODOS os micro-nichos, nunca apenas a frase
+        # digitada pelo usuário. Isso é o que permite encontrar dezenas de
+        # modelos diferentes em Tênis, Moda, Tecnologia etc.
         queries = category_queries
     else:
         # Busca livre continua funcionando normalmente.
@@ -8273,14 +9030,14 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 69,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos de alto giro a partir de R$ 29,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria ou procure <b>todas de uma vez</b>. O sistema combina <b>categoria → subnicho → marca → produto</b> e só mostra o resultado quando a consulta terminar.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão acima para buscar todas.</p></div>
 <div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Digite uma categoria ou produto: Tecnologia, Moda, Tênis, Academia, Perfumes..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
-<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal é rápida e usa somente a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
+<div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal combina vários micro-nichos da categoria e usa a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
 </div><script>window.addEventListener('load',()=>{processarRetornoAfiliado();});</script></body></html>
 """
