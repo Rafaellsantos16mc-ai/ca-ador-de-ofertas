@@ -124,7 +124,12 @@ AFFILIATE_COUPON_BLOCKLIST_TERMS = (
 
 AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
 AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
-MIN_PRODUCT_PRICE = 69.90
+# Preço mínimo configurável pelo Railway. Padrão correto: R$ 69,90.
+# Se a variável estiver ausente ou inválida, o app mantém o padrão seguro.
+try:
+    MIN_PRODUCT_PRICE = max(0.0, float(os.getenv("MIN_PRODUCT_PRICE", "69.90").replace(",", ".")))
+except (TypeError, ValueError):
+    MIN_PRODUCT_PRICE = 69.90
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
@@ -2382,7 +2387,7 @@ def search_real_listings(q, limit=50):
 # 3) produto sem buy_box NÃO é descartado imediatamente;
 # 4) o ranking de mais vendidos também é consultado pelo PRODUCT_ID;
 # 5) só no enriquecimento final tentamos descobrir uma publicação/preço;
-# 6) o mínimo de R$69,90 continua sendo o único piso de preço.
+# 6) o mínimo configurado em MIN_PRODUCT_PRICE continua sendo o único piso de preço.
 
 DEMAND_TTL = 3600
 CATEGORY_TTL = 86400
@@ -4884,7 +4889,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     fluxo catálogo -> Buy Box -> /items associado, porque esse caminho pode
     devolver catálogo /p/MLB... e depois bloquear a geração do afiliado.
     Aqui já recebemos um anúncio ITEM real com item_id=MLB..., então a oferta
-    nasce pronta para o fluxo de afiliado. Mantemos apenas preço >= R$69,90,
+    nasce pronta para o fluxo de afiliado. Mantemos apenas preço >= MIN_PRODUCT_PRICE,
     perfume válido, sem kit/decant e com imagem.
     """
     if not isinstance(row, dict):
@@ -8822,7 +8827,7 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 29,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos de alto giro a partir de R$ 69,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
