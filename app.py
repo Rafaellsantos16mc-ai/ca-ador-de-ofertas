@@ -8736,20 +8736,18 @@ async function iniciarAfiliado(id,o){
     await anuncio(id,JSON.stringify(o));
     return;
    }
-   // O endpoint interno pode responder 401 mesmo com cookies configurados.
-   // Não tratamos a tentativa do servidor como definitiva: seguimos para o
-   // fluxo do navegador, que usa a sessão autenticada do próprio usuário.
-   if(data.erro){
-    console.warn('Gerador do servidor indisponível; abrindo fluxo Safari:', String(data.erro).slice(0,300));
-   }
+   // A sessão pode estar carregada e ainda assim o endpoint interno
+   // devolver 401. Nesse caso, não bloqueamos o usuário: seguimos para
+   // o fluxo de navegador/portal de afiliados abaixo.
+   console.warn('Gerador servidor indisponível; iniciando fluxo do navegador:', data.erro || ('HTTP '+r.status));
   }catch(e){
-   // Falha de rede/servidor também segue para o fluxo do navegador.
-   console.warn('Gerador do servidor falhou; abrindo fluxo Safari:', String(e && e.message || e).slice(0,300));
+   // Falha de rede/JSON/401 no servidor também deve permitir o fluxo
+   // do navegador, em vez de encerrar a ação com um alerta.
+   console.warn('Falha no gerador do servidor; iniciando fluxo do navegador:', String(e && e.message || e));
   }
 
-  // FALLBACK: abre a publicação no navegador para continuar o fluxo afiliado.
-  // O envio automático em segundo plano ainda depende de autenticação válida
-  // no servidor; não se publica link comum como se fosse link de afiliado.
+  // FALLBACK: usa o fluxo do navegador sempre que o servidor não gerar
+  // um link válido, inclusive quando os cookies configurados retornarem 401.
   const state='af'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   localStorage.setItem('cacador_aff_pending_'+state,JSON.stringify({id:id,offer:o,createdAt:Date.now()}));
   const u=new URL(target);
