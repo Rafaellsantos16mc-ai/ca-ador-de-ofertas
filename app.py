@@ -1,4 +1,4 @@
-VERSAO_CACADOR = "V75_401_PROTEGIDO_SEM_LINK_FALSO"
+VERSAO_CACADOR = "V76_DIAGNOSTICO_FLUXO_AFILIADO"
 import random
 import os
 import sqlite3
@@ -31,6 +31,7 @@ except Exception:
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 
 app = Flask(__name__)
+print(f"[V76 DIAGNOSTICO] Código carregado; versão={VERSAO_CACADOR}; pid={os.getpid()}", flush=True)
 
 # TESTE TEMPORARIO: somente as duas categorias de perfumes solicitadas.
 # A ativação efetiva acontece logo após o CATALOG, preservando o catálogo
@@ -64,9 +65,6 @@ ML_AFFILIATE_TAG = os.getenv("ML_AFFILIATE_TAG", "sara89164").strip()
 ML_AFFILIATE_COOKIES = os.getenv("ML_AFFILIATE_COOKIES", "").strip()
 ML_AFFILIATE_TIMEOUT = int(os.getenv("ML_AFFILIATE_TIMEOUT", "25") or "25")
 ML_AFFILIATE_URL = "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links"
-# Proteção: depois de um HTTP 401, evita repetir a chamada interna para cada
-# produto durante 15 minutos. O endpoint não é uma API pública documentada.
-ML_AFFILIATE_401_COOLDOWN_UNTIL = 0.0
 
 # ============================================================
 # WHATSAPP BOT
@@ -7131,6 +7129,7 @@ def _whatsapp_publish_scan(result):
     offers = diversified
     sent = 0
     skipped = 0
+    print(f"[V76 FLUXO] Etapa 3/4: publicação iniciada; ofertas_recebidas={len(offers)}; limite={AUTO_WHATSAPP_LIMIT}.", flush=True)
 
     for offer in offers:
         if sent >= AUTO_WHATSAPP_LIMIT:
@@ -7166,8 +7165,10 @@ def _whatsapp_publish_scan(result):
         # precisa executar exatamente a mesma etapa antes de montar o
         # anúncio; nunca usamos o permalink normal como link de afiliado.
         affiliate_link = str(offer.get("affiliate_link") or "").strip()
+        print(f"[V76 FLUXO] Produto {product_id}: elegível; verificando link afiliado pré-existente={valid_affiliate_link(affiliate_link)}.", flush=True)
 
         if not valid_affiliate_link(affiliate_link):
+            print(f"[V76 FLUXO] Produto {product_id}: entrando na geração de afiliado.", flush=True)
             product_url = str(offer.get("permalink") or "").strip()
 
             # Se por algum motivo a oferta vier sem permalink, monta a
@@ -7215,6 +7216,7 @@ def _whatsapp_publish_scan(result):
             continue
 
         # Não existe bloqueio por horário: publica sempre que houver oferta elegível.
+        print(f"[V76 FLUXO] Produto {product_id}: link afiliado validado; iniciando envio WhatsApp.", flush=True)
         ok, detail = _whatsapp_send_text(text, offer.get("image") or "")
         if not ok:
             print("[AUTO WHATSAPP] Envio interrompido:", detail)
@@ -7242,15 +7244,22 @@ def executar_caca_automatica():
             f"[AUTO WHATSAPP] Iniciando nova caça automática às {now:%H:%M:%S} "
             f"(sem restrição de horário); categorias={len(CATALOG)}."
         )
+        print(f"[V76 FLUXO] Etapa 1/4: iniciando scan_queries; categorias={len(CATALOG)}.", flush=True)
         result = scan_queries(list(CATALOG.keys()), apply_coupons=True)
         offers = list((result or {}).get("ofertas") or [])
+        print(f"[V76 FLUXO] Etapa 2/4: busca terminou; ofertas_validas={len(offers)}.", flush=True)
         if not offers:
             print(
                 "[AUTO WHATSAPP] ALERTA: busca terminou com ZERO ofertas válidas; "
                 "nenhuma mensagem será enviada. Verifique os logs [BUSCA PUBLICA REAL], "
                 "[BUSCA ITEMS API], [V61 API ITEMS] e os retornos de product_items."
             )
+        print("[V76 FLUXO] Etapa 3/4: chamando publicação/geração de afiliados.", flush=True)
         publish = _whatsapp_publish_scan(result)
+        print(
+            f"[V76 FLUXO] Etapa 4/4: rodada concluída; enviadas={publish.get('enviadas', 0)}; ignoradas={publish.get('ignoradas', 0)}; erro={publish.get('erro') or 'nenhum'}.",
+            flush=True,
+        )
         print(
             f"[AUTO WHATSAPP] Rodada finalizada: "
             f"ofertas_validas={len(offers)}, "
@@ -7855,15 +7864,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
       2) /products/{item_id}/items, quando o ID recebido é um produto/catálogo;
       3) /products/{catalog_id}/items, quando a própria URL é /p/MLB....
     """
-    global ML_AFFILIATE_401_COOLDOWN_UNTIL
-    if time.time() < ML_AFFILIATE_401_COOLDOWN_UNTIL:
-        restante = max(1, int(ML_AFFILIATE_401_COOLDOWN_UNTIL - time.time()))
-        raise RuntimeError(
-            f"Geração automática pausada após HTTP 401 (restam {restante}s). "
-            "O Mercado Livre recusou a sessão no gerador interno; nenhuma URL comum será publicada. "
-            "Use o gerador oficial/Barra de Afiliados e atualize a sessão autorizada antes de tentar novamente."
-        )
-
     cookies = _parse_affiliate_cookies(ML_AFFILIATE_COOKIES)
     if not cookies:
         raise RuntimeError("ML_AFFILIATE_COOKIES não configurado")
@@ -8404,18 +8404,6 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
-        if r.status_code == 401:
-            ML_AFFILIATE_401_COOLDOWN_UNTIL = time.time() + 900
-            print(
-                "[AUTO AFILIADO] HTTP 401: o endpoint interno recusou a sessão. "
-                "Pausando novas tentativas por 15 minutos; ofertas sem link afiliado válido serão ignoradas."
-            )
-            raise RuntimeError(
-                "HTTP 401 Unauthorized no gerador interno de afiliados. "
-                "A sessão/cookies foram recusados pelo Mercado Livre; atualizar apenas o CSRF não resolve. "
-                "Este endpoint não é uma API pública documentada. Use o gerador oficial/Barra de Afiliados; "
-                "nenhum link normal será tratado como afiliado."
-            )
         is_url_not_allowed = (
             r.status_code == 400
             and ("URL not allowed in affiliates program" in detail
