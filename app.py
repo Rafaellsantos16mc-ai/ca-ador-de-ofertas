@@ -5191,6 +5191,7 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     """
     categories = _resolve_scan_categories(queries)
     print(f"[CATEGORIAS RESOLVIDAS] {categories}")
+    print(f"[BUSCA DIAGNOSTICO] categorias={len(categories)}; modo={'todas' if len(categories) > 1 else 'individual'}")
 
 
     raw_by_cat = {}
@@ -8736,19 +8737,15 @@ async function iniciarAfiliado(id,o){
     await anuncio(id,JSON.stringify(o));
     return;
    }
-   // Se o servidor está configurado mas recusou esta publicação, NÃO
-   // abrimos uma URL de fallback no Safari. Isso era exatamente o que
-   // fazia o iPhone cair na página “Parece que esta página não existe”.
+   // O endpoint interno pode devolver 401 mesmo com cookies configurados.
+   // Nesse caso, não encerramos o fluxo: usamos o fallback autenticado no Safari,
+   // onde a sessão real do usuário pode gerar o link pelo portal.
    if(data.configurado){
-    throw new Error(data.erro || 'O Mercado Livre não aceitou esta publicação para gerar o link afiliado.');
+    console.warn('[AFILIADO] Geração no servidor falhou; abrindo fallback no Safari:', data.erro || 'sem detalhe');
    }
   }catch(e){
-   // Só usa o Safari quando o gerador do servidor realmente não está
-   // configurado. Com cookies configurados, mostramos o erro real.
-   if(String(e && e.message || '').trim()){
-    alert('❌ Não foi possível gerar o link afiliado no servidor. '+e.message);
-    return;
-   }
+   // Falha de rede/servidor também deve cair no fluxo do Safari, sem travar o usuário.
+   console.warn('[AFILIADO] Servidor indisponível; usando fallback no Safari:', String(e && e.message || e));
   }
 
   // FALLBACK: fluxo Safari somente quando o servidor não estiver configurado.
