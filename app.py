@@ -4465,6 +4465,39 @@ def _scrape_public_item_page(item_id):
     if cached is not None:
         return dict(cached)
 
+    # Prioriza a API oficial de itens. A página HTML pública pode responder
+    # 200 com uma página intermediária sem metadados, gerando title=False/price=.
+    try:
+        api_data, api_status, _ = ml_get(f'/items/{iid}')
+        if api_status == 200 and isinstance(api_data, dict):
+            api_title = str(api_data.get('title') or '').strip()
+            api_price = api_data.get('price')
+            try:
+                api_price = float(api_price) if api_price is not None else None
+            except (TypeError, ValueError):
+                api_price = None
+            api_pictures = api_data.get('pictures') or []
+            api_image = ''
+            if api_pictures and isinstance(api_pictures[0], dict):
+                api_image = str(api_pictures[0].get('secure_url') or api_pictures[0].get('url') or '')
+            if api_title and api_price and api_price > 0:
+                api_row = {
+                    'id': iid, 'item_id': iid, 'title': api_title, 'name': api_title,
+                    'permalink': api_data.get('permalink') or f'https://produto.mercadolivre.com.br/{iid.replace("MLB", "MLB-", 1)}',
+                    'price': api_price, 'original_price': api_data.get('original_price'),
+                    'thumbnail': api_image, 'pictures': api_pictures,
+                    'seller_id': api_data.get('seller_id'), 'seller': {},
+                    'shipping': api_data.get('shipping') or {},
+                    'condition': api_data.get('condition') or 'new',
+                    'source_type': 'ITEM', 'public_page': False,
+                    'currency_id': api_data.get('currency_id') or 'BRL',
+                }
+                with _PUBLIC_ITEM_PAGE_CACHE_LOCK:
+                    _PUBLIC_ITEM_PAGE_CACHE[cache_key] = dict(api_row)
+                return api_row
+    except Exception as exc:
+        print('[ITEM PUBLICO] API detalhe falhou', iid, repr(exc))
+
     # Primeiro tenta o formato canônico de publicação; o formato antigo em
     # www.mercadolivre.com.br costuma responder 404 e fica apenas como fallback.
     urls = [
@@ -4562,6 +4595,25 @@ def _scrape_public_item_page(item_id):
                     stack.extend(offers_node)
                 if node.get('@graph'):
                     stack.extend(node.get('@graph') if isinstance(node.get('@graph'), list) else [node.get('@graph')])
+
+    # Fallback para estruturas JSON embutidas no HTML quando as tags meta
+    # mudam de ordem ou o site deixa de fornecer product:price:amount.
+    if not title:
+        for pat in (r'"(?:title|name)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"',
+                    r'\"title\"\s*:\s*\"([^\"]{5,180})\"'):
+            mm = re.search(pat, html, re.I)
+            if mm:
+                candidate = html_lib.unescape(mm.group(1)).strip()
+                if len(candidate) >= 5 and not candidate.lower().startswith(('mercado livre', 'mercadolivre')):
+                    title = candidate.replace('\\"', '"')
+                    break
+    if not price_raw:
+        for pat in (r'"price"\s*:\s*(\d+(?:\.\d{1,2})?)',
+                    r'"sale_price"\s*:\s*\{[^{}]*"amount"\s*:\s*(\d+(?:\.\d{1,2})?)'):
+            mm = re.search(pat, html, re.I)
+            if mm:
+                price_raw = mm.group(1)
+                break
 
     def parse_price(v):
         if v is None:
