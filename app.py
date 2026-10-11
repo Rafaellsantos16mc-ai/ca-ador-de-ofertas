@@ -4615,6 +4615,25 @@ def _scrape_public_item_page(item_id):
                 price_raw = mm.group(1)
                 break
 
+    # Fallback para preço visível no HTML renderizado pelo Mercado Livre.
+    # As tags de metadados/JSON-LD podem vir vazias mesmo quando a página traz preço.
+    if not price_raw:
+        visible_price_patterns = [
+            r'andes-money-amount__fraction[^>]*>\s*([0-9.]+)\s*</span>.*?andes-money-amount__cents[^>]*>\s*(\d{2})\s*</span>',
+            r'andes-money-amount__fraction[^>]*>\s*([0-9.]+)\s*</span>',
+            r'"price"\s*:\s*"(\d+[.,]?\d*)"',
+        ]
+        for idx, pat in enumerate(visible_price_patterns):
+            mm = re.search(pat, html, re.I | re.S)
+            if not mm:
+                continue
+            if idx == 0:
+                price_raw = f"{mm.group(1).replace('.', '')}.{mm.group(2)}"
+            else:
+                price_raw = mm.group(1)
+            if price_raw:
+                break
+
     def parse_price(v):
         if v is None:
             return None
