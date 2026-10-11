@@ -171,13 +171,16 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 
 CATALOG = {
     '🔥 Mais vendidos do mês': [
-        'produtos mais vendidos mercado livre', 'mais vendidos do mês',
-        'tênis de corrida mais vendidos', 'tênis Nike mais vendidos',
-        'camiseta dry fit masculina', 'roupa de academia feminina',
-        'legging fitness feminina', 'top fitness feminino', 'short de treino masculino',
-        'conjunto fitness feminino', 'camiseta Adidas masculina', 'bermuda esportiva masculina',
-        'celular mais vendido', 'fone bluetooth', 'smartwatch', 'perfume masculino',
-        'perfume árabe', 'creatina', 'whey protein', 'ferramentas populares'
+        # Categoria de descoberta restrita aos nichos já autorizados no grupo.
+        # A fonte primária é a página oficial de afiliados; estes termos servem
+        # apenas para classificar/verificar produtos que vierem dessa fonte,
+        # nunca para abrir uma busca genérica de todo o Mercado Livre.
+        'tênis de corrida', 'roupa de academia', 'camiseta dry fit',
+        'legging fitness', 'top fitness', 'conjunto fitness', 'tênis Nike',
+        'tênis Adidas', 'tênis Asics', 'tênis Mizuno', 'iPhone',
+        'Samsung Galaxy', 'fone Bluetooth', 'smartwatch', 'perfume masculino',
+        'perfume feminino', 'perfume árabe', 'creatina', 'whey protein',
+        'parafusadeira', 'kit ferramentas'
     ],
     '💪 Academia & Fitness': [
         'roupa de academia masculina', 'roupa de academia feminina',
@@ -3848,8 +3851,89 @@ def _category_real_item_seed_queries(cat, fast=False):
     return merged[:(SEARCH_REAL_ITEM_QUERIES_ALL if fast else SEARCH_REAL_ITEM_QUERIES_SINGLE)]
 
 
+def _search_official_affiliate_bestsellers(fast=False):
+    """Lê candidatos exclusivamente da listagem oficial de mais vendidos para afiliados.
+
+    Não usa buscas genéricas como fallback: se a página oficial não puder ser
+    consultada, a categoria retorna vazia em vez de publicar itens aleatórios.
+    A página de mais vendidos não fornece um histórico verificável de vendas
+    dos últimos 7 dias; essa janela é apresentada pelo Mercado Livre na seção
+    oficial de Tendências (produtos mais buscados na última semana).
+    """
+    url = "https://lista.mercadolivre.com.br/_Container_affiliates-best-sellers-mlb"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            print(f"[AFILIADOS MAIS VENDIDOS] HTTP {response.status_code}; sem fallback genérico")
+            return []
+        page = response.text or ""
+    except Exception as exc:
+        print("[AFILIADOS MAIS VENDIDOS] falha ao consultar página oficial:", repr(exc))
+        return []
+
+    # Extrai IDs MLB presentes na página oficial. Depois, busca os dados atuais
+    # de cada anúncio pela API oficial para obter título/preço/permalink reais.
+    ids = []
+    for match in re.finditer(r"(?<![A-Z])MLB(\d{6,})(?!\d)", page, re.I):
+        iid = ("MLB" + match.group(1)).upper()
+        if iid not in ids:
+            ids.append(iid)
+    max_ids = 120 if not fast else 60
+    out, seen = [], set()
+    allowed_terms = (
+        "tenis", "sneaker", "corrida", "legging", "fitness", "dry fit", "camiseta",
+        "bermuda", "short esportivo", "top fitness", "conjunto fitness", "roupa esportiva",
+        "iphone", "smartphone", "celular", "galaxy", "fone", "headset", "smartwatch",
+        "perfume", "parfum", "body splash", "body mist", "creatina", "whey",
+        "parafusadeira", "furadeira", "kit ferramentas", "ferramenta eletrica"
+    )
+    blocked_terms = (
+        "livro", "ebook", "e-book", "apostila", "casa", "organizador", "air fryer",
+        "cafeteira", "aspirador", "papel higienico", "shampoo", "hidratante", "maquiagem"
+    )
+    for iid in ids[:max_ids]:
+        data, status, _ = ml_get(f"/items/{iid}")
+        if status != 200 or not isinstance(data, dict):
+            continue
+        title = str(data.get("title") or "").strip()
+        nt = norm(title)
+        if not title or any(norm(term) in nt for term in blocked_terms):
+            continue
+        if not any(norm(term) in nt for term in allowed_terms):
+            continue
+        if iid in seen:
+            continue
+        seen.add(iid)
+        out.append(({
+            "id": iid,
+            "item_id": iid,
+            "title": title,
+            "name": title,
+            "source_type": "ITEM",
+            "permalink": data.get("permalink"),
+            "thumbnail": data.get("thumbnail"),
+            "pictures": data.get("pictures") or [],
+            "price": data.get("price"),
+            "original_price": data.get("original_price"),
+            "seller_id": data.get("seller_id"),
+            "condition": data.get("condition") or "new",
+            "sold_quantity": data.get("sold_quantity") or 0,
+            "highlight_position": len(out) + 1,
+            "source_page": url,
+        }, "🔥 Mais vendidos do mês"))
+    print(f"[AFILIADOS MAIS VENDIDOS] página oficial: {len(out)} produtos dentro dos nichos permitidos")
+    return out
+
+
 def _search_category(cat, fast=False):
-    """Monta uma fila ampla de candidatos usando somente as buscas da categoria."""
+    """Monta a fila de candidatos da categoria, respeitando a fonte definida."""
+    if cat == "🔥 Mais vendidos do mês":
+        return _search_official_affiliate_bestsellers(fast=fast)
+
     if cat == "🌙 Perfumes Árabes":
         return _search_arabic_perfumes(fast=fast)
 
