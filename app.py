@@ -124,7 +124,7 @@ AFFILIATE_COUPON_BLOCKLIST_TERMS = (
 
 AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
 AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
-MIN_PRODUCT_PRICE = float(os.getenv("MIN_PRODUCT_PRICE", "69.90") or "69.90")
+MIN_PRODUCT_PRICE = float(os.getenv("MIN_PRODUCT_PRICE", "49.90") or "49.90")
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
@@ -6988,22 +6988,33 @@ def whatsapp_image(filename):
 AUTO_WHATSAPP_ENABLED = os.getenv("AUTO_WHATSAPP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_WHATSAPP_INTERVAL = max(60, int(os.getenv("AUTO_WHATSAPP_INTERVAL", "900")))  # 15 minutos
 AUTO_WHATSAPP_LIMIT = 3  # exatamente 3 ofertas por rodada
-AUTO_WHATSAPP_START = "00:00"
-AUTO_WHATSAPP_END = "23:59"
-# Automação contínua: não existe horário de início/fim.
-AUTO_WHATSAPP_ALWAYS_ON = True
+AUTO_WHATSAPP_START = os.getenv("AUTO_WHATSAPP_START", "08:30").strip()
+AUTO_WHATSAPP_END = os.getenv("AUTO_WHATSAPP_END", "22:30").strip()
+AUTO_WHATSAPP_ALWAYS_ON = False
 AUTO_WHATSAPP_TZ = os.getenv("AUTO_WHATSAPP_TZ", "America/Sao_Paulo").strip()
 AUTO_WHATSAPP_LOCK = threading.Lock()
 AUTO_WHATSAPP_THREAD = None
 
 def _auto_whatsapp_horario_atual():
-    """Automação contínua: sempre ativa, sem horário de início ou parada."""
+    """Retorna se a automação pode publicar entre 08:30 e 22:30 no fuso configurado."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(AUTO_WHATSAPP_TZ))
     except Exception:
         now = datetime.now()
-    return True, now, 0, 24 * 60 - 1
+
+    try:
+        inicio_h, inicio_m = map(int, AUTO_WHATSAPP_START.split(":"))
+        fim_h, fim_m = map(int, AUTO_WHATSAPP_END.split(":"))
+        inicio = inicio_h * 60 + inicio_m
+        fim = fim_h * 60 + fim_m
+        atual = now.hour * 60 + now.minute
+        ativo = inicio <= atual <= fim if inicio <= fim else (atual >= inicio or atual <= fim)
+        return ativo, now, inicio, fim
+    except (TypeError, ValueError):
+        print("[AUTO WHATSAPP] Horário inválido; usando 08:30 às 22:30.")
+        atual = now.hour * 60 + now.minute
+        return 8 * 60 + 30 <= atual <= 22 * 60 + 30, now, 8 * 60 + 30, 22 * 60 + 30
 
 
 def _whatsapp_send_text(text, image_url=""):
@@ -7225,14 +7236,16 @@ def iniciar_automacao_whatsapp():
 
     def worker():
         print(
-            f"[AUTO WHATSAPP] ATIVO CONTÍNUO — sem horário de início/fim; "
-            f"a cada {AUTO_WHATSAPP_INTERVAL}s, "
-            f"até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
+            f"[AUTO WHATSAPP] JANELA ATIVA: {AUTO_WHATSAPP_START} às {AUTO_WHATSAPP_END}; "
+            f"a cada {AUTO_WHATSAPP_INTERVAL}s, até {AUTO_WHATSAPP_LIMIT} ofertas por rodada. "
             f"Fuso: {AUTO_WHATSAPP_TZ}."
         )
         while True:
-            # Sem agenda: executa uma rodada e aguarda somente o intervalo.
-            executar_caca_automatica()
+            ativo, agora, _, _ = _auto_whatsapp_horario_atual()
+            if ativo:
+                executar_caca_automatica()
+            else:
+                print(f"[AUTO WHATSAPP] Fora do horário permitido ({agora:%H:%M}); aguardando.")
             time.sleep(AUTO_WHATSAPP_INTERVAL)
 
     AUTO_WHATSAPP_THREAD = threading.Thread(
