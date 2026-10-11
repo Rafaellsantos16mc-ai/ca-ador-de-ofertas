@@ -6496,8 +6496,8 @@ def ad_text(o, affiliate=""):
         if o.get("cupom"):
             c = o["cupom"] or {}
             label = c.get("code") or c.get("label") or "Cupom disponível"
-            lines.append(f"🎟️ Cupom: *{label}*")
-        lines.append(f"Por *{brl(current_price)}*")
+            lines += ["", f"🎟️ Cupom: *{label}*"]
+        lines += ["", f"Por *{brl(current_price)}*"]
     else:
         if is_arabic:
             headlines = [
@@ -6545,19 +6545,19 @@ def ad_text(o, affiliate=""):
         except (TypeError, ValueError):
             original_price = 0.0
         if original_price > current_price > 0:
-            lines.append(f"De: ~{brl(original_price)}~")
+            lines += ["", f"De: ~{brl(original_price)}~"]
 
         if o.get("cupom"):
             c = o["cupom"] or {}
             label = c.get("code") or c.get("label") or "Cupom disponível"
-            lines.append(f"🎟️ Cupom: *{label}*")
+            lines += ["", f"🎟️ Cupom: *{label}*"]
 
-        lines.append(f"Por *{brl(current_price)}*")
+        lines += ["", f"Por *{brl(current_price)}*"]
 
     # Frete grátis só aparece quando o dado da oferta confirma essa condição.
     free_shipping = o.get("free_shipping") is True or o.get("shipping_free") is True
     if free_shipping:
-        lines.append("🚚 Frete grátis")
+        lines += ["", "🚚 Frete grátis"]
 
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
