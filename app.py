@@ -6486,7 +6486,7 @@ def ad_text(o, affiliate=""):
     price_dropped = bool(o.get("price_dropped")) and previous_price > current_price > 0
 
     if price_dropped:
-        headline = "🚨 VOLTOU MAIS BARATO! PREÇO REDUZIDO 🚨"
+        headline = "🚨 Esse produto voltou mais barato! 🤯🔥"
         lines = [
             f"*{headline}*",
             "",
@@ -6501,23 +6501,40 @@ def ad_text(o, affiliate=""):
     else:
         if is_arabic:
             headlines = [
-                "Esse árabe vai te surpreender! 🌙🔥",
-                "Olha esse perfume árabe! 👀✨",
-                "Uma fragrância árabe para conhecer 🌙",
-                "Achado para quem curte perfumes marcantes! 🔥",
-                "Esse perfume merece entrar no radar! ✨",
-                "Curte perfumaria árabe? Dá uma olhada nessa opção! 🌙",
+                "Esse perfume árabe vai te surpreender 🤯🔥",
+                "Olha essa fragrância árabe! 🌙🔥",
+                "Perfume árabe marcante pra ficar de olho 👀🔥",
+            ]
+        elif any(term in title_lower for term in ("celular", "smartphone", "iphone", "redmi", "galaxy", "xiaomi", "motorola")):
+            headlines = [
+                "Esse celular vai te surpreender 🤯🔥",
+                "Olha esse celular e esse preço! 📱🔥",
+                "Achado pra quem tá procurando celular! 👀📱",
+            ]
+        elif any(term in title_lower for term in ("perfume", "eau de parfum", "deo parfum", "body splash", "body mist")):
+            headlines = [
+                "Esse perfume vai te surpreender 🤯🔥",
+                "Olha essa fragrância! 🌸🔥",
+                "Perfume bonito e preço pra conferir 👀✨",
+            ]
+        elif any(term in title_lower for term in ("tenis", "tênis", "sneaker", "chuteira", "sandalia", "sandália")):
+            headlines = [
+                "Esse calçado merece sua atenção 👟🔥",
+                "Olha esse tênis! 🤯🔥",
+                "Achado pra quem curte calçados! 👀👟",
+            ]
+        elif any(term in title_lower for term in ("whey", "creatina", "suplemento", "pre treino", "pré-treino", "halter", "academia")):
+            headlines = [
+                "Achado pra quem treina! 💪🔥",
+                "Olha essa oferta fitness! 🤯💪",
+                "Esse item de treino merece atenção 👀🔥",
             ]
         else:
             headlines = [
+                "Esse produto vai te surpreender 🤯🔥",
                 "Olha esse achado! 👀🔥",
-                "Pode valer a conferida! ✨",
-                "Uma opção que chamou atenção! 👌",
-                "Dá uma olhada nesse produto! 🔎",
-                "Achado do Caçador! 🎯",
-                "Confira esse modelo! 🔥",
-                "Pode ser uma boa oportunidade! 👀",
-                "Esse aqui merece entrar no radar! ⭐",
+                "Essa oferta chamou atenção! 😍🔥",
+                "Dá uma olhada nesse preço! 🤯🔥",
             ]
         headline = random.choice(headlines)
         lines = [f"*{headline}*", "", f"*{title}*"]
@@ -6537,12 +6554,17 @@ def ad_text(o, affiliate=""):
 
         lines.append(f"Por *{brl(current_price)}*")
 
+    # Frete grátis só aparece quando o dado da oferta confirma essa condição.
+    free_shipping = o.get("free_shipping") is True or o.get("shipping_free") is True
+    if free_shipping:
+        lines.append("🚚 Frete grátis")
+
     link = str(affiliate or "").strip()
     if not valid_affiliate_link(link):
         raise ValueError("Informe um link de afiliado válido do Mercado Livre antes de gerar o anúncio.")
 
-    lines += ["", "*PEGAR PROMOÇÃO 🔥:* " + link]
-    return "\\n".join(lines)
+    lines += ["", "🛒 PEGAR OFERTA 🔥: " + link]
+    return "\n".join(lines)
 
 # ============================================================
 # IMAGEM NATURAL PARA WHATSAPP
