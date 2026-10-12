@@ -7133,7 +7133,7 @@ def _whatsapp_reject_irrelevant_title(title):
 
 
 def _whatsapp_duplicate_key(offer):
-    """Identidade estável para evitar publicar o mesmo produto com IDs/títulos variantes."""
+    """Retorna ID real do anúncio e título normalizado, sem confundir variantes diferentes."""
     title = norm(str(offer.get("title") or offer.get("name") or ""))
     title = re.sub(r"\b(kit|original|novo|promo[cç][aã]o|oferta|frete gratis|envio gratis)\b", " ", title)
     title = re.sub(r"[^a-z0-9]+", " ", title).strip()
@@ -7141,7 +7141,13 @@ def _whatsapp_duplicate_key(offer):
     item_id = str(offer.get("item_id") or "").strip().upper()
     if not re.fullmatch(r"MLB\d+", item_id):
         item_id = ""
-    # A chave por título também cobre o mesmo anúncio que aparece com product_id diferente.
+    if not item_id:
+        # Muitos resultados de catálogo têm product_id diferente do anúncio MLB.
+        # Recupera o ID real pelo permalink antes de decidir se é duplicado.
+        url = str(offer.get("permalink") or "")
+        match = re.search(r"MLB-?(\d{6,})", url, re.I)
+        if match:
+            item_id = "MLB" + match.group(1)
     return item_id, title
 
 
@@ -7161,7 +7167,9 @@ def _whatsapp_title_was_published(title, exclude_product_id=""):
         if str(row["product_id"] or "") == str(exclude_product_id or ""):
             continue
         old = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", norm(row["last_title"] or ""))).strip()
-        if old and (wanted == old or SequenceMatcher(None, wanted, old).ratio() >= 0.93):
+        # Não usar similaridade aproximada no histórico: ela confundia tamanhos,
+        # volumes (100 ml/200 ml) e versões diferentes, bloqueando quase tudo.
+        if old and wanted == old:
             return True
     return False
 
@@ -7188,10 +7196,9 @@ def _whatsapp_publish_scan(result):
 
         title_for_quality = str(offer.get("title") or offer.get("name") or "").strip()
         item_key, title_key = _whatsapp_duplicate_key(offer)
-        if (item_key and item_key in seen_round_items) or (title_key and any(
-            title_key == old or SequenceMatcher(None, title_key, old).ratio() >= 0.93
-            for old in seen_round_titles if old
-        )):
+        # Na mesma rodada, só bloquear ID real repetido ou título normalizado idêntico.
+        # Similaridade aproximada bloqueava modelos/tamanhos distintos.
+        if (item_key and item_key in seen_round_items) or (title_key and title_key in seen_round_titles):
             print(f"[ANTI-DUPLICADO] repetido na mesma rodada: {title_for_quality[:120]}")
             skipped += 1
             continue
@@ -7284,6 +7291,9 @@ def _whatsapp_publish_scan(result):
         sent += 1
         print(f"[AUTO WHATSAPP] Oferta {product_id} enviada ({sent}/{AUTO_WHATSAPP_LIMIT}).")
 
+    print(f"[AUTO WHATSAPP] Resumo da seleção: candidatos={len(offers)}, enviados={sent}, descartados/ignorados={skipped}")
+    if sent == 0 and offers:
+        print("[AUTO WHATSAPP] Nenhuma oferta publicada. Confira acima os motivos [ANTI-DUPLICADO], [PREÇO MÍNIMO], [AUTO AFILIADO] e [AUTO WHATSAPP].")
     return {"ok": True, "enviadas": sent, "ignoradas": skipped, "erro": None}
 
 
