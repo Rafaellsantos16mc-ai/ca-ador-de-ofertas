@@ -7109,6 +7109,24 @@ def _whatsapp_mark_published(offer):
     conn.close()
 
 
+def _whatsapp_reject_irrelevant_title(title):
+    """Bloqueia acessórios/peças de baixa relevância que contaminam buscas amplas."""
+    t = norm(title)
+    blocked = (
+        "pelicula", "pelicula de vidro", "pelicula hidrogel", "protetor de tela",
+        "organizador de gaveta", "organizador de roupas", "organizador para leggings",
+        "organizador para gavetas", "caixa organizadora", "divisoria de gaveta",
+        "induzido para", "rotor para ferramenta", "estator para ferramenta",
+        "peca de reposicao", "pecas de reposicao", "reparo para", "kit reparo",
+        "carcaca para ferramenta", "engrenagem para ferramenta", "escova de carvao para",
+        "manual digital", "ebook", "e book", "apostila digital",
+    )
+    if any(term in t for term in blocked):
+        return True
+    # Acessórios de celular só entram se forem o próprio aparelho, não a película/capa.
+    return False
+
+
 def _whatsapp_publish_scan(result):
     """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
 
@@ -7125,6 +7143,12 @@ def _whatsapp_publish_scan(result):
 
         product_id = str(offer.get("product_id") or "").strip()
         if not product_id:
+            continue
+
+        title_for_quality = str(offer.get("title") or offer.get("name") or "").strip()
+        if _whatsapp_reject_irrelevant_title(title_for_quality):
+            print(f"[FILTRO RELEVANCIA] descartado: {title_for_quality[:140]}")
+            skipped += 1
             continue
 
         price = offer.get("price")
