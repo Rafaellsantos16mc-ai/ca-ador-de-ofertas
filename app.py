@@ -7,6 +7,7 @@ import base64
 import json
 import time
 import re
+import math
 import html as html_lib
 import threading
 import uuid
@@ -124,7 +125,14 @@ AFFILIATE_COUPON_BLOCKLIST_TERMS = (
 
 AFFILIATE_COUPON_CACHE = {"at": 0.0, "coupons": []}
 AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
-MIN_PRODUCT_PRICE = float(os.getenv("MIN_PRODUCT_PRICE", "49.90") or "49.90")
+try:
+    MIN_PRODUCT_PRICE = float(str(os.getenv("MIN_PRODUCT_PRICE", "49.90") or "49.90").replace(",", ".").strip())
+except (TypeError, ValueError):
+    MIN_PRODUCT_PRICE = 49.90
+if MIN_PRODUCT_PRICE < 49.90:
+    # O piso comercial definido para este projeto não pode ser reduzido
+    # acidentalmente por uma variável antiga no Railway.
+    MIN_PRODUCT_PRICE = 49.90
 
 # Modo enxuto somente para "Buscar todas": reduz chamadas redundantes.
 FAST_ALL_CATEGORIES = True
@@ -984,9 +992,9 @@ def get_current_sale_price(item_id):
 def valid_catalog_price(price):
     try:
         value = float(price)
-    except Exception:
+    except (TypeError, ValueError):
         return False
-    if value < MIN_PRODUCT_PRICE:
+    if not math.isfinite(value) or value < MIN_PRODUCT_PRICE:
         return False
     # Bloqueia valores claramente corrompidos, como R$1.169.000 para um celular.
     if value > 100000:
@@ -2313,7 +2321,7 @@ def search_real_listings(q, limit=50):
 # 3) produto sem buy_box NÃO é descartado imediatamente;
 # 4) o ranking de mais vendidos também é consultado pelo PRODUCT_ID;
 # 5) só no enriquecimento final tentamos descobrir uma publicação/preço;
-# 6) o mínimo de R$69,90 continua sendo o único piso de preço.
+# 6) o mínimo configurado em MIN_PRODUCT_PRICE continua sendo o único piso de preço.
 
 DEMAND_TTL = 3600
 CATEGORY_TTL = 86400
@@ -4870,7 +4878,7 @@ def _direct_perfume_offer_from_listing(row, cat, position, query):
     fluxo catálogo -> Buy Box -> /items associado, porque esse caminho pode
     devolver catálogo /p/MLB... e depois bloquear a geração do afiliado.
     Aqui já recebemos um anúncio ITEM real com item_id=MLB..., então a oferta
-    nasce pronta para o fluxo de afiliado. Mantemos apenas preço >= R$69,90,
+    nasce pronta para o fluxo de afiliado. Mantemos apenas preço >= MIN_PRODUCT_PRICE,
     perfume válido, sem kit/decant e com imagem.
     """
     if not isinstance(row, dict):
@@ -5059,6 +5067,21 @@ def _title_matches_scan_category(category, title):
     if not n:
         return False
 
+    # Bloqueios de relevância para anúncios acessórios/peças que contaminam
+    # buscas de produtos principais (ex.: organizador para legging, induzido Bosch).
+    universal_bad = (
+        "organizador de gaveta", "organizador de gavetas", "organizador para gaveta",
+        "pelicula", "película", "capinha", "capa para celular", "capa de celular",
+        "adesivo para", "adesivo de", "peca de reposicao", "peça de reposição",
+        "peças de reposição", "peca avulsa", "peça avulsa", "manual digital",
+        "arquivo digital", "molde para", "carvao para motor", "carvão para motor",
+        "induzido para", "induzido de", "rotor para", "estator para",
+        "escova de carvao", "escova de carvão", "reparo para ferramenta",
+        "kit reparo", "somente a peça", "somente peça", "apenas a peça",
+    )
+    if any(term in n for term in universal_bad):
+        return False
+
     # Bloqueios universais para evitar cruzamento óbvio entre categorias.
     fragrance = any(x in n for x in (
         "perfume", "parfum", "eau de", "edt", "edp", "fragrance",
@@ -5129,9 +5152,17 @@ def _title_matches_scan_category(category, title):
     if cat == "🔧 Ferramentas":
         if fragrance or shoe:
             return False
+        if any(x in n for x in (
+            "induzido", "rotor", "estator", "carvao", "carvão", "escova de motor",
+            "peca", "peça", "reposição", "reposicao", "refil", "somente bateria",
+            "bateria avulsa", "mandril avulso", "engrenagem", "rolamento", "chave reserva"
+        )):
+            return False
         return any(x in n for x in (
-            "parafusadeira", "furadeira", "ferramenta", "chave de impacto",
-            "esmerilhadeira", "serra circular", "alicate", "kit ferramentas"
+            "parafusadeira", "furadeira", "esmerilhadeira", "serra circular",
+            "chave de impacto", "alicate", "kit ferramentas", "jogo de ferramentas",
+            "maleta de ferramentas", "ferramenta eletrica", "ferramenta elétrica",
+            "chave de fenda", "chave philips", "torquimetro", "torquímetro"
         ))
 
     if cat == "🏠 Casa e Organização":
@@ -5480,6 +5511,13 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
             })
         except Exception as e:
             print("[OFERTA TOP 20]", repr(e))
+
+    # Trava final global: nenhuma rota de busca pode devolver preço abaixo do mínimo.
+    before_floor = len(offers)
+    offers = [o for o in offers if valid_catalog_price(o.get("price"))]
+    removed_floor = before_floor - len(offers)
+    if removed_floor:
+        print(f"[PREÇO MÍNIMO FINAL] removidas {removed_floor} ofertas abaixo de R$ {MIN_PRODUCT_PRICE:.2f}")
 
     # BUSCA AMPLA: não eliminamos um produto somente porque o catálogo
     # não informou preço original. Isso era o principal gargalo que fazia
@@ -8727,7 +8765,7 @@ function brl(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractio
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
 </script></head><body><div class="container">
 <div class="card"><h1>🛒 Caçador de Ofertas</h1>
-<p>Encontra produtos de alto giro a partir de R$ 29,90. A conta do Mercado Livre permanece conectada automaticamente.</p>
+<p>Encontra produtos de alto giro a partir de R$ {{ '%.2f'|format(preco_minimo)|replace('.', ',') }}. A conta do Mercado Livre permanece conectada automaticamente.</p>
 {% if conectado %}<div class="status">🟢 Mercado Livre conectado{% if nickname %}<br><b>{{nickname}}</b>{% endif %}</div><a href="/mercadolivre/logout"><button>Desconectar</button></a>
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
@@ -8742,7 +8780,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 @app.route("/")
 def index():
     t=tokens()
-    return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()))
+    return render_template_string(HTML, conectado=bool(access_token()), nickname=t.get("nickname") if t else None, categorias=list(CATALOG.keys()), preco_minimo=MIN_PRODUCT_PRICE)
 
 @app.route("/buscar")
 def buscar_page():
