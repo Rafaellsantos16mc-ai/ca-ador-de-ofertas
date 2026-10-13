@@ -203,13 +203,12 @@ CATALOG = {
         'tênis masculino', 'tênis feminino', 'tênis infantil'
     ],
     '👞 Sapatos': [
-        'sapato social masculino', 'sapato social feminino', 'sapato casual masculino',
+        'sapato casual masculino',
         'sapato casual feminino', 'mocassim masculino', 'mocassim feminino',
         'loafer masculino', 'loafer feminino', 'sapato oxford masculino',
         'sapato confortável feminino', 'sapatênis masculino', 'sapatênis feminino',
         'sandália feminina', 'sandália masculina', 'rasteirinha feminina',
-        'tamanco feminino', 'chinelo Havaianas', 'chinelo Rider', 'chinelo Ipanema',
-        'slide Adidas', 'slide Nike', 'slide Puma'
+        'tamanco feminino'
     ],
     '📱 Celulares': [
         'iPhone', 'iPhone 13', 'iPhone 14', 'iPhone 15', 'iPhone 16',
@@ -3675,7 +3674,6 @@ def _search_shoes_category(cat, fast=False):
     """Busca tênis ou sapatos separadamente, com anúncios reais e diversidade."""
     if cat == "👞 Sapatos":
         queries = [
-            "sapato social masculino", "sapato social feminino",
             "sapato casual masculino", "sapato casual feminino",
             "mocassim masculino", "mocassim feminino",
             "loafer masculino", "loafer feminino",
@@ -5107,10 +5105,14 @@ def _title_matches_scan_category(category, title):
             "trava campo", "futsal"
         )):
             return False
-        return any(x in n for x in (
-            "sapato", "mocassim", "loafer", "oxford", "sapatênis",
-            "sapatenis", "sandalia", "sandália", "rasteirinha", "tamanco",
+        if any(x in n for x in (
+            "sapato social", "social masculino", "social feminino",
             "chinelo", "havaianas", "rider", "ipanema", "slide"
+        )):
+            return False
+        return any(x in n for x in (
+            "sapato casual", "mocassim", "loafer", "oxford", "sapatênis",
+            "sapatenis", "sandalia", "sandália", "rasteirinha", "tamanco"
         ))
 
     if cat == "👕 Moda":
