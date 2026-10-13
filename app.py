@@ -127,7 +127,7 @@ AFFILIATE_COUPON_CACHE_LOCK = threading.Lock()
 # Piso obrigatório do projeto: ofertas abaixo de R$ 49,90 nunca entram.
 # A variável Railway pode aumentar o mínimo, mas não reduzi-lo abaixo do piso.
 try:
-    MIN_PRODUCT_PRICE = max(49.90, float(str(os.getenv("MIN_PRODUCT_PRICE", "49.90") or "49.90").replace(",", ".")))
+    MIN_PRODUCT_PRICE = max(49.90, float(os.getenv("MIN_PRODUCT_PRICE", "49.90").replace(",", ".")))
 except (TypeError, ValueError):
     MIN_PRODUCT_PRICE = 49.90
 
@@ -7258,7 +7258,14 @@ def _whatsapp_publish_scan(result):
                 continue
 
             try:
-                affiliate_link = _affiliate_csrf_and_link(product_url)
+                affiliate_link = _affiliate_csrf_and_link(
+                    product_url,
+                    item_id=str(offer.get("item_id") or product_id),
+                    product_title=str(offer.get("title") or offer.get("name") or ""),
+                    seller_id=offer.get("seller_id") or offer.get("seller", {}).get("id")
+                    if isinstance(offer.get("seller"), dict) else offer.get("seller_id"),
+                    expected_price=price,
+                )
                 offer["affiliate_link"] = affiliate_link
                 print(f"[AUTO AFILIADO] {product_id}: {affiliate_link}")
             except Exception as exc:
@@ -7814,7 +7821,7 @@ def _parse_affiliate_cookies(raw):
     return out
 
 
-def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller_id=None, expected_price=None):
+def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller_id=None, expected_price=None, _retrying_after_111=False):
     """Gera meli.la usando a sessão salva no Railway.
 
     REGRA CRÍTICA:
@@ -8367,6 +8374,31 @@ def _affiliate_csrf_and_link(product_url, item_id=None, product_title="", seller
 
     if not r.ok:
         detail = r.text[:800].replace("\n", " ").strip()
+
+        # HTTP 400 / error_code 111 significa que o programa de afiliados
+        # recusou esta URL específica. Tenta uma única vez localizar uma
+        # publicação real equivalente usando título, vendedor e preço.
+        # Nunca publica o link comum se a geração afiliada falhar.
+        is_url_not_allowed = (
+            r.status_code == 400
+            and ("111" in detail or "URL not allowed in affiliates program" in detail)
+        )
+        if is_url_not_allowed and not _retrying_after_111 and str(product_title or "").strip():
+            alternate_url = resolve_by_search()
+            if alternate_url and alternate_url.rstrip("/") != product_url.rstrip("/"):
+                print(
+                    "[AFILIADO FALLBACK 111] URL recusada; tentando publicação equivalente:",
+                    alternate_url[:160],
+                )
+                return _affiliate_csrf_and_link(
+                    alternate_url,
+                    item_id="",
+                    product_title="",
+                    seller_id=seller_id,
+                    expected_price=expected_price,
+                    _retrying_after_111=True,
+                )
+
         raise RuntimeError(f"Mercado Livre respondeu HTTP {r.status_code}: {detail}")
 
     try:
