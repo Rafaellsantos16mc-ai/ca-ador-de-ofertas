@@ -175,32 +175,6 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    '🔥 Mais vendidos do mês': [
-        # Categoria de descoberta restrita aos nichos já autorizados no grupo.
-        # A fonte primária é a página oficial de afiliados; estes termos servem
-        # apenas para classificar/verificar produtos que vierem dessa fonte,
-        # nunca para abrir uma busca genérica de todo o Mercado Livre.
-        'tênis de corrida', 'roupa de academia', 'camiseta dry fit',
-        'legging fitness', 'top fitness', 'conjunto fitness', 'tênis Nike',
-        'tênis Adidas', 'tênis Asics', 'tênis Mizuno', 'iPhone',
-        'Samsung Galaxy', 'fone Bluetooth', 'smartwatch', 'perfume masculino',
-        'perfume feminino', 'perfume árabe', 'creatina', 'whey protein',
-        'parafusadeira', 'kit ferramentas'
-    ],
-    '💪 Academia & Fitness': [
-        'roupa de academia masculina', 'roupa de academia feminina',
-        'roupa fitness masculina', 'roupa fitness feminina',
-        'camiseta dry fit masculina', 'camiseta dry fit feminina',
-        'camiseta de treino Nike', 'camiseta de treino Adidas', 'camiseta Under Armour treino',
-        'regata fitness masculina', 'regata de treino feminina',
-        'short de academia masculino', 'short esportivo masculino', 'bermuda de treino masculina',
-        'legging fitness feminina', 'legging cintura alta academia', 'top fitness feminino',
-        'top esportivo feminino', 'conjunto fitness feminino', 'conjunto academia feminino',
-        'jaqueta esportiva', 'calça jogger esportiva', 'moletom esportivo',
-        'luva de academia', 'cinto de musculação', 'faixa elástica treino',
-        'coqueteleira', 'garrafa térmica fitness', 'whey protein', 'creatina',
-        'pré-treino', 'hipercalórico', 'proteína esportiva', 'BCAA', 'halter', 'anilha'
-    ],
     '👕 Moda': [
         'camisetas Nike', 'camisetas Adidas', 'camisetas Puma', 'camisetas Lacoste',
         'camisetas Calvin Klein', 'camisetas Tommy Hilfiger', 'camisetas Reserva',
@@ -210,7 +184,7 @@ CATALOG = {
         'legging feminina', 'top fitness', 'conjunto feminino', 'roupa feminina',
         'roupa plus size', 'roupa de praia', 'boné', 'óculos de sol', 'mochila', 'carteira'
     ],
-    '👟 Tênis & Calçados': [
+    '👟 Tênis': [
         'tênis corrida Nike', 'tênis corrida Adidas', 'tênis corrida Asics',
         'tênis corrida Mizuno', 'tênis corrida Olympikus', 'tênis corrida New Balance',
         'tênis corrida Fila', 'tênis corrida Puma', 'tênis corrida Hoka',
@@ -220,8 +194,16 @@ CATALOG = {
         'Nike Air Max', 'Nike Air Force 1', 'Adidas Ultraboost', 'Adidas Superstar',
         'Adidas Samba', 'Asics Gel Kayano', 'Asics Gel Nimbus', 'Mizuno Wave Rider',
         'New Balance Fresh Foam', 'Olympikus Corre', 'tênis skate Vans',
-        'tênis masculino', 'tênis feminino', 'tênis infantil', 'chinelos Havaianas',
-        'chinelos Rider', 'chinelos Ipanema'
+        'tênis masculino', 'tênis feminino', 'tênis infantil'
+    ],
+    '👞 Sapatos': [
+        'sapato social masculino', 'sapato social feminino', 'sapato casual masculino',
+        'sapato casual feminino', 'mocassim masculino', 'mocassim feminino',
+        'loafer masculino', 'loafer feminino', 'sapato oxford masculino',
+        'sapato confortável feminino', 'sapatênis masculino', 'sapatênis feminino',
+        'sandália feminina', 'sandália masculina', 'rasteirinha feminina',
+        'tamanco feminino', 'chinelo Havaianas', 'chinelo Rider', 'chinelo Ipanema',
+        'slide Adidas', 'slide Nike', 'slide Puma'
     ],
     '📱 Celulares': [
         'iPhone', 'iPhone 13', 'iPhone 14', 'iPhone 15', 'iPhone 16',
@@ -473,10 +455,6 @@ def is_requested_product(title, query, category=None):
     ]
 
     category_rules = {
-        "🔥 Mais vendidos do mês": (
-            ["iphone", "celular", "smartphone", "samsung", "motorola", "xiaomi", "fone", "headset", "smartwatch", "tablet", "notebook", "tênis", "tenis", "camiseta", "bermuda", "moletom", "perfume", "parfum", "body splash", "body mist", "creatina", "whey", "halter", "garrafa", "coqueteleira", "air fryer", "cafeteira", "aspirador", "ferramenta", "furadeira", "parafusadeira", "mochila", "relógio", "relogio", "carregador", "caixa de som", "power bank", "chuteira", "chinelo"],
-            []
-        ),
         "📱 Tecnologia": (
             ["iphone", "celular", "smartphone", "samsung", "motorola", "xiaomi", "redmi", "poco", "realme",
              "fone", "headset", "smartwatch", "tablet", "notebook", "macbook", "monitor", "teclado", "mouse",
@@ -487,12 +465,6 @@ def is_requested_product(title, query, category=None):
             ["casa", "organizador", "pote", "air fryer", "aspirador", "cafeteira", "liquidificador", "utensilio",
              "lâmpada", "fita led", "furadeira", "parafusadeira", "esmerilhadeira", "serra", "ferramenta",
              "lavadora", "compressor"],
-            []
-        ),
-        "💪 Academia & Fitness": (
-            ["academia", "halter", "anilha", "barra", "banco", "kettlebell", "treino", "fitness", "elastico",
-             "yoga", "pilates", "alongamento", "esteira", "bicicleta", "spinning", "step", "corrida", "roupa fitness",
-             "tênis academia", "tênis corrida", "garrafa fitness", "coqueteleira"],
             []
         ),
         "💇 Saúde & Beleza": (
@@ -509,12 +481,19 @@ def is_requested_product(title, query, category=None):
             ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha", "camisa social",
              "camisa social manga longa", "social manga longa", "social de manga longa"]
         ),
-        "👟 Tênis & Calçados": (
-            ["tênis", "tenis", "chuteira", "calçado", "nike", "adidas", "puma", "asics", "new balance", "mizuno",
-             "olympikus", "fila", "reebok", "vans", "converse", "under armour", "skechers", "oakley", "lacoste",
-             "corrida", "academia", "casual", "futebol", "basquete", "trilha", "adventure", "skate", "premium",
-             "chinelo", "slide"],
-            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha"]
+        "👟 Tênis": (
+            ["tênis", "tenis", "sneaker", "nike", "adidas", "puma", "asics", "new balance", "mizuno",
+             "olympikus", "fila", "reebok", "vans", "converse", "under armour", "skechers",
+             "corrida", "basquete", "trilha", "skate", "air max", "air force", "ultraboost"],
+            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
+             "sapato social", "mocassim", "loafer", "oxford", "sandália", "chinelo", "slide"]
+        ),
+        "👞 Sapatos": (
+            ["sapato", "mocassim", "loafer", "oxford", "sapatênis", "sapatenis",
+             "sandália", "sandalia", "rasteirinha", "tamanco", "chinelo", "havaianas",
+             "rider", "ipanema", "slide"],
+            ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
+             "tênis de corrida", "tenis de corrida", "sneaker", "chuteira"]
         ),
         "🌙 Perfumes Árabes": (
             list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
@@ -2329,11 +2308,6 @@ _DEMAND_LOCK = threading.Lock()
 CATEGORY_SEED = {cat: list(queries) for cat, queries in CATALOG.items()}
 
 DEMAND_ANCHORS = {
-    "🔥 Mais vendidos do mês": [
-        "mais vendidos", "celular", "fone bluetooth", "smartwatch", "tênis", "camiseta",
-        "perfume", "creatina", "whey", "air fryer", "cafeteira", "aspirador",
-        "ferramenta", "mochila", "garrafa térmica", "carregador", "caixa de som"
-    ],
     "📱 Eletrônicos": [
         "iphone", "celular", "smartphone", "fones bluetooth", "smartwatch",
         "tablet", "notebook", "carregador turbo", "power bank", "caixa de som"
@@ -3684,8 +3658,21 @@ def _shoe_diverse_queries(fast=False):
 
 
 def _search_shoes_category(cat, fast=False):
-    """Busca tênis/calçados com diversidade real de marcas e modelos."""
-    queries = _shoe_diverse_queries(fast=fast)
+    """Busca tênis ou sapatos separadamente, com anúncios reais e diversidade."""
+    if cat == "👞 Sapatos":
+        queries = [
+            "sapato social masculino", "sapato social feminino",
+            "sapato casual masculino", "sapato casual feminino",
+            "mocassim masculino", "mocassim feminino",
+            "loafer masculino", "loafer feminino",
+            "sapato oxford masculino", "sapato confortável feminino",
+            "sapatênis masculino", "sapatênis feminino",
+            "sandália feminina", "sandália masculina", "rasteirinha feminina",
+            "tamanco feminino", "chinelo Havaianas", "chinelo Rider",
+            "chinelo Ipanema", "slide Adidas", "slide Nike", "slide Puma",
+        ]
+    else:
+        queries = _shoe_diverse_queries(fast=fast)
     per_query = 12 if fast else 16
     rows_by_query = []
 
@@ -3817,7 +3804,7 @@ def _category_real_item_seed_queries(cat, fast=False):
     priority = []
     for x in seeds:
         n = norm(x)
-        if cat == "👟 Tênis & Calçados" and any(k in n for k in (
+        if cat == "👟 Tênis" and any(k in n for k in (
             "tenis", "corrida", "casual", "futebol", "chuteira", "basquete",
             "trilha", "skate", "feminino", "masculino", "infantil", "nike",
             "adidas", "asics", "mizuno", "olympikus", "fila", "puma",
@@ -3946,7 +3933,7 @@ def _search_category(cat, fast=False):
     # pode trazer poucos/nenhum candidato útil para os filtros finais.
     # Buscamos anúncios reais por vários termos positivos e deixamos o
     # enriquecimento /items resolver preço, vendedor e imagem.
-    if cat == "👟 Tênis & Calçados":
+    if cat in ("👟 Tênis", "👞 Sapatos"):
         return _search_shoes_category(cat, fast=fast)
 
     if cat == "🌸 Perfumes":
@@ -5085,10 +5072,32 @@ def _title_matches_scan_category(category, title):
     if cat == "🌙 Perfumes Árabes":
         return _is_arabic_perfume_for_query(title, "")
 
-    if cat == "👟 Tênis & Calçados":
-        if fragrance or any(x in n for x in ("chuteira", "trava society", "trava campo", "futsal")):
+    if cat == "👟 Tênis":
+        if fragrance or any(x in n for x in (
+            "sapato social", "mocassim", "loafer", "oxford", "sandalia",
+            "sandália", "rasteirinha", "tamanco", "chinelo", "havaianas",
+            "rider", "ipanema", "slide", "chuteira", "trava society",
+            "trava campo", "futsal"
+        )):
             return False
-        return shoe
+        return any(x in n for x in (
+            "tenis", "tênis", "sneaker", "running shoe", "air max", "air force",
+            "air jordan", "dunk", "ultraboost", "superstar", "adizero", "pegasus",
+            "vomero", "novablast", "gel kayano", "gel nimbus", "fresh foam",
+            "clifton", "bondi", "olympikus corre"
+        ))
+
+    if cat == "👞 Sapatos":
+        if fragrance or any(x in n for x in (
+            "tenis", "tênis", "sneaker", "chuteira", "trava society",
+            "trava campo", "futsal"
+        )):
+            return False
+        return any(x in n for x in (
+            "sapato", "mocassim", "loafer", "oxford", "sapatênis",
+            "sapatenis", "sandalia", "sandália", "rasteirinha", "tamanco",
+            "chinelo", "havaianas", "rider", "ipanema", "slide"
+        ))
 
     if cat == "👕 Moda":
         if fragrance or shoe:
@@ -7442,9 +7451,8 @@ def run_caca_job(job_id, category=None):
 def _manual_queries_for_category(q):
     """Resolve a busca manual para a categoria inteira.
 
-    A busca manual não pode tratar variações como "Tênis e calçados" como
-    uma consulta literal. Elas precisam apontar para "👟 Tênis & Calçados"
-    e então disparar TODOS os micro-nichos da categoria.
+    A busca manual resolve Tênis e Sapatos separadamente e dispara os
+    micro-nichos correspondentes à categoria escolhida.
     """
     nq = norm(q)
 
@@ -7467,21 +7475,21 @@ def _manual_queries_for_category(q):
         "celulares": "📱 Celulares",
         "celular": "📱 Celulares",
         "ferramentas": "🔧 Ferramentas",
-        "academia": "💪 Academia & Fitness",
-        "academia e fitness": "💪 Academia & Fitness",
-        "fitness": "💪 Academia & Fitness",
         "saude e beleza": "💇 Saúde & Beleza",
         "saude beleza": "💇 Saúde & Beleza",
         "beleza": "💇 Saúde & Beleza",
         "moda": "👕 Moda",
         "roupas": "👕 Moda",
         "roupa": "👕 Moda",
-        "tenis": "👟 Tênis & Calçados",
-        "tenis e calcados": "👟 Tênis & Calçados",
-        "tenis e calcados": "👟 Tênis & Calçados",
-        "calcados": "👟 Tênis & Calçados",
-        "calcado": "👟 Tênis & Calçados",
-        "sapatos": "👟 Tênis & Calçados",
+        "tenis": "👟 Tênis",
+        "tenis de corrida": "👟 Tênis",
+        "tenis esportivo": "👟 Tênis",
+        "calcados": "👞 Sapatos",
+        "calcado": "👞 Sapatos",
+        "sapatos": "👞 Sapatos",
+        "sapato": "👞 Sapatos",
+        "mocassim": "👞 Sapatos",
+        "sandalia": "👞 Sapatos",
         "perfumes": "🌸 Perfumes",
         "perfume": "🌸 Perfumes",
         "perfumes arabes": "🌙 Perfumes Árabes",
@@ -8835,7 +8843,7 @@ function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 {% else %}<a href="/mercadolivre/login"><button class="login">🔗 Conectar Mercado Livre</button></a>{% endif %}
 </div>
 <div class="card"><h2>🔥 Encontrar melhores produtos</h2><p class="small">Selecione uma categoria ou procure <b>todas de uma vez</b>. O sistema combina <b>categoria → subnicho → marca → produto</b> e só mostra o resultado quando a consulta terminar.</p><button class="cat" style="background:#3483fa;color:#fff;border:0;font-weight:bold" onclick="cacar('')">🔎 BUSCAR TODAS AS CATEGORIAS</button><div class="grid" style="margin-top:10px">{% for c in categorias %}<button class="cat" onclick="cacar({{c|tojson}})">{{c}}</button>{% endfor %}</div><p id="status" class="small">Escolha uma categoria ou use o botão acima para buscar todas.</p></div>
-<div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Digite uma categoria ou produto: Tecnologia, Moda, Tênis, Academia, Perfumes..."><button onclick="buscar()">Procurar</button></div>
+<div class="card"><h2>🔎 Busca manual</h2><input id="q" placeholder="Digite uma categoria ou produto: Celulares, Eletrônicos, Moda, Tênis, Sapatos, Perfumes..."><button onclick="buscar()">Procurar</button></div>
 <div class="card"><h2>📊 Resultado</h2><div id="stats" class="stats"></div></div>
 <div class="card"><h2>🏆 Melhores oportunidades</h2><p class="small">A busca principal combina vários micro-nichos da categoria e usa a API do Mercado Livre. Os cupons ficam em um módulo separado para não deixar a atualização dos produtos lenta nem aplicar descontos que não foram confirmados.</p><div id="results"><p>Faça uma busca para começar.</p></div></div>
 <div class="card"><a href="/afiliado/portal">📲 Central de Afiliados</a><br><br><a href="/afiliado/gerador">🔗 Ferramentas oficiais de afiliado</a><br><br><a href="/api/cupons?atualizar=1" target="_blank">🎟️ Atualizar/consultar cupons</a><br><br><a href="/mercadolivre/diagnostico" target="_blank">🧪 Diagnóstico Mercado Livre</a></div>
