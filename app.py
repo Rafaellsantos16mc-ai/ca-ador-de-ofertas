@@ -175,12 +175,6 @@ _SELLER_QUALITY_CACHE_LOCK = threading.Lock()
 # ============================================================
 
 CATALOG = {
-    '💪 Academia': [
-        'whey protein', 'creatina monohidratada', 'pré treino', 'beta alanina',
-        'barra de proteína', 'legging academia', 'short academia', 'top academia',
-        'camiseta dry fit', 'regata treino', 'bermuda treino masculina',
-        'conjunto academia feminino', 'roupa fitness feminina', 'roupa de treino masculina'
-    ],
     '👕 Moda': [
         'camisetas Nike', 'camisetas Adidas', 'camisetas Puma', 'camisetas Lacoste',
         'camisetas Calvin Klein', 'camisetas Tommy Hilfiger', 'camisetas Reserva',
@@ -203,12 +197,12 @@ CATALOG = {
         'tênis masculino', 'tênis feminino', 'tênis infantil'
     ],
     '👞 Sapatos': [
-        'sapato casual masculino',
-        'sapato casual feminino', 'mocassim masculino', 'mocassim feminino',
-        'loafer masculino', 'loafer feminino', 'sapato oxford masculino',
-        'sapato confortável feminino', 'sapatênis masculino', 'sapatênis feminino',
-        'sandália feminina', 'sandália masculina', 'rasteirinha feminina',
-        'tamanco feminino'
+        'sapato casual masculino', 'sapato casual feminino',
+        'sapatênis masculino', 'sapatênis feminino',
+        'mocassim casual masculino', 'mocassim casual feminino',
+        'loafer casual masculino', 'loafer casual feminino',
+        'sapato confortável fechado', 'sapato casual couro',
+        'sapato casual masculino promoção', 'sapato casual feminino promoção'
     ],
     '📱 Celulares': [
         'iPhone', 'iPhone 13', 'iPhone 14', 'iPhone 15', 'iPhone 16',
@@ -445,11 +439,48 @@ PROFILES = {
     },
 }
 
+_SUPPLEMENT_TRUSTED_BRANDS = (
+    "growth supplements", "growth", "max titanium", "integralmedica", "integral médica",
+    "dux", "soldiers nutrition", "probiótica", "probiotica", "black skull", "adaptogen",
+    "atlhetica nutrition", "essential nutrition", "nutrata", "vitafor"
+)
+_SUPPLEMENT_TERMS = (
+    "creatina", "whey", "proteina", "proteína", "pre treino", "pré treino", "pré-treino",
+    "hipercalorico", "hipercalórico", "bcaa", "glutamina", "beta alanina", "beta-alanina",
+    "albumina", "mass gainer", "suplemento", "suplementos"
+)
+_SUPPLEMENT_BAD_TERMS = (
+    "coqueteleira", "shaker", "squeeze", "garrafa", "camiseta", "regata", "short",
+    "legging", "luva", "cinto", "halter", "anilha", "barra", "esteira", "bicicleta",
+    "adesivo", "rótulo", "rotulo", "pote vazio", "embalagem vazia", "ebook", "digital"
+)
+
+def _supplement_title_is_quality(title):
+    n = norm(title)
+    if not any(term in n for term in _SUPPLEMENT_TERMS):
+        return True
+    if any(term in n for term in _SUPPLEMENT_BAD_TERMS):
+        return False
+    # Creatina: prioriza monohidratada pura; rejeita misturas/combos e outros tipos.
+    if "creatina" in n:
+        if any(x in n for x in ("kit", "combo", "blend", "creatina gummy", "creatina em goma", "creatina alcalina")):
+            return False
+        if any(x in n for x in ("monohidratada", "monohidratado", "monohidrato", "100% pura", "pura")):
+            pass
+        elif any(x in n for x in ("creatina" ,)) and not any(x in n for x in ("creapure", "crea pure")):
+            # Muitos anúncios omitem a palavra monohidratada; marca confiável continua sendo requisito.
+            pass
+    return any(brand in n for brand in _SUPPLEMENT_TRUSTED_BRANDS)
+
 def is_requested_product(title, query, category=None):
     """Filtra acessórios/peças e garante que o título pertence à categoria pedida."""
     t = norm(title)
     qn = norm(query)
     cat = category or query_category(query) or _demand_category_from_text(title)
+
+    # Regras globais de qualidade para suplementos e creatina, independentemente da consulta.
+    if not _supplement_title_is_quality(title):
+        return False
 
     # Itens que normalmente contaminam buscas de produto principal.
     generic_bad = [
@@ -478,14 +509,6 @@ def is_requested_product(title, query, category=None):
              "corporal", "esfoliante", "depilador"],
             ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha"]
         ),
-        "💪 Academia": (
-            ["whey", "creatina", "pré treino", "pre treino", "beta alanina",
-             "barra de proteína", "barra proteina", "legging academia", "short academia",
-             "top academia", "camiseta dry fit", "regata treino", "bermuda treino",
-             "conjunto academia", "roupa fitness feminina", "roupa de treino masculina"],
-            ["organizador de gaveta", "película", "pelicula", "peça de reposição",
-             "peca de reposicao", "induzido", "rotor", "compressor", "pelúcia", "pelucia"]
-        ),
         "👕 Moda": (
             ["camiseta", "camisa esportiva", "futebol", "jaqueta", "corta vento", "bermuda", "short", "calça", "jeans",
              "roupa fitness", "roupa esportiva", "legging", "moletom", "casaco", "moda feminina", "vestido", "blusa",
@@ -502,11 +525,10 @@ def is_requested_product(title, query, category=None):
              "sapato social", "mocassim", "loafer", "oxford", "sandália", "chinelo", "slide"]
         ),
         "👞 Sapatos": (
-            ["sapato", "mocassim", "loafer", "oxford", "sapatênis", "sapatenis",
-             "sandália", "sandalia", "rasteirinha", "tamanco", "chinelo", "havaianas",
-             "rider", "ipanema", "slide"],
+            ["sapato casual", "sapatênis", "sapatenis", "mocassim casual", "loafer casual", "sapato confortável", "sapato confortavel"],
             ["falsificado", "falsa", "falsificada", "replica", "réplica", "pirata", "segunda linha",
-             "tênis de corrida", "tenis de corrida", "sneaker", "chuteira"]
+             "sapato social", "oxford", "sandália", "sandalia", "rasteirinha", "tamanco", "chinelo",
+             "havaianas", "rider", "ipanema", "slide", "tênis de corrida", "tenis de corrida", "sneaker", "chuteira"]
         ),
         "🌙 Perfumes Árabes": (
             list(ARABIC_PERFUME_TERMS) + ["perfume árabe", "perfume arabe", "eau de parfum", "parfum"],
@@ -3674,6 +3696,7 @@ def _search_shoes_category(cat, fast=False):
     """Busca tênis ou sapatos separadamente, com anúncios reais e diversidade."""
     if cat == "👞 Sapatos":
         queries = [
+            "sapato social masculino", "sapato social feminino",
             "sapato casual masculino", "sapato casual feminino",
             "mocassim masculino", "mocassim feminino",
             "loafer masculino", "loafer feminino",
@@ -5063,6 +5086,11 @@ def _title_matches_scan_category(category, title):
     if not n:
         return False
 
+    # Última barreira global: suplementos sem marca confiável não chegam ao anúncio,
+    # mesmo se forem encontrados por outra categoria/consulta.
+    if any(term in n for term in _SUPPLEMENT_TERMS) and not _supplement_title_is_quality(title):
+        return False
+
     # Bloqueios universais para evitar cruzamento óbvio entre categorias.
     fragrance = any(x in n for x in (
         "perfume", "parfum", "eau de", "edt", "edp", "fragrance",
@@ -5100,19 +5128,16 @@ def _title_matches_scan_category(category, title):
         ))
 
     if cat == "👞 Sapatos":
+        # Somente calçados fechados/casuais. Social, chinelo, tamanco e rasteirinha ficam fora.
         if fragrance or any(x in n for x in (
-            "tenis", "tênis", "sneaker", "chuteira", "trava society",
-            "trava campo", "futsal"
-        )):
-            return False
-        if any(x in n for x in (
-            "sapato social", "social masculino", "social feminino",
-            "chinelo", "havaianas", "rider", "ipanema", "slide"
+            "tenis", "tênis", "sneaker", "chuteira", "trava society", "trava campo", "futsal",
+            "sapato social", "social masculino", "social feminino", "oxford", "sandalia", "sandália",
+            "rasteirinha", "tamanco", "chinelo", "havaianas", "rider", "ipanema", "slide", "mule"
         )):
             return False
         return any(x in n for x in (
-            "sapato casual", "mocassim", "loafer", "oxford", "sapatênis",
-            "sapatenis", "sandalia", "sandália", "rasteirinha", "tamanco"
+            "sapato casual", "sapatênis", "sapatenis", "mocassim casual", "loafer casual",
+            "sapato confortável", "sapato confortavel"
         ))
 
     if cat == "👕 Moda":
@@ -5180,6 +5205,10 @@ def _title_matches_scan_category(category, title):
     if cat == "💪 Academia & Fitness":
         if fragrance or shoe:
             return False
+        if not _supplement_title_is_quality(title):
+            # Equipamentos/roupas continuam permitidos; itens identificados como suplementos exigem marca confiável.
+            if any(term in n for term in _SUPPLEMENT_TERMS):
+                return False
         return any(x in n for x in (
             "creatina", "whey", "proteina", "proteína", "pre treino", "pré treino",
             "hipercalorico", "hipercalórico", "bcaa", "isotonico", "isotônico",
@@ -7199,57 +7228,6 @@ def _whatsapp_title_was_published(title, exclude_product_id=""):
     return False
 
 
-
-def _whatsapp_category_key(offer):
-    """Obtém a categoria da oferta sem adivinhar por preço ou título."""
-    for key in ("category", "categoria", "category_name", "categoria_nome", "search_category"):
-        value = offer.get(key)
-        if value:
-            value = str(value).strip()
-            if value in CATALOG:
-                return value
-            # Accept visible labels with emoji and case-insensitive aliases.
-            for cat in CATALOG:
-                if value.casefold() == str(cat).casefold():
-                    return cat
-    title = str(offer.get("title") or offer.get("name") or "").casefold()
-    # Only use explicit product-category cues when the scan did not retain a category.
-    if any(x in title for x in ("perfume árabe", "perfume arabe", "lattafa", "maison alhambra", "afnan", "armaf", "rasasi")):
-        return "🌙 Perfumes Árabes" if "🌙 Perfumes Árabes" in CATALOG else None
-    if "perfume" in title or "body splash" in title or "body mist" in title:
-        return "🌸 Perfumes" if "🌸 Perfumes" in CATALOG else None
-    if any(x in title for x in ("tênis", "tenis", "sneaker", "air max", "ultraboost", "chuteira")):
-        return "👟 Tênis" if "👟 Tênis" in CATALOG else None
-    if any(x in title for x in ("sapato", "mocassim", "loafer", "oxford", "sandália", "sandalia", "chinelo", "havaianas", "sapatênis", "sapatenis")):
-        return "👞 Sapatos" if "👞 Sapatos" in CATALOG else None
-    if any(x in title for x in ("creatina", "whey", "pré treino", "pre treino", "legging academia", "top academia", "dry fit", "bermuda treino")):
-        return "💪 Academia" if "💪 Academia" in CATALOG else None
-    return None
-
-
-def _whatsapp_get_category_cursor(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS whatsapp_category_rotation (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            next_index INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT
-        )
-    """)
-    row = conn.execute("SELECT next_index FROM whatsapp_category_rotation WHERE id=1").fetchone()
-    if row:
-        return int(row[0] or 0)
-    conn.execute("INSERT INTO whatsapp_category_rotation(id, next_index, updated_at) VALUES (1, 0, CURRENT_TIMESTAMP)")
-    return 0
-
-
-def _whatsapp_set_category_cursor(conn, next_index):
-    conn.execute("""
-        INSERT INTO whatsapp_category_rotation(id, next_index, updated_at)
-        VALUES (1, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET next_index=excluded.next_index, updated_at=CURRENT_TIMESTAMP
-    """, (int(next_index),))
-
-
 def _whatsapp_publish_scan(result):
     """Publica no máximo AUTO_WHATSAPP_LIMIT ofertas elegíveis desta rodada.
 
@@ -7261,32 +7239,6 @@ def _whatsapp_publish_scan(result):
     skipped = 0
     seen_round_items = set()
     seen_round_titles = []
-
-    # Uma oferta por categoria por rodada. O cursor fica no SQLite para que
-    # a rotação continue da próxima categoria após reinicializações do Railway.
-    categories = list(CATALOG.keys())
-    if categories:
-        conn_rotation = sqlite3.connect(DB_FILE, timeout=15)
-        try:
-            start_index = _whatsapp_get_category_cursor(conn_rotation) % len(categories)
-            conn_rotation.commit()
-        finally:
-            conn_rotation.close()
-        category_rank = {categories[(start_index + i) % len(categories)]: i for i in range(len(categories))}
-        offers_by_category = {}
-        for candidate in offers:
-            candidate_category = _whatsapp_category_key(candidate)
-            if candidate_category in category_rank:
-                offers_by_category.setdefault(candidate_category, []).append(candidate)
-        ordered_offers = []
-        for cat in sorted(offers_by_category, key=lambda c: category_rank[c]):
-            # Melhor primeiro conforme a ordenação original da busca.
-            ordered_offers.append(offers_by_category[cat][0])
-        # Só publica uma oferta por categoria nesta rodada; limite total continua valendo.
-        offers = ordered_offers
-        selected_category_order = [ _whatsapp_category_key(x) for x in offers ]
-    else:
-        selected_category_order = []
 
     for offer in offers:
         if sent >= AUTO_WHATSAPP_LIMIT:
@@ -7320,18 +7272,16 @@ def _whatsapp_publish_scan(result):
             continue
 
         # Evita a mesma oferta voltar com product_id alternativo em rodadas futuras.
+        if _whatsapp_title_was_published(title_for_quality, exclude_product_id=product_id):
+            print(f"[ANTI-DUPLICADO HISTÓRICO] descartado: {title_for_quality[:120]}")
+            skipped += 1
+            continue
+
         previous_price = _whatsapp_previous_price(product_id)
         offer["previous_price"] = previous_price or 0
         offer["price_dropped"] = bool(
             previous_price is not None and price < previous_price - 0.01
         )
-
-        # Bloqueia a mesma publicação/título no histórico, exceto se houver
-        # redução real de preço. Sem redução, a oferta não é repetida.
-        if _whatsapp_title_was_published(title_for_quality, exclude_product_id=product_id) and not offer["price_dropped"]:
-            print(f"[ANTI-DUPLICADO HISTÓRICO] descartado (sem queda de preço): {title_for_quality[:120]}")
-            skipped += 1
-            continue
 
         if not _whatsapp_should_publish(product_id, price):
             skipped += 1
@@ -7395,15 +7345,6 @@ def _whatsapp_publish_scan(result):
             return {"ok": False, "enviadas": sent, "ignoradas": skipped, "erro": detail}
 
         _whatsapp_mark_published(offer)
-        sent_category = _whatsapp_category_key(offer)
-        if sent_category in categories:
-            conn_rotation = sqlite3.connect(DB_FILE, timeout=15)
-            try:
-                sent_idx = categories.index(sent_category)
-                _whatsapp_set_category_cursor(conn_rotation, (sent_idx + 1) % len(categories))
-                conn_rotation.commit()
-            finally:
-                conn_rotation.close()
         if item_key:
             seen_round_items.add(item_key)
         if title_key:
