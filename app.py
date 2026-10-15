@@ -5729,6 +5729,49 @@ def scan_queries(queries, min_discount=0, apply_coupons=False):
     multiprocessadores.sort(key=lambda o: (-float(o.get("discount") or 0), float(o.get("total_price") or 999999)))
     offers = outros + casa_sem_multi + multiprocessadores[:2]
 
+    # FILTRO OBRIGATÓRIO DE DESCONTO REAL
+    # Não publica produto só porque apareceu na busca ou tem cupom anunciado.
+    # Exige preço promocional atual e preço original informado pelo Mercado Livre,
+    # com pelo menos 10% de diferença. Descontos acima de 80% são tratados como
+    # possíveis dados inconsistentes e também são bloqueados para revisão.
+    MIN_REAL_DISCOUNT_PERCENT = 10.0
+    MAX_REAL_DISCOUNT_PERCENT = 80.0
+    verified_discount_offers = []
+    rejected_no_discount = 0
+    rejected_suspicious_discount = 0
+    for offer in offers:
+        try:
+            current_price = float(offer.get("price") or 0)
+            old_price = float(offer.get("original_price") or 0)
+        except (TypeError, ValueError):
+            current_price, old_price = 0.0, 0.0
+
+        # Sem preço original confiável não é possível afirmar que há promoção.
+        if current_price <= 0 or old_price <= current_price:
+            rejected_no_discount += 1
+            continue
+
+        actual_discount = round((old_price - current_price) / old_price * 100, 2)
+        if actual_discount < MIN_REAL_DISCOUNT_PERCENT:
+            rejected_no_discount += 1
+            continue
+        if actual_discount > MAX_REAL_DISCOUNT_PERCENT:
+            rejected_suspicious_discount += 1
+            continue
+
+        offer["original_price"] = round(old_price, 2)
+        offer["discount"] = actual_discount
+        offer["discount_verified"] = True
+        verified_discount_offers.append(offer)
+
+    offers = verified_discount_offers
+    print(
+        "[FILTRO DESCONTO REAL] aprovadas=%s | sem desconto/preço original confiável=%s | "
+        "desconto suspeito acima de %.0f%%=%s | mínimo exigido=%.0f%%"
+        % (len(offers), rejected_no_discount, MAX_REAL_DISCOUNT_PERCENT,
+           rejected_suspicious_discount, MIN_REAL_DISCOUNT_PERCENT)
+    )
+
     offers.sort(key=lambda o: ((o.get("category_name") or ""), _display_demand_key(o)))
 
     # Até 50 por categoria; perfumes recebem o mesmo limite para manter variedade e
